@@ -492,3 +492,13 @@ NBER論文について、メモは「二次情報」としているが一次資�
 
 
 </details>
+
+## 追記（最終レビュー）
+
+最終レビュー（2026年11月8日）で、次の3点を出典で確かめた。上の照合件数（729件）には含めていない。
+
+| 項目 | 確かめたこと | 出典 |
+|---|---|---|
+| UNEPの「家庭で1日10億食超」（03の表の「出典で確認できず」） | UNEPの発表に、家庭の数字として書かれていることを確認した。レポート2-3の記述は正しい | [UNEPのプレスリリース](https://www.unep.org/news-and-stories/press-release/world-squanders-over-1-billion-meals-day-un-report) |
+| RevenueCatの1年継続率（年額28%・月額8%） | 2024年に始まった購読の1年継続率である。2023年に始まった購読では31%・10%だった。レポート4-5の書き方をこれに合わせた | [RevenueCat「State of Subscription Apps 2026」part 2](https://www.revenuecat.com/sosa-2026-insights-part-2) |
+| NYT CookingのAI機能（04の表の「公式発表は未確認」の行） | 公式の説明は、NYT CookingのシニアエディターGenevieve KoによるTimes Insiderのコラム（2026年10月23日）にある。レシピを変える機能（主に食材の置き換え）をiOSの購読者から順に提供し、今はオフにできないが、使うかどうかは任意だと説明した。Nieman Lab（2026年10月28日）が報じた | [Times Insider](https://www.nytimes.com/2026/10/23/insider/cooking-recipes-ai.html)、[Nieman Lab](https://www.niemanlab.org/2026/10/the-new-york-times-is-adding-more-ai-features-to-its-cooking-app-and-users-arent-thrilled/) |
