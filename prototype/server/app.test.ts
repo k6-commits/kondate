@@ -321,6 +321,16 @@ describe('postback', () => {
     const after = (await t.store.get('Cgroup0001'))!.state;
     expect(after.meals.find((m) => m.date === first.date)?.dishIds[0]).toBe(first.toDishIds[0]);
     expect(after.proposals.map((p) => p.id)).toEqual([second.id]);
+    // その返信に、もう1つの案の［替える］［そのまま］が出る（クイックリプライは最後のメッセージにしか出ないため、出し直す）
+    const again = expectWithinLimits(messagesOf(t.replies()[1]));
+    expect(messagesOf(t.replies()[1]).some((m) => m.text.includes('もう1つの案も、ボタンで選べます。'))).toBe(true);
+    const accept2 = again.find((i) => i.action.data === JSON.stringify({ type: 'accept_proposal', proposalId: second.id }));
+    expect(accept2?.action.label).toBe('替える');
+    await t.webhook([postbackEvent(GROUP, accept2!.action.data)]);
+    const done = (await t.store.get('Cgroup0001'))!.state;
+    expect(done.meals.find((m) => m.date === second.date)?.dishIds[0]).toBe(second.toDishIds[0]);
+    expect(done.proposals).toEqual([]);
+    expect(messagesOf(t.replies()[2])[0].text).toContain('に替えました');
   });
 
   it('不正な data は無視する（返信も保存もしない）', async () => {
@@ -393,6 +403,28 @@ describe('保存するもの・消すとき', () => {
       cur ? { ...cur, state: { ...cur.state, chat: [...cur.state.chat, { id: 'old_1', from: 'user', text: unrelated, at: `${TODAY}T08:00:00+09:00` }] } } : null,
     );
     expect(await readFile(path.join(t.dir, file), 'utf8')).not.toContain('山田部長');
+  });
+
+  it('原文を保存しなくても、聞き返しへの名前・日付だけの答えが使える（聞いた日は bot の文から読む）', async () => {
+    const t = await setup();
+    // 「誰が食べませんか？」への「パパ」：聞いた日（明日から木曜まで）すべての欠席にする
+    await t.webhook([textEvent(USER, '明日から木曜まで出張')]);
+    await t.webhook([textEvent(USER, 'パパ')]);
+    let saved = await t.store.get('Uuser0002');
+    expect(saved?.state.chat.filter((m) => m.from === 'user').every((m) => m.text === '')).toBe(true);
+    const absentDays = (st: typeof saved) => st!.state.meals.filter((m) => m.absentMemberIds.includes('member_2')).map((m) => m.date);
+    expect(absentDays(saved)).toEqual(['2026-11-10', '2026-11-11', '2026-11-12']);
+    // 「どの日の予定がなくなりましたか？」への「木曜」
+    await t.webhook([textEvent(USER, '金曜もパパ飲み会')]);
+    await t.webhook([textEvent(USER, '飲み会なくなった')]);
+    expect(messagesOf(t.replies().at(-1)!)[0].text).toContain('どの日の予定がなくなりましたか？');
+    await t.webhook([textEvent(USER, '金曜')]);
+    saved = await t.store.get('Uuser0002');
+    expect(absentDays(saved)).toEqual(['2026-11-10', '2026-11-11', '2026-11-12']);
+    // 何日か続く予定（出張）の取り消しは、まとめて（どの日かは聞かない）
+    await t.webhook([textEvent(USER, 'パパの出張なくなった')]);
+    expect(absentDays(await t.store.get('Uuser0002'))).toEqual([]);
+    for (const r of t.replies()) expectWithinLimits(messagesOf(r));
   });
 
   it('unfollow（ブロック）で1対1の記録を、leave（退出）でグループの記録を消す。cron も数えない', async () => {
@@ -489,6 +521,35 @@ describe('LLM での解釈（webhook）', () => {
     expect(t.replies()).toHaveLength(2);
     expect((await t.store.get('Uuser0002'))?.state.meals.find((m) => m.date === TODAY)?.kind).toBe('raku');
     expect(llmLogger.lines.join('\n')).toContain('error=timeout');
+  });
+
+  it('LLM の結果で同じ日に提案が重なっても（同じ命令の重なりも）、返信には使える提案だけを出し、2つ目は重なると伝える', async () => {
+    const llm = fakeLlm([
+      { type: 'sale', ingredientId: 'chicken_breast' },
+      { type: 'sale', ingredientId: 'pork_belly' },
+      { type: 'sale', ingredientId: 'chicken_breast' },
+    ]);
+    const t = await setup({ llm });
+    await seedRecord(t.store, { key: 'Uuser0002', catalog: defaultCatalog, today: TODAY });
+    await t.webhook([textEvent(USER, '鶏むねと豚バラが安い')]);
+    const reply = messagesOf(t.replies()[0]);
+    const items = expectWithinLimits(reply);
+    expect(reply).toHaveLength(2);
+    expect(reply[0].text).toContain('明日のキーマカレーを、');
+    expect(reply[1].text).toBe(
+      '豚バラ薄切り肉、いいですね。替えられる日（明日）には、上で別の案を出しています。\n豚バラ薄切り肉の案にしたいときは、もう一度「豚バラ薄切り肉が安い」と送ってください。',
+    );
+    const { proposals } = (await t.store.get('Uuser0002'))!.state;
+    expect(proposals).toHaveLength(1);
+    const actions = items.map((i) => JSON.parse(i.action.data) as { type: string; proposalId?: string });
+    expect(actions.filter((a) => a.type === 'accept_proposal' || a.type === 'reject_proposal').map((a) => a.proposalId)).toEqual([
+      proposals[0].id,
+      proposals[0].id,
+    ]);
+    const accept = items.find((i) => (JSON.parse(i.action.data) as { type: string }).type === 'accept_proposal')!;
+    await t.webhook([postbackEvent(USER, accept.action.data)]);
+    expect(messagesOf(t.replies()[1])[0].text).toContain('明日を鶏むねとブロッコリーの塩炒め');
+    expect(messagesOf(t.replies()[1])[0].text).toContain('に替えました。');
   });
 
   it('LLM が失敗したり、検証で全部落ちたりしたら、ルールで解釈する', async () => {
@@ -723,6 +784,32 @@ describe('POST /cron/evening', () => {
     await seedRecord(t.store, { key: 'Upaid', catalog: defaultCatalog, today: '2026-11-07', plan: 'paid' });
     expect(await (await cron(t, `Bearer ${CRON_SECRET}`)).json()).toEqual({ households: 1, pushed: 0 });
     expect((await t.store.get('Upaid'))?.pendingPush.length).toBeGreaterThan(0);
+  });
+
+  it('有料版：今日がみんな外で食べる日なら、夕方の「今日は…」を送らず、翌日も「作りましたか？」と聞かない', async () => {
+    const clock = { now: new Date('2026-11-09T23:00:00Z') }; // 日本時間 11/10(火) 08:00
+    const t = await setup({ clock });
+    await seedRecord(t.store, { key: 'Uuser0002', catalog: defaultCatalog, today: '2026-11-09', plan: 'paid' });
+    await t.webhook([textEvent(USER, '今日はみんな外食')]);
+    const reply = messagesOf(t.replies()[0]);
+    expectWithinLimits(reply);
+    const text = reply.map((m) => m.text).join('\n');
+    expect(text).toContain('夕食なし（みんな外で食べる）');
+    expect(text).toContain('予定が変わったら「今日はみんないる」と送ってください。');
+    expect(text).not.toContain('0人分');
+    // 朝の同期で、今日の配信はたまっている（送るときに今の献立で作り直す）
+    expect((await t.store.get('Uuser0002'))!.pendingPush.some((m) => m.card?.kind === 'meal')).toBe(true);
+
+    clock.now = new Date('2026-11-10T08:00:00Z'); // 17:00
+    expect(await (await cron(t, `Bearer ${CRON_SECRET}`)).json()).toEqual({ households: 1, pushed: 0 });
+    expect(t.pushes()).toEqual([]);
+    expect((await t.store.get('Uuser0002'))?.pendingPush).toEqual([]);
+
+    clock.now = new Date('2026-11-10T23:00:00Z'); // 11/11(水) 08:00
+    await t.webhook([textEvent(USER, '今日の献立')]);
+    const next = messagesOf(t.replies()[1]);
+    expect(next[0].text).not.toMatch(/作りましたか/);
+    expect(next.at(-1)!.quickReply?.items.map((i) => (JSON.parse(i.action.data) as { type: string; date?: string }).date)).not.toContain('2026-11-10');
   });
 
   it('有料版：朝の書き込みで配信がたまっても、昼に献立を変えたら、夕方は今の献立の文面で送る', async () => {

@@ -90,6 +90,23 @@ describe('名前の置き換え（maskNicknames）', () => {
     expect(maskNicknames('明日はKがいない', [{ id: 'member_2', nickname: 'K' }])).toBe('明日はmember_2がいない');
     expect(maskNicknames('明日はｋがいない', [{ id: 'member_2', nickname: 'Ｋ' }])).toBe('明日はmember_2がいない');
   });
+
+  it('名前のかなを含むよくある言葉（そのまま・わがまま・冷凍したまま・ぱぱっと）は置き換えない（画面の maskNames と同じ）', () => {
+    const ms = [
+      { id: 'member_1', nickname: 'ママ' },
+      { id: 'member_2', nickname: 'パパ' },
+    ];
+    expect(maskNicknames('今日はそのままでいい', ms)).toBe('今日はそのままでいい');
+    expect(maskNicknames('鶏もも冷凍したまま', ms)).toBe('鶏もも冷凍したまま');
+    expect(maskNicknames('わがまま言ってごめん', ms)).toBe('わがまま言ってごめん');
+    expect(maskNicknames('ぱぱっと作れるのがいい、パパッとでも', ms)).toBe('ぱぱっと作れるのがいい、パパッとでも');
+    // 名前は置き換える（カタカナの「うちのママ」、「ままは」、「ぱぱって」）
+    expect(maskNicknames('うちのママは明日いない', ms)).toBe('うちのmember_1は明日いない');
+    expect(maskNicknames('ままは明日いない', ms)).toBe('member_1は明日いない');
+    expect(maskNicknames('ぱぱって明日いる?', ms)).toBe('member_2って明日いる?');
+    // 名前そのものがよくある言葉と同じなら、名前として置き換える
+    expect(maskNicknames('わがままが来る', [{ id: 'member_7', nickname: 'わがまま' }])).toBe('member_7が来る');
+  });
 });
 
 describe('nicknameIn（メンションの表示名に入っているニックネーム）', () => {
@@ -201,6 +218,13 @@ describe('出力 → ParsedCommand', () => {
     });
     expect(toParsedCommand(cmd({ type: 'unknown' }))).toBeNull();
     expect(toParsedCommand(cmd({ type: 'delete_everything' }))).toBeNull();
+  });
+
+  it('「明日の夕飯なに？」「明日何買えばいい？」の日付は渡す（今日の献立・買い物は日付なし）', () => {
+    expect(toParsedCommand(cmd({ type: 'show_today', date: '2026-11-10' }))).toEqual({ type: 'show_today', date: '2026-11-10' });
+    expect(toParsedCommand(cmd({ type: 'show_shopping', date: '2026-11-10' }))).toEqual({ type: 'show_shopping', date: '2026-11-10' });
+    expect(toParsedCommand(cmd({ type: 'show_today' }))).toEqual({ type: 'show_today' });
+    expect(toParsedCommand(cmd({ type: 'show_week', date: '2026-11-10' }))).toEqual({ type: 'show_week' });
   });
 
   it('欠席の取り消し・在庫の質問・冷凍・料理で指した別の案・食材を名指ししたリクエストも渡す', () => {
@@ -514,5 +538,12 @@ describe('検証（validateCommands）とルールへの戻り', () => {
     expect(system).toContain('question＝true');
     expect(system).toContain('frozen＝true');
     expect(system).toContain('today_impossible・want_alternatives・absence を出しません');
+  });
+
+  it('SYSTEM に、遅くなるだけ（塾・残業）・「かも」・人を書かない欠席では absence を出さない決まりが入る', () => {
+    const system = buildSystemPrompt(catalog);
+    expect(system).toContain('「塾」「部活」「残業」「帰りが遅い」のように遅くなるだけで');
+    expect(system).toContain('「〜かも」「未定」のように、まだ決まっていないときも absence を出しません');
+    expect(system).toContain('memberRef を推測で埋めません');
   });
 });

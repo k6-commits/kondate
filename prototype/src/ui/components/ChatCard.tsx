@@ -1,9 +1,9 @@
 // トークのカード（Card）。カードは参照だけを持つので、中身は今の state から描く。
 import type { AppState, Card, Catalog, ISODate } from '../../engine';
 import { AISLE_LABEL, AISLE_ORDER, WEEKDAY_JA, addDays, findDish, formatJa, weekStartOf, weekdayOf, weeklySummary } from '../../engine';
-import { cls, dishNames } from '../lib';
+import { NO_DINNER_TEXT, cls, dishNames, leftCount, nobodyEats } from '../lib';
 import { Icon } from './Icon';
-import { MealDetails, RakuBadge, StatusBadge } from './MealDetails';
+import { MealDetails, RakuBadge, StatusBadge, statusBadgeShown } from './MealDetails';
 
 export interface CardHandlers {
   onOpenWeek: (weekStart: ISODate) => void;
@@ -45,32 +45,42 @@ function WeekCard({ weekStart, state, catalog, handlers }: { weekStart: ISODate;
         <p className="card-empty">{past ? '過ぎた週の献立は、もう表示できません。' : 'この週の献立はまだありません。'}</p>
       ) : (
         <ul className="week-list">
-          {meals.map((m) => (
-            <li
-              key={m.date}
-              className={cls('week-row', m.date === state.today && 'is-today')}
-              aria-current={m.date === state.today ? 'date' : undefined}
-            >
-              <span className="week-day num">
-                <span className="week-wd">{WEEKDAY_JA[weekdayOf(m.date)]}</span>
-                <span className="week-date">{formatJa(m.date).replace(/\(.\)$/, '')}</span>
-              </span>
-              <span className="week-names">
-                {m.kind === 'raku' ? <RakuBadge /> : null}
-                <span>{m.dishIds.length > 0 ? dishNames(state, catalog, m.dishIds) : '外食や買ってきたもの'}</span>
-              </span>
-              <span className="week-flags">
-                {m.date === state.today ? <span className="badge badge--today">今日</span> : null}
-                {m.status !== 'planned' ? <StatusBadge meal={m} /> : null}
-                {m.warnings.length > 0 ? (
-                  <span className="badge badge--warn">
-                    <Icon name="alert" size={13} />
-                    注意
-                  </span>
-                ) : null}
-              </span>
-            </li>
-          ))}
+          {meals.map((m) => {
+            // みんな外で食べる日は、料理の名前・ラク日・注意の印の代わりに「夕食なし」と出す。
+            const none = nobodyEats(state, m);
+            return (
+              <li
+                key={m.date}
+                className={cls('week-row', m.date === state.today && 'is-today')}
+                aria-current={m.date === state.today ? 'date' : undefined}
+              >
+                <span className="week-day num">
+                  <span className="week-wd">{WEEKDAY_JA[weekdayOf(m.date)]}</span>
+                  <span className="week-date">{formatJa(m.date).replace(/\(.\)$/, '')}</span>
+                </span>
+                <span className="week-names">
+                  {none ? (
+                    <span className="week-none">{NO_DINNER_TEXT}</span>
+                  ) : (
+                    <>
+                      {m.kind === 'raku' ? <RakuBadge /> : null}
+                      <span>{m.dishIds.length > 0 ? dishNames(state, catalog, m.dishIds) : '外食や買ってきたもの'}</span>
+                    </>
+                  )}
+                </span>
+                <span className="week-flags">
+                  {m.date === state.today ? <span className="badge badge--today">今日</span> : null}
+                  {m.status !== 'planned' && statusBadgeShown(state, m) ? <StatusBadge meal={m} /> : null}
+                  {m.warnings.length > 0 && !none ? (
+                    <span className="badge badge--warn">
+                      <Icon name="alert" size={13} />
+                      注意
+                    </span>
+                  ) : null}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       )}
       {canOpen ? (
@@ -93,8 +103,8 @@ function MealCard({ date, state, catalog }: { date: ISODate; state: AppState; ca
         <Icon name="bowl" size={18} />
         <span className="card-title">{formatJa(date)}の夕食</span>
         {meal?.date === state.today ? <span className="badge badge--today">今日</span> : null}
-        {meal?.kind === 'raku' ? <RakuBadge /> : null}
-        {meal && meal.status !== 'planned' ? <StatusBadge meal={meal} /> : null}
+        {meal?.kind === 'raku' && !nobodyEats(state, meal) ? <RakuBadge /> : null}
+        {meal && meal.status !== 'planned' && statusBadgeShown(state, meal) ? <StatusBadge meal={meal} /> : null}
       </header>
       {meal ? (
         <MealDetails state={state} catalog={catalog} meal={meal} />
@@ -111,7 +121,8 @@ function ShoppingCard({ date, state, handlers }: { date: ISODate; state: AppStat
     aisle,
     n: list ? list.items.filter((i) => i.aisle === aisle).length : 0,
   })).filter((x) => x.n > 0);
-  const left = list ? list.items.filter((i) => !i.checked).length : 0;
+  // 過ぎた買い物日のリストは、これからの献立に使う物だけを数える（エンジンの返事の「まだチェックしていない物（〇品）」と同じ）。
+  const left = list ? leftCount(state, list) : 0;
   return (
     <section className="card" data-card="shopping" aria-label={`${formatJa(date)}の買い物`}>
       <header className="card-head">
@@ -169,7 +180,8 @@ function AlternativesCard({ date, options, state, catalog }: { date: ISODate; op
 
 /**
  * 記録（作った・作らなかった）のある献立日の数。記録のない過ぎた日（unconfirmedDays）と、まだ来ていない日は数えない。
- * エンジンの振り返りの文（renderCardText の summary）と同じ数え方。
+ * エンジンの振り返りの文（renderCardText の summary）と同じ数え方。みんな外で食べる日は献立の日に数えないので、
+ * まだ来ていない日からも除く。
  */
 function recordedDays(state: AppState, weekStart: ISODate, plannedDays: number, unconfirmedDays: number): number {
   const end = addDays(weekStart, 6);
@@ -182,7 +194,8 @@ function recordedDays(state: AppState, weekStart: ISODate, plannedDays: number, 
           m.dishIds.length > 0 &&
           m.date >= state.today &&
           m.status !== 'cooked' &&
-          m.status !== 'skipped',
+          m.status !== 'skipped' &&
+          !nobodyEats(state, m),
       )
       .map((m) => m.date),
   ).size;
@@ -213,7 +226,7 @@ export function SummaryBody({ weekStart, state, catalog }: { weekStart: ISODate;
       )}
       {s.skippedOrImpossible > 0 ? (
         <div>
-          <dt>作れなかった日</dt>
+          <dt>予定どおり作れなかった日</dt>
           <dd className="num">{s.skippedOrImpossible}日</dd>
         </div>
       ) : null}

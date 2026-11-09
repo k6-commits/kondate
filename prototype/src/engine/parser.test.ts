@@ -41,8 +41,9 @@ const cases: [string, ParsedCommand[]][] = [
   ['今日のごはんは？', [{ type: 'show_today' }]],
   ['買い物リスト', [{ type: 'show_shopping' }]],
   ['使い方', [{ type: 'help' }]],
-  ['明日のごはんは？', [{ type: 'show_week' }]],
-  ['金曜の夕飯なんだっけ', [{ type: 'show_week' }]],
+  // 今日以外の1日の献立を聞かれたら、その日の献立（週の献立ではなく）
+  ['明日のごはんは？', [{ type: 'show_today', date: '2026-11-10' }]],
+  ['金曜の夕飯なんだっけ', [{ type: 'show_today', date: '2026-11-13' }]],
   // リクエスト
   ['金曜はカレーがいい', [{ type: 'request', date: '2026-11-13', dishId: 'curry' }]],
   ['金曜日は魚がいい', [{ type: 'request', date: '2026-11-13', protein: 'fish' }]],
@@ -58,7 +59,9 @@ const cases: [string, ParsedCommand[]][] = [
   ['水曜は夫が飲み会', [{ type: 'absence', date: '2026-11-11', memberRef: '夫' }]],
   ['パパは木曜いらない', [{ type: 'absence', date: '2026-11-12', memberRef: 'パパ' }]],
   ['上の子は明日いらない', [{ type: 'absence', date: '2026-11-10', memberRef: '上の子' }]],
-  ['たろうは金曜塾で遅い', [{ type: 'absence', date: '2026-11-13', memberRef: 'たろう' }]],
+  // 塾・部活・残業で遅くなるだけは、欠席にしない（人数も除外もそのまま。献立は変えずに送り方を返す）
+  ['たろうは金曜塾で遅い', [{ type: 'absence', date: '2026-11-13', memberRef: 'たろう', tentative: 'late' }]],
+  ['たろうは金曜塾でいらない', [{ type: 'absence', date: '2026-11-13', memberRef: 'たろう' }]],
   ['今日は外食', [{ type: 'absence', date: '2026-11-09', memberRef: 'みんな' }]],
   // 複数の命令
   ['卵切れた。水曜は夫が飲み会', [{ type: 'out_of_stock', ingredientId: 'egg' }, { type: 'absence', date: '2026-11-11', memberRef: '夫' }]],
@@ -202,9 +205,63 @@ describe('parseMessage：日付・否定・質問・頼む形', () => {
   });
 
   it('ふつうの言い方（今日はいらない・パス・元気ない・〇円・明日なに・何買えば）', () => {
-    for (const t of ['今日はいらない', '今日パスで', '作る元気ない', '今日は休みたい']) expect(p(t), t).toEqual([{ type: 'today_impossible' }]);
+    for (const t of ['今日パスで', '作る元気ない', '今日は休みたい']) expect(p(t), t).toEqual([{ type: 'today_impossible' }]);
+    // 人を書かない「今日はいらない」は、誰の分かを聞き返す（家族のだれかが送ったときに、全員のラク日にしない）
+    expect(p('今日はいらない')).toEqual([{ type: 'absence', date: '2026-11-09', memberRef: '' }]);
     expect(p('キャベツ98円')).toEqual([{ type: 'sale', ingredientId: 'cabbage' }]);
-    expect(p('明日なに？')).toEqual([{ type: 'show_week' }]);
+    expect(p('明日なに？')).toEqual([{ type: 'show_today', date: '2026-11-10' }]);
     expect(p('何買えばいい？')).toEqual([{ type: 'show_shopping' }]);
+    expect(p('明日何買えばいい？')).toEqual([{ type: 'show_shopping', date: '2026-11-10' }]);
+  });
+});
+
+describe('parseMessage：みんな外で食べる日を戻す言い方', () => {
+  const p = (t: string) => parseMessage(t, ctx);
+  const FRI = '2026-11-13';
+  const back = [{ type: 'absence', date: FRI, memberRef: 'みんな', cancel: true }];
+
+  it('「金曜はみんないる」「金曜はやっぱり家で食べる」「金曜の外食なくなった」「外食しない」「外食はやめた」は取り消し', () => {
+    for (const t of [
+      '金曜はみんないる',
+      '金曜はやっぱりみんないる',
+      '金曜はやっぱり家で食べる',
+      '金曜は家で食べる',
+      'やっぱり金曜は家で食べます',
+      '金曜日は家で食べることになった',
+      '金曜はやっぱりうちで食べる',
+      '金曜の外食なくなった',
+      '金曜はやっぱり外食しない',
+      '金曜の外食はやめた',
+      '金曜は外食をやめます',
+      '金曜は家族みんな家で食べます',
+      '金曜は家で食べる予定です',
+      '金曜は家で食べるよ',
+      '金曜は外食しないから',
+    ]) {
+      expect(p(t), t).toEqual(back);
+    }
+    // 返事の日付の書き方（6日より先は「11/20(金)」）でも読める
+    expect(p('11/20(金)はみんないる')).toEqual([{ type: 'absence', date: '2026-11-20', memberRef: 'みんな', cancel: true }]);
+  });
+
+  it('「家で食べない」「家で食べるかな？」「家で食べたら」「家で食べるのは無理」「外食しないといけない」は取り消しにしない', () => {
+    for (const t of [
+      '金曜は家で食べない',
+      '金曜は家で食べるかな？',
+      '金曜も家で食べたらいいのに',
+      '金曜は家で食べるのは無理',
+      '金曜は家で食べる時間がない',
+      '家で食べる日を増やしたい',
+      '金曜は外食しないといけない',
+      '金曜は外食しなくちゃ',
+      '金曜は外食しないか',
+    ]) {
+      expect(p(t).some((c) => c.type === 'absence' && c.cancel), t).toBe(false);
+    }
+    // 外で食べる話は、今までどおり欠席
+    expect(p('金曜は外食しないといけない')).toEqual([{ type: 'absence', date: FRI, memberRef: 'みんな' }]);
+    // 「みんな外食」は今までどおり欠席（家族みんなは1人ずつ数えない）
+    expect(p('金曜はみんな外食')).toEqual([{ type: 'absence', date: FRI, memberRef: 'みんな' }]);
+    expect(p('金曜は家族みんなで外食')).toEqual([{ type: 'absence', date: FRI, memberRef: 'みんな' }]);
   });
 });

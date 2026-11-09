@@ -2,7 +2,7 @@
 // エンジンのテストは小さなフィクスチャで書かれているので、ここでは本物のマスタ（defaultCatalog）と
 // デモの家族（DEMO_ONBOARDING：大人2、小学生1（卵アレルギー）、幼児1。買い物は月・木）で確かめる。
 // UI・サーバーと同じく、公開API（src/engine/index.ts と src/data/index.ts）だけを使う。
-import type { AppState, Exclusion, ISODate, OnboardingInput, ParsedCommand } from '../engine/index';
+import type { AppState, ChatMessage, Exclusion, ISODate, OnboardingInput, ParsedCommand } from '../engine/index';
 import {
   addDays,
   advanceDay,
@@ -13,8 +13,10 @@ import {
   handleUserText,
   householdNotices,
   parseMessage,
+  renderCardText,
   weekStartOf,
   weekdayOf,
+  weeklySummary,
 } from '../engine/index';
 import { DEMO_ONBOARDING, defaultCatalog as catalog } from '../data/index';
 import {
@@ -270,6 +272,123 @@ describe('「@きめとく 水曜は夫が飲み会」', () => {
   });
 });
 
+describe('1つの書き込みで提案が2つ以上できるとき（同じ日に2つ目の提案を出さない）', () => {
+  const shown = (replies: ChatMessage[]) =>
+    replies.flatMap((m) => (m.actions ?? []).flatMap((a) => (a.action.type === 'accept_proposal' ? [a.action.proposalId] : [])));
+  const MESSAGES: [string, ParsedCommand[]?][] = [
+    ['鶏むねが安い。豚こまも安い'],
+    ['鶏むねと豚こまが安い'],
+    ['鶏むねが安い。鶏むねが安い'],
+    ['鶏むねが安い。大根をもらった'],
+    ['鶏むねが安い。豚こまも安い。さばも安い'],
+    ['鶏ももが安い。鶏むねも安い'],
+    ['鶏むねが安い。鶏ももを買った'],
+    ['鶏むねが安い。金曜はカレーがいい'],
+    ['鶏むねが安い。金曜はみんな外食'],
+    ['さばが安い。今日は無理'],
+    ['（LLM）', [{ type: 'sale', ingredientId: 'chicken_breast' }, { type: 'sale', ingredientId: 'chicken_breast' }]],
+  ];
+  // 今日が月〜金（金曜は献立の日が残り少ない）。前の書き込みの提案が残っているときも。
+  const STARTS = [0, 1, 2, 3, 4].map((i) => addDays(MONDAY, i));
+
+  it.each(STARTS)('%s：返事に出した提案は、すべて使え、日が重ならない', (start) => {
+    const fresh = createInitialState(DEMO_ONBOARDING, catalog, start);
+    const pending = handleUserText(fresh, catalog, '豚バラが安い').state;
+    for (const s0 of [fresh, pending]) {
+      for (const [text, parsed] of MESSAGES) {
+        const r = handleUserText(s0, catalog, text, parsed);
+        const ids = shown(r.replies);
+        const dates = ids.map((id) => r.state.proposals.find((p) => p.id === id)?.date ?? 'gone');
+        expect(dates, text).not.toContain('gone');
+        expect(new Set(dates).size, text).toBe(dates.length);
+        for (const id of ids) {
+          const a = applyAction(r.state, catalog, { type: 'accept_proposal', proposalId: id });
+          expect(a.replies[0].text, `${start} ${text}`).toContain('に替えました');
+        }
+        expect(replyProblems(r.replies), text).toEqual([]);
+      }
+    }
+  });
+
+  it('11/10（火）「鶏むねが安い。豚こまも安い」：豚こまの替えられる日（金曜）は鶏むねの案と重なるので、2つ目は出さずにそう伝える', () => {
+    const r = handleUserText(createInitialState(DEMO_ONBOARDING, catalog, '2026-11-10'), catalog, '鶏むねが安い。豚こまも安い');
+    expect(r.replies).toHaveLength(2);
+    expect(r.replies[0].text).toContain('11/13(金)のねぎ塩豚を、鶏むねとブロッコリーの塩炒めに替えますか？');
+    expect(r.replies[1].text).toBe(
+      '豚こま切れ肉、いいですね。替えられる日（11/13(金)）には、上で別の案を出しています。\n豚こま切れ肉の案にしたいときは、もう一度「豚こま切れ肉が安い」と送ってください。',
+    );
+    expect(r.replies[1].actions).toBeUndefined();
+    expect(r.state.proposals).toHaveLength(1);
+  });
+});
+
+describe('「@きめとく 金曜はみんな外食」（夕食なしの日）', () => {
+  const FRI = '2026-11-13';
+  const NO_DINNER = '夕食なし（みんな外で食べる）';
+  const start = createInitialState({ ...DEMO_ONBOARDING, plan: 'paid' }, catalog, '2026-11-10');
+  const out = handleUserText(start, catalog, '@きめとく 金曜はみんな外食');
+  const forFriday = (s: AppState) =>
+    s.shopping.filter((l) => l.date >= s.today).flatMap((l) => l.items.filter((i) => i.forDates.includes(FRI)).map((i) => i.label));
+
+  it('返事とカードは「夕食なし」（0人分・作り方は出さない）。戻し方を伝え、買い物リストから外す', () => {
+    expect(out.replies).toHaveLength(1);
+    const text = `${out.replies[0].text}\n${renderCardText(out.state, catalog, out.replies[0].card!)}`;
+    expect(text).toContain('予定が変わったら「金曜はみんないる」と送ってください。');
+    expect(text).toContain(NO_DINNER);
+    expect(text).not.toMatch(/0人分|はいません|作り方|理由：/);
+    expect(renderCardText(out.state, catalog, { kind: 'week', weekStart: MONDAY })).toContain(`金 ${NO_DINNER}`);
+    expect(forFriday(start).length).toBeGreaterThan(0);
+    expect(forFriday(out.state)).toEqual([]);
+    expect(dailyViolations(out.state, catalog)).toEqual([]);
+    expect(replyProblems(out.replies)).toEqual([]);
+  });
+
+  it('金曜の配信・翌日の「作りましたか？」はなく、振り返りの献立日にも数えない', () => {
+    let s = out.state;
+    const log: ChatMessage[] = [];
+    for (let i = 0; i < 4; i++) {
+      const step = advanceDay(s, catalog); // 11/11〜11/14
+      s = step.state;
+      log.push(...step.replies);
+    }
+    const about = (m: ChatMessage) => m.card?.kind === 'meal' && m.card.date === FRI;
+    expect(log.filter(about)).toEqual([]);
+    expect(log.some((m) => m.text.startsWith('昨日の') && m.at.startsWith('2026-11-14'))).toBe(false);
+    expect(mealOn(s, FRI)!.status).toBe('planned');
+    expect(weeklySummary(s, catalog, MONDAY).plannedDays).toBe(3); // 火〜木（月曜は始めた日の前）
+  });
+
+  it('「金曜はやっぱり家で食べる」で、量と買い物リストが戻る', () => {
+    const r = handleUserText(out.state, catalog, '@きめとく 金曜はやっぱり家で食べる');
+    expect(mealOn(r.state, FRI)!.servings).toBe(3.2);
+    expect(mealOn(r.state, FRI)!.dishIds).toEqual(mealOn(start, FRI)!.dishIds);
+    expect(forFriday(r.state)).toEqual(forFriday(start));
+    expect(r.replies[0].text).toContain('みんな家で食べるんですね');
+    expect(renderCardText(r.state, catalog, { kind: 'meal', date: FRI })).toContain('4人分（大人換算3.2）');
+  });
+
+  it('週を作り直しても、金曜は作り直さない（食べる人のいない日に、卵の料理などを入れない）', () => {
+    let s = out.state;
+    for (let i = 0; i < 4; i++) {
+      s = applyAction({ ...s, seq: s.seq + 1 }, catalog, { type: 'regenerate_week', weekStart: MONDAY }).state;
+      expect(mealOn(s, FRI)).toEqual(mealOn(out.state, FRI));
+      expect(dailyViolations(s, catalog)).toEqual([]);
+    }
+    const back = handleUserText(s, catalog, '@きめとく 金曜はみんないる').state;
+    expect(eggDishesOf(back, catalog).filter((d) => d.startsWith(FRI))).toEqual([]);
+    expect(mealOn(back, FRI)!.dishIds).toEqual(mealOn(start, FRI)!.dishIds);
+  });
+
+  it('金曜の朝に「今日はみんな外食」：木曜のリストに残る金曜の分は、まだ買う物に数えない', () => {
+    let s = createInitialState(DEMO_ONBOARDING, catalog, MONDAY);
+    for (let i = 0; i < 4; i++) s = advanceDay(s, catalog).state; // 11/13(金)
+    const shop = (st: AppState) => handleUserText(st, catalog, '買い物リスト').replies.map((m) => m.text).join('\n');
+    expect(shop(s)).toContain('11/12(木)のリストで、まだチェックしていない物があります');
+    const away = handleUserText(s, catalog, '@きめとく 今日はみんな外食').state;
+    expect(shop(away)).not.toContain('まだチェックしていない物');
+  });
+});
+
 describe('話し言葉の解釈（本物のマスタ）', () => {
   const s = createInitialState(DEMO_ONBOARDING, catalog, MONDAY);
   const ctx = { today: MONDAY, members: s.household.members, catalog };
@@ -278,7 +397,7 @@ describe('話し言葉の解釈（本物のマスタ）', () => {
     ['今日のご飯は？', [{ type: 'show_today' }]],
     ['晩ごはん何？', [{ type: 'show_today' }]],
     ['今週の献立', [{ type: 'show_week' }]],
-    ['明日のごはんは？', [{ type: 'show_week' }]],
+    ['明日のごはんは？', [{ type: 'show_today', date: addDays(MONDAY, 1) }]],
     ['買い物リスト', [{ type: 'show_shopping' }]],
     ['@きめとく 今日は無理', [{ type: 'today_impossible' }]],
     ['@きめとく 鶏むねが安い', [{ type: 'sale', ingredientId: 'chicken_breast' }]],

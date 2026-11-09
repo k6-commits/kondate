@@ -11,14 +11,13 @@ import {
   createInitialState,
   formatJa,
   handleUserText,
-  parseMessage,
   weekStartOf,
   weekdayOf,
 } from '../engine';
 import { DEMO_ONBOARDING, defaultCatalog } from '../data';
-import { AiReader } from './ai';
+import { AiReader, readableByRules } from './ai';
 import type { AiMode, AiReading } from './ai';
-import { adultsOf, cls, firstLine, japanToday } from './lib';
+import { adultsOf, cls, firstLine, japanToday, nobodyEatsOn } from './lib';
 import { clearStored, readStoredState, readUiPrefs, writeStoredState, writeUiPrefs } from './storage';
 import { AboutPanel } from './components/AboutPanel';
 import { HouseholdSheet } from './components/HouseholdSheet';
@@ -86,20 +85,50 @@ function focusedElement(): HTMLElement | null {
   return el instanceof HTMLElement && el !== document.body ? el : null;
 }
 
+/** 画面に出ているか（display: none の中や hidden でない）。CSS のない環境（テスト）では、出ている扱い。 */
+function isShown(el: HTMLElement): boolean {
+  for (let n: HTMLElement | null = el; n; n = n.parentElement) {
+    if (n.hidden) return false;
+    try {
+      if (window.getComputedStyle(n).display === 'none') return false;
+    } catch {
+      // 調べられなければ、出ている扱い。
+    }
+  }
+  return true;
+}
+
+/** フォーカスを移せる要素か（ページの中にあり、inert の中になく、画面に出ている）。 */
+function focusable(e: Element | null): e is HTMLElement {
+  return e instanceof HTMLElement && e.isConnected && !e.closest('[inert]') && isShown(e);
+}
+
+/** 今フォーカスが、使える要素にあるか（BODY や、隠れた・inert の要素にあるときは false）。 */
+function hasUsableFocus(): boolean {
+  const now = document.activeElement;
+  return !!now && now !== document.body && focusable(now);
+}
+
 /**
- * シートや案内を閉じたあと、開いたときのボタンにフォーカスを戻す。そのボタンがもうなければ fallback の要素へ。
- * ほかの要素にフォーカスがあるとき（閉じる前に別の所を押した）は動かさない。
+ * シートや案内を閉じたあと、開いたときのボタンにフォーカスを戻す。そのボタンがもうない・隠れているときは、fallbacks の
+ * 最初に使える要素へ。ほかの要素にフォーカスがあるとき（閉じる前に別の所を押した）は動かさない。
  */
-function restoreFocus(ref: { current: HTMLElement | null }, fallback: string): void {
+function restoreFocus(ref: { current: HTMLElement | null }, fallbacks: string[]): void {
   const el = ref.current;
   ref.current = null;
-  if (typeof document === 'undefined') return;
-  const now = document.activeElement;
-  if (now instanceof HTMLElement && now !== document.body && now.isConnected && !now.closest('[inert]')) return;
-  const usable = (e: HTMLElement | null): e is HTMLElement => !!e && e.isConnected && !e.closest('[inert]');
-  const target = usable(el) ? el : document.querySelector<HTMLElement>(fallback);
-  if (usable(target)) target.focus();
+  if (typeof document === 'undefined' || hasUsableFocus()) return;
+  const target = [el, ...fallbacks.map((s) => document.querySelector<HTMLElement>(s))].find(focusable);
+  target?.focus();
 }
+
+/** 広い画面で左に出る案内の見出し（tabindex=-1）。幅が広がって重ねた案内が閉じたら、ここへフォーカスを移す。 */
+const ABOUT_COL_HEADING = '.about-col .about-title';
+
+/** 広い画面で出ない所（styles.css・shell.css の @media (min-width: 900px) と、幅が広がると閉じる重ねた案内）。 */
+const HIDDEN_WHEN_WIDE = '.about-toggle, .demo-hint, .about-overlay';
+
+/** 狭い画面で出ない所（左の案内）。 */
+const HIDDEN_WHEN_NARROW = '.about-col';
 
 /**
  * 作り直しのあとも残った、自分で替えた日・特売で替えた日（エンジンの regenerate_week は、まだ安全・旬なら残す）。
@@ -112,14 +141,32 @@ function keptChangedDays(before: AppState, after: AppState): ISODate[] {
     .map((m) => m.date);
 }
 
-/** その週に、作り直せる献立の日があるか（エンジンの regenerate_week と同じ考え方）。 */
+/**
+ * 家族の変更で作り直した日（keepSafe の作り直しのあと、料理が変わった、今日以降の日）。
+ * 知らせの文を、トークの返事「11/11(水)は、家族の変更に合わせて作り直しました。」とそろえるために使う。
+ */
+function redoneDays(before: AppState, after: AppState): ISODate[] {
+  return after.meals
+    .filter((m) => m.date >= after.today && m.status === 'planned')
+    .filter((m) => {
+      const old = before.meals.find((b) => b.date === m.date);
+      return !old || old.dishIds.join('|') !== m.dishIds.join('|');
+    })
+    .map((m) => m.date);
+}
+
+/**
+ * その週に、作り直せる献立の日があるか（エンジンの regenerate_week と同じ考え方）。
+ * みんな外で食べる日（家で食べる人がいない日）は、エンジンが作り直さずに残すので数えない
+ * （その日しか残っていなければ、作り直さずに買い物リストだけを直す）。
+ */
 function hasDaysToPlan(s: AppState, weekStart: ISODate): boolean {
   const todayMeal = s.meals.find((m) => m.date === s.today);
   const todayFixed = !!todayMeal && (todayMeal.status === 'cooked' || todayMeal.status === 'skipped');
   const from = weekStart > s.today ? weekStart : todayFixed ? addDays(s.today, 1) : s.today;
   const end = addDays(weekStart, 6);
   for (let d = from; d <= end; d = addDays(d, 1)) {
-    if (s.household.settings.dinnerWeekdays.includes(weekdayOf(d))) return true;
+    if (s.household.settings.dinnerWeekdays.includes(weekdayOf(d)) && !nobodyEatsOn(s, d)) return true;
   }
   return false;
 }
@@ -253,14 +300,45 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
   useEffect(() => {
     const was = prevSheetOpen.current;
     prevSheetOpen.current = sheetOpen;
-    if (was && !sheetOpen && route === 'talk') restoreFocus(sheetReturn, '.talk-layer .menu-toggle');
+    if (was && !sheetOpen && route === 'talk') restoreFocus(sheetReturn, ['.talk-layer .menu-toggle']);
   }, [sheetOpen, route]);
   const prevAboutVisible = useRef(aboutVisible);
   useEffect(() => {
     const was = prevAboutVisible.current;
     prevAboutVisible.current = aboutVisible;
-    if (was && !aboutVisible && route !== 'start') restoreFocus(aboutReturn, '.about-toggle');
-  }, [aboutVisible, route]);
+    if (!was || aboutVisible || route === 'start') return;
+    // 幅が広がって閉じたときは、開いたボタン（「?」「試し方を見る」）は出ていないので、左に出た案内の見出しへ移す。
+    if (wide) aboutReturn.current = null;
+    restoreFocus(aboutReturn, wide ? [ABOUT_COL_HEADING] : ['.about-toggle']);
+  }, [aboutVisible, route, wide]);
+
+  // 幅が変わって、フォーカスのあった所が隠れた・消えたとき（BODY に落ちないように）、同じ案内のある見える所へ移す。
+  // 広い画面：「?」「試し方を見る」と重ねた案内は出ない → 左の案内の見出しへ。
+  // 狭い画面：左の案内は出ない → 同じ案内を開く「?」へ（初回設定の画面なら、その見出しへ）。
+  const lastFocus = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const onFocusIn = (e: FocusEvent) => {
+      if (e.target instanceof HTMLElement) lastFocus.current = e.target;
+    };
+    document.addEventListener('focusin', onFocusIn);
+    return () => document.removeEventListener('focusin', onFocusIn);
+  }, []);
+  const prevWide = useRef(wide);
+  useEffect(() => {
+    const was = prevWide.current;
+    prevWide.current = wide;
+    if (was === wide) return;
+    const hidden = wide ? HIDDEN_WHEN_WIDE : HIDDEN_WHEN_NARROW;
+    const now = document.activeElement;
+    const nowHidden = now instanceof HTMLElement && now !== document.body && !!now.closest(hidden);
+    // フォーカスがほかの見える所にあれば動かさない。BODY に落ちていたら、落ちる前の所が今の幅で隠れる所だったときだけ移す。
+    if (!nowHidden && (hasUsableFocus() || !lastFocus.current?.closest(hidden))) return;
+    const targets = wide ? [ABOUT_COL_HEADING] : ['.about-toggle', '.phone .ob-title'];
+    targets
+      .map((s) => document.querySelector<HTMLElement>(s))
+      .find((e) => focusable(e) && !e.closest(hidden))
+      ?.focus();
+  }, [wide]);
 
   // Esc でシートや案内を閉じる（日本語入力の変換中の Esc は除く）。
   useEffect(() => {
@@ -274,11 +352,10 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
   });
 
   /** 新しく増えた利用者の発言に、送った人を記録する（画面だけの情報）。 */
-  const recordSenders = (prev: AppState, next: AppState) => {
+  const recordSenders = (prev: AppState, next: AppState, who = senderRef.current) => {
     const before = new Set(prev.chat.map((m) => m.id));
     const added = next.chat.filter((m) => m.from === 'user' && !before.has(m.id));
     if (added.length === 0) return;
-    const who = senderRef.current;
     setSenders((s) => ({ ...s, ...Object.fromEntries(added.map((m) => [m.id, who])) }));
   };
 
@@ -296,12 +373,13 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
     const text = `@きめとく ${trimmed}`;
     const cur = stateRef.current;
     const epoch = epochRef.current;
+    // 送る人は、送ったときの人（AI の読み取り中に「送る人」を替えても、この書き込みは送ったときの人のもの）。
+    const sender = senderRef.current;
     let reading: AiReading = { commands: null, source: 'rules' };
     if (ai.available && aiMode !== 'off') {
-      const rules = parseMessage(text, { today: cur.today, members: cur.household.members, catalog });
-      const onlyUnknown = rules.every((c) => c.type === 'unknown');
       // おまかせ：ルールで読めないときだけ AI（利用者の Claude の利用枠を使うので、呼ぶ回数を抑える）。
-      if (aiMode === 'always' || onlyUnknown) {
+      // 命令だけでなく、前日の確認への答え（「作った」「昨日は無理だった」）と短いあいさつも、ルールで読めたとみなす。
+      if (aiMode === 'always' || !readableByRules(cur, catalog, text, sender)) {
         busyRef.current = true;
         setPendingText(trimmed);
         try {
@@ -319,8 +397,9 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
       }
     }
     const prev = stateRef.current;
-    const r = handleUserText(prev, catalog, text, reading.commands ?? undefined);
-    recordSenders(prev, r.state);
+    // 送る人を渡す：人を書かない「明日飲み会」「今日はいらない」は、送った人の欠席にする（エンジンの UserTextOptions）。
+    const r = handleUserText(prev, catalog, text, reading.commands ?? undefined, { senderId: sender || undefined });
+    recordSenders(prev, r.state, sender);
     const last = r.replies[r.replies.length - 1];
     if (last) setMarks((m) => ({ ...m, [last.id]: reading.source }));
     commit(r.state);
@@ -366,7 +445,8 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
       const weeks = [thisWeek, ...(s.meals.some((m) => weekStartOf(m.date) === nextWeek) ? [nextWeek] : [])];
       for (const w of weeks) {
         if (!hasDaysToPlan(s, w)) continue;
-        s = applyAction(s, catalog, { type: 'regenerate_week', weekStart: w }).state;
+        // 家族の変更（keepSafe）は、今の家族で出せなくなった日だけを作り直す。設定の変更は週を作り直す。
+        s = applyAction(s, catalog, { type: 'regenerate_week', weekStart: w, ...(change.keepSafe ? { keepSafe: true } : {}) }).state;
         regenerated = true;
       }
       if (!regenerated) s = { ...s, shopping: buildShoppingLists(s, catalog) };
@@ -375,9 +455,21 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
       s = { ...s, chat: s.chat.filter((m) => m.from !== 'user' || before.has(m.id)) };
     }
     commit(s);
-    const kept = regenerated ? keptChangedDays(prev, s) : [];
-    const keptText = kept.length > 0 ? `自分で替えた日（${kept.map(formatJa).join('・')}）は、そのままです。` : '';
-    showToast(regenerated ? `${change.toast}献立も作り直しました。${keptText}` : change.toast);
+    if (!regenerated) {
+      showToast(change.toast);
+    } else if (change.keepSafe) {
+      // トークの返事（エンジンの regenerate_week の keepSafe）と同じ言い方にする。
+      const redone = redoneDays(prev, s);
+      showToast(
+        redone.length > 0
+          ? `${change.toast}${redone.map(formatJa).join('・')}は、家族の変更に合わせて作り直しました。ほかの日は、そのままです。`
+          : `${change.toast}家族の変更に当たる料理はないので、献立はそのままです。人数と買い物リストは直しました。`,
+      );
+    } else {
+      const kept = keptChangedDays(prev, s);
+      const keptText = kept.length > 0 ? `自分で替えた日（${kept.map(formatJa).join('・')}）は、そのままです。` : '';
+      showToast(`${change.toast}献立も作り直しました。${keptText}`);
+    }
   };
 
   const startWith = (input: OnboardingInput, today: ISODate, message: string) => {

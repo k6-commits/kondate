@@ -39,6 +39,15 @@ export function eatingMembers(household: Household, absent: string[] = []): Memb
   return household.members.filter((m) => m.ageBand !== 'infant' && !absent.includes(m.id));
 }
 
+/**
+ * みんな外で食べる日か（その日に家で食べる人がいない。乳児だけが家にいる日も含む）。
+ * 夕食を作らない日として扱う：量・作り方・［作った］［別のに］を出さず、買い物リストにも載せず、作ったかどうかも聞かない。
+ * 献立（dishIds）と status はそのまま残す（だれかが家で食べることになったら、そのまま戻す）。
+ */
+export function everyoneOut(household: Household, meal: Pick<PlannedMeal, 'absentMemberIds'>): boolean {
+  return eatingMembers(household, meal.absentMemberIds).length === 0;
+}
+
 /** SERVING_WEIGHT の合計（欠席者を除く。乳児は 0）。 */
 export function servingsFor(household: Household, absent: string[] = []): number {
   const sum = household.members

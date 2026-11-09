@@ -46,10 +46,12 @@ describe('今日は無理', () => {
     const today = meal(r.state, MONDAY);
     expect(today.kind).toBe('raku');
     expect(findDish(r.state, catalog, today.dishIds[0])?.role).toBe('raku');
-    expect(today.changedBy).toBe('replan');
+    // 今日は無理は家族が決めたこと：週の作り直し（設定を変えたとき）でも残すように、changedBy は user。
+    expect(today.changedBy).toBe('user');
     const moved = r.state.meals.find((m) => m.date > MONDAY && m.dishIds[0] === original.dishIds[0])!;
     expect(moved).toBeDefined();
     expect(moved.kind).toBe('normal');
+    expect(moved.changedBy).toBe('user');
     expect(meal(state, moved.date).kind).toBe('raku'); // もとはラク日だった日
     expect(r.state.meals.filter((m) => m.kind === 'raku')).toHaveLength(1);
   });
@@ -179,7 +181,7 @@ describe('欠席（@きめとく 水曜は夫が飲み会）', () => {
 
   it('誰か分からなければ聞き返す', () => {
     const res = handleUserText(state, catalog, '水曜はおじいちゃんがいない');
-    expect(res.replies[0].text).toMatch(/分かりませんでした|読み取れませんでした|誰がいないか/);
+    expect(res.replies[0].text).toMatch(/分かりませんでした|読み取れませんでした|誰が食べませんか/);
     expect(meal(res.state, '2026-11-11').absentMemberIds).toEqual([]);
   });
 });

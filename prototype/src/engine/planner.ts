@@ -24,6 +24,7 @@ import {
   allDishes,
   dinnerDatesOfWeek,
   eatingMembers,
+  everyoneOut,
   findDishIn,
   hasKids,
   ingredientsOf,
@@ -143,7 +144,9 @@ export function makeEnv(state: AppState, catalog: Catalog, exclude: Set<ISODate>
     for (const id of r.dishIds) addEaten(env, id, r.date);
   }
   for (const m of state.meals) {
-    if (exclude.has(m.date) || m.status === 'skipped') continue;
+    // 作らなかった日と、みんな外で食べて過ぎた日は、食べていない（その主菜は、また献立に入れられる）。
+    // これからのみんな外で食べる日は、家で食べることになったら戻るので、予定として数える。
+    if (exclude.has(m.date) || m.status === 'skipped' || (m.date < state.today && everyoneOut(household, m))) continue;
     const dishes = m.dishIds.map((id) => findDishIn(household, catalog, id)).filter((d): d is Dish => !!d);
     env.byDate.set(m.date, { kind: m.kind, dishes });
     for (const id of m.dishIds) addEaten(env, id, m.date);
@@ -910,10 +913,10 @@ export function generateWeekMeals(state: AppState, catalog: Catalog, weekStart: 
   return planWeek(state, catalog, weekStart, fromDate);
 }
 
-/** 公開API：その日の差し替え候補（既定2つ）。主菜のたんぱく源が重ならないようにする。 */
+/** 公開API：その日の差し替え候補（既定2つ）。主菜のたんぱく源が重ならないようにする。みんな外で食べる日は候補なし。 */
 export function alternativesFor(state: AppState, catalog: Catalog, date: ISODate, count = 2): string[][] {
   const meal = mealOn(state, date);
-  if (!meal || count <= 0) return [];
+  if (!meal || count <= 0 || everyoneOut(state.household, meal)) return [];
   const env = makeEnv(state, catalog, new Set([date]), seedFrom(`${state.household.id}${date}alt`));
   const slot = makeSlot(env, date, meal.absentMemberIds);
   const current = meal.dishIds[0];

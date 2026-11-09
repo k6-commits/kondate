@@ -6,6 +6,7 @@ import {
   allergenName,
   eatingMembers,
   effectiveExclusions,
+  everyoneOut,
   findDishIn,
   ingredientsOf,
   isFavorite,
@@ -34,10 +35,83 @@ import { setStock } from './state';
 import { addBotMessage, nextId, normalizeJa, uniq } from './util';
 import { seedFrom } from './rng';
 import { BTN_SHOPPING, BTN_WEEK, addWeekMessage, mealActions } from './messages';
-import { dateLabel, dishName, mealTitle, namesLine, servingsText } from './text';
+import { backHomeHint, dateLabel, dayWord, dishName, mealTitle, namesLine, servingsText } from './text';
 
 function label(s: AppState, date: ISODate): string {
   return dateLabel(s.today, date);
+}
+
+/** 続いた日か（「明日から木曜まで」と書ける）。 */
+function consecutive(days: ISODate[]): boolean {
+  return days.every((d, i) => i === 0 || d === addDays(days[i - 1], 1));
+}
+
+/** いくつかの日の言い方（返事の文）：「明日から11/12(木)まで」「明日・11/13(金)」。 */
+function daysLabel(s: AppState, days: ISODate[]): string {
+  if (days.length === 1) return label(s, days[0]);
+  return consecutive(days) ? `${label(s, days[0])}から${label(s, days[days.length - 1])}まで` : days.map((d) => label(s, d)).join('・');
+}
+
+/** いくつかの日の書き方（書き込みの例。parseMessage で同じ日に読める形）：「明日から木曜まで」「明日と金曜」。 */
+function daysWord(s: AppState, days: ISODate[]): string {
+  if (days.length === 1) return dayWord(s.today, days[0]);
+  return consecutive(days)
+    ? `${dayWord(s.today, days[0])}から${dayWord(s.today, days[days.length - 1])}まで`
+    : days.map((d) => dayWord(s.today, d)).join('と');
+}
+
+/** 家で食べる人が1人の家族か（「みんな」と言わない）。 */
+function solo(s: AppState): boolean {
+  return eatingMembers(s.household).length <= 1;
+}
+
+/**
+ * 1つの書き込み（またはボタン）を処理するあいだだけ使う情報（DESIGN.md 3-9）。
+ * offered：この返事で、もう選んでもらう案（提案の［替える］［そのまま］、別の案）を出した日。
+ * 提案は日ごとに1つなので、同じ返事の中で同じ日にあとから提案を出すと、前の提案が消えて、そのボタンが使えなくなる。
+ * あとの特売・在庫・リクエストは、案のない別の日を探す（なければ、上の案と重なると短く伝える）。
+ */
+export interface Turn {
+  offered: Set<ISODate>;
+  /**
+   * この返事で「もう〇〇の予定です」と、頼まれたとおりだと答えた日。あとの特売・在庫の案で、その料理を替えない
+   * （「カレー食べたい。鶏むねが安い」で、キーマカレーの日を鶏むねの料理に替える案を出さない）。
+   */
+  kept: Set<ISODate>;
+  /** 書き込みに書いてあった日（「今日はパパもいる」の今日）。日付を書かない取り消しと見分けるため。 */
+  written: Set<ISODate>;
+  /** 書き込みの本文（「出張なくなった」のように、何日か続く予定の取り消しを見分けるため）。 */
+  text: string;
+}
+
+export function newTurn(written: Iterable<ISODate> = [], text = ''): Turn {
+  return { offered: new Set(), kept: new Set(), written: new Set(written), text };
+}
+
+/** 何日か続く予定（出張・旅行・帰省など）。日付のない取り消しで、続いた欠席の日をまとめて取り消す。 */
+const MULTI_DAY_EVENT = /出張|しゅっちょう|旅行|りょこう|帰省|きせい|入院|にゅういん|合宿|がっしゅく|遠征|えんせい|キャンプ|単身赴任/;
+
+/** 特売・在庫の案を出さない日（この返事で案を出した日と、頼まれたとおりだと答えた日）。 */
+function busyDays(turn: Turn): Set<ISODate> {
+  return new Set([...turn.offered, ...turn.kept]);
+}
+
+/**
+ * 上で案を出した日と重なるときの返事の文（what：その日の言い方）。2つ目の案は出さず、こちらにしたいときの送り方を添える。
+ * 次の書き込みでは、前の書き込みの案は置き換わるので、それだけを送り直せば、こちらの案になる
+ * （書き込み全体を送り直すと、また同じ返事になるため、送る言葉を示す）。
+ * again：送り直す言葉（「豚こま切れ肉が安い」）と、その案の呼び方。なければ「このリクエスト」。
+ */
+function offeredText(what: string, again?: { name: string; words: string }): string {
+  const how = again
+    ? `${again.name}の案にしたいときは、もう一度「${again.words}」と送ってください。`
+    : 'このリクエストにしたいときは、それだけをもう一度送ってください。';
+  return `${what}には、上で別の案を出しています。\n${how}`;
+}
+
+/** みんな外で食べる日（夕食なし）に、作る・替える頼みが来たときの返事。家で食べることになったときの戻し方も添える。 */
+function noDinnerReply(s: AppState, date: ISODate): void {
+  addBotMessage(s, `${label(s, date)}は、みんな外で食べる日です（夕食なし）。\n${backHomeHint(s.today, date, solo(s))}`, { actions: [BTN_WEEK] });
 }
 
 export function replaceMeal(s: AppState, meal: PlannedMeal): void {
@@ -56,9 +130,19 @@ function ingIdsOf(s: AppState, dish: Dish): string[] {
   return ingredientsOf(s.household, dish).map((di) => di.ingredientId);
 }
 
+/** 家族が自分で決めた献立か（自分で替えた・特売で替えた・今日は無理で決めた日）。特売・在庫・日付のないリクエストの提案では、後回しにする。 */
+function userDecided(meal: PlannedMeal): boolean {
+  return meal.changedBy === 'user' || meal.changedBy === 'sale';
+}
+
 /** 変えてよい献立か（今日以降で、まだ作っていない）。 */
 function editable(s: AppState, meal: PlannedMeal | undefined): meal is PlannedMeal {
   return !!meal && meal.date >= s.today && (meal.status === 'planned' || meal.status === 'unconfirmed');
+}
+
+/** 家で夕食を作る、変えてよい献立か（みんな外で食べる日を除く）。特売・在庫・リクエストの提案や、食材を使う日の案内は、この日だけ。 */
+function cookable(s: AppState, meal: PlannedMeal | undefined): meal is PlannedMeal {
+  return editable(s, meal) && !everyoneOut(s.household, meal);
 }
 
 /** 除外に当たった理由（卵 など）。銘柄の注意は、ほかに理由がないときだけ。 */
@@ -120,7 +204,7 @@ function absenceDependentNote(s: AppState, catalog: Catalog, date: ISODate, dish
   if (who.length === 0) return null;
   const dish = dishes.find((d) => who.some((m) => blocked(d, m)))!;
   const names = who.map((m) => m.nickname).join('・');
-  return `${names}がいない日なので入れています（${dish.name}）。予定が変わったら「${label(s, date)}は${who[0].nickname}もいる」と送ってください。`;
+  return `${names}がいない日なので入れています（${dish.name}）。予定が変わったら「${dayWord(s.today, date)}は${who[0].nickname}もいる」と送ってください。`;
 }
 
 /** 買い物リストの、その食材の行（買い物日｜使う日）。返事で「実際にどう変わったか」を言うために使う。 */
@@ -131,6 +215,24 @@ function listEntries(s: AppState, ingredientId: string): Set<string> {
     for (const it of l.items) if (it.ingredientId === ingredientId) for (const d of it.forDates) out.add(`${l.date}|${d}`);
   }
   return out;
+}
+
+/**
+ * 買ってあった物で、足りなくなった物の一言（作り直しの前後で比べる）。チェックしてあった行が「あと〜」になったとき。
+ * 例：「さばは、買った分では足りなくなりました。買い物リストに「あと1パック（2切れ）」と入れました。」
+ */
+export function shortageText(before: AppState['shopping'], after: AppState['shopping'], today: ISODate): string {
+  const was = new Map(before.flatMap((l) => l.items.map((i) => [`${l.date}|${i.ingredientId}`, i] as const)));
+  const short = after
+    .filter((l) => l.date >= today)
+    .flatMap((l) => l.items.filter((i) => !i.checked && (i.bought ?? 0) > 0 && was.get(`${l.date}|${i.ingredientId}`)?.checked));
+  if (short.length === 0) return '';
+  const names = short.map((i) => i.name);
+  const first = short[0];
+  const qty = first.label.slice(first.name.length).trim();
+  return short.length === 1
+    ? `${first.name}は、買った分では足りなくなりました。買い物リストに「${qty}」と入れました。`
+    : `${names.slice(0, 3).join('・')}は、買った分では足りなくなりました。足りない分を買い物リストに入れました。`;
 }
 
 /** 新しく買い物リストに入った物（作り直しの前後で比べる）。 */
@@ -163,7 +265,7 @@ function canMoveTo(s: AppState, catalog: Catalog, fromDate: ISODate, to: Planned
   return max === undefined || main.minutes <= max;
 }
 
-export function todayImpossible(s: AppState, catalog: Catalog, date: ISODate): void {
+export function todayImpossible(s: AppState, catalog: Catalog, date: ISODate, turn: Turn = newTurn()): void {
   const meal = mealOn(s, date);
   const when = label(s, date);
   if (!meal) {
@@ -174,7 +276,13 @@ export function todayImpossible(s: AppState, catalog: Catalog, date: ISODate): v
     addBotMessage(s, `${when}の夕食は、もう「作った」と記録しています。`, { card: { kind: 'meal', date } });
     return;
   }
+  if (everyoneOut(s.household, meal)) {
+    addBotMessage(s, `${when}は、みんな外で食べる日です（夕食なし）。このままで大丈夫です。`, { card: { kind: 'meal', date } });
+    return;
+  }
   if (meal.kind === 'raku') {
+    // 家族が「今日は無理」と言って、このラク日で十分と決めた日：あとで週を作り直しても残す（changedBy: user）。
+    if (meal.changedBy !== 'sale') meal.changedBy = 'user';
     addBotMessage(
       s,
       `${when}はもともとラク日です。${namesLine(s, catalog, meal.dishIds) || 'あるもの'}で十分です。\n作るのも大変なら、外食や買ってきたもので済ませても大丈夫です。`,
@@ -194,20 +302,36 @@ export function todayImpossible(s: AppState, catalog: Catalog, date: ISODate): v
   const originalMain = originalDishes[0];
   const ws = weekStartOf(date);
   const shoppingBefore = s.shopping;
-  // 移す先：同じ週のあとのラク日で、旬・7日以内の重複・調理時間の上限・安全のどれにも当たらない日。
+  // 移す先：同じ週のあとのラク日で、旬・7日以内の重複・調理時間の上限・安全のどれにも当たらない日
+  // （みんな外で食べる日と、この返事でもう案を出した日には移さない）。
   const target = s.meals.find(
     (m) =>
       m.date > date &&
       weekStartOf(m.date) === ws &&
       m.kind === 'raku' &&
       m.status === 'planned' &&
+      !everyoneOut(s.household, m) &&
+      !turn.offered.has(m.date) &&
       canMoveTo(s, catalog, date, m, originalDishes),
   );
   const targetRakuId = target?.dishIds[0];
+  // もう買ってある傷みやすい食材（冷凍できる物）。移した先の日まで持たない物は、今夜冷凍してもらう。
+  // 冷凍する前提で在庫を「冷凍」にする（同じ物を買い物リストに足して、「冷凍して」と「買って」を同時に言わない）。
+  const bought = uniq(originalDishes.flatMap((d) => ingIdsOf(s, d)))
+    .map((id) => catalog.ingredientById.get(id))
+    .filter((i): i is Ingredient => !!i && !i.pantry && i.freezable)
+    .filter((i) => s.inventory.some((v) => v.ingredientId === i.id && v.level !== 'none' && !v.frozen));
+  const expiry = (i: Ingredient) => addDays(s.inventory.find((v) => v.ingredientId === i.id)!.acquiredOn, i.shelfLifeDays);
+  const toFreeze = target ? bought.filter((i) => expiry(i) < target.date) : [];
+  for (const i of toFreeze) {
+    const inv = s.inventory.find((v) => v.ingredientId === i.id);
+    if (inv) inv.frozen = true;
+  }
 
   // 元の料理を先に移しておき（仮）、今日のラク日の料理は、移した先と同じたんぱく源を避けて選ぶ。
   if (target) replaceMeal(s, { ...target, dishIds: original, kind: 'normal' });
   // 今日はラク日に（在庫や冷凍で済むものを優先）。
+  // 今日は無理は、家族が決めたこと：週の作り直し（設定を変えたとき）でも残すように、changedBy は user にする。
   const raku = bestRakuFor(s, catalog, date, meal.absentMemberIds)[0]?.dish;
   const rakuIds = raku ? [raku.id, ...sidesFor(s, catalog, date, raku, original)] : [];
   s.history.push({ date, dishIds: original, status: 'skipped', reactions: [] });
@@ -215,7 +339,7 @@ export function todayImpossible(s: AppState, catalog: Catalog, date: ISODate): v
     s,
     rebuildMeal(s, catalog, date, rakuIds, {
       kind: 'raku',
-      changedBy: 'replan',
+      changedBy: 'user',
       reasons: raku ? [`今日はラクする日。${raku.name}で十分`] : ['今日は外食や買ってきたもので'],
     }),
   );
@@ -224,7 +348,7 @@ export function todayImpossible(s: AppState, catalog: Catalog, date: ISODate): v
       s,
       rebuildMeal(s, catalog, target.date, original, {
         kind: 'normal',
-        changedBy: 'replan',
+        changedBy: 'user',
         reasons: [`${formatJa(date)}の分を移しました`],
       }),
     );
@@ -241,7 +365,9 @@ export function todayImpossible(s: AppState, catalog: Catalog, date: ISODate): v
   if (target) lines.push(`${mainName}は${label(s, target.date)}に回します。`);
   else if (!nextWeekPlanned) lines.push(`${mainName}は、来週の候補に回します。`);
   else {
-    const later = s.meals.filter((m) => weekStartOf(m.date) > ws && m.kind === 'normal' && editable(s, m) && m.dishIds.length > 0);
+    const later = s.meals.filter(
+      (m) => weekStartOf(m.date) > ws && m.kind === 'normal' && cookable(s, m) && m.dishIds.length > 0 && !turn.offered.has(m.date),
+    );
     const ok = later.filter((m) => canMoveTo(s, catalog, date, m, originalDishes));
     const sameProtein = (m: PlannedMeal) => findDishIn(s.household, catalog, m.dishIds[0])?.protein === originalMain?.protein;
     swap = ok.find(sameProtein) ?? ok[0];
@@ -259,16 +385,13 @@ export function todayImpossible(s: AppState, catalog: Catalog, date: ISODate): v
       i.aisle === 'frozen' || i.shelfLifeDays >= 7 || s.inventory.some((v) => v.ingredientId === i.id && v.frozen);
     if (stocked.length > 0 && stocked.every(keeps)) lines.push(`${displaced.name}は次のラク日に使います。`);
   }
-  // 冷凍の案内は、もう買ってある傷みやすい食材だけ。移した先の日まで持たないなら、言い切る。
-  const bought = uniq(originalDishes.flatMap((d) => ingIdsOf(s, d)))
-    .map((id) => catalog.ingredientById.get(id))
-    .filter((i): i is Ingredient => !!i && !i.pantry && i.freezable)
-    .filter((i) => s.inventory.some((v) => v.ingredientId === i.id && v.level !== 'none' && !v.frozen));
-  const expiry = (i: Ingredient) => addDays(s.inventory.find((v) => v.ingredientId === i.id)!.acquiredOn, i.shelfLifeDays);
+  // 冷凍の案内は、もう買ってある傷みやすい食材だけ。移した先の日まで持たないなら、言い切る（在庫は冷凍にしてある）。
   if (target) {
-    const late = bought.filter((i) => expiry(i) < target.date).map((i) => i.name);
+    const late = toFreeze.map((i) => i.name);
     if (late.length > 0) {
-      lines.push(`${late.slice(0, 2).join('と')}は${label(s, target.date)}まで持たないので、今夜冷凍して「${late[0]}冷凍した」と送ってください。`);
+      lines.push(
+        `${late.slice(0, 2).join('と')}は${label(s, target.date)}まで持たないので、今夜冷凍してください。冷凍できないときは「${late[0]}切れた」と送ってください。買い物リストに入れます。`,
+      );
     }
   } else {
     const soon = bought.filter((i) => expiry(i) <= addDays(date, 1)).map((i) => i.name);
@@ -276,7 +399,9 @@ export function todayImpossible(s: AppState, catalog: Catalog, date: ISODate): v
   }
   // 組み直しで買い物リストに新しく入った物（買い直しなど）は、黙って足さずに伝える。
   const added = newListItems(shoppingBefore, s.shopping, s.today)[0];
-  if (added) lines.push(`${label(s, added.date)}の買い物リストに${added.names.slice(0, 2).join('・')}を入れました。`);
+  if (added) {
+    lines.push(`${label(s, added.date)}の買い物リストに${added.names.slice(0, 2).join('・')}${added.names.length > 2 ? 'など' : ''}を入れました。`);
+  }
   addBotMessage(s, lines.slice(0, 6).join('\n'), {
     card: { kind: 'meal', date },
     actions: [{ label: 'ほかの案', action: { type: 'request_alternatives', date } }, BTN_WEEK],
@@ -291,6 +416,7 @@ export function todayImpossible(s: AppState, catalog: Catalog, date: ISODate): v
       text: `${label(s, swap.date)}の${mealTitle(s, catalog, swap)}を、${mainName}に替えますか？（${formatJa(date)}にできなかった分）`,
     };
     s.proposals = [...s.proposals.filter((p) => p.date !== swap!.date), proposal];
+    turn.offered.add(swap.date);
     addBotMessage(s, proposal.text, {
       card: { kind: 'meal', date: swap.date },
       actions: [
@@ -305,17 +431,21 @@ export function todayImpossible(s: AppState, catalog: Catalog, date: ISODate): v
 // 別のに
 // ---------------------------------------------------------------------------
 
-/** 「キーマカレー飽きた」：その料理が入っている、変えられる日（今日以降）。 */
+/** 「キーマカレー飽きた」：その料理が入っている、変えられる日（今日以降。みんな外で食べる日は除く）。 */
 export function dateOfDish(s: AppState, dishId: string): ISODate | undefined {
-  return s.meals.find((m) => editable(s, m) && m.dishIds.includes(dishId))?.date;
+  return s.meals.find((m) => cookable(s, m) && m.dishIds.includes(dishId))?.date;
 }
 
-export function requestAlternatives(s: AppState, catalog: Catalog, date: ISODate, lead?: string): void {
+export function requestAlternatives(s: AppState, catalog: Catalog, date: ISODate, lead?: string, turn: Turn = newTurn()): void {
   const meal = mealOn(s, date);
   if (!editable(s, meal)) {
     addBotMessage(s, meal ? `${label(s, date)}の献立は、もう変えられません。` : `${label(s, date)}は献立の日ではありません。`, {
       actions: [BTN_WEEK],
     });
+    return;
+  }
+  if (everyoneOut(s.household, meal)) {
+    noDinnerReply(s, date);
     return;
   }
   const options = alternativesFor(s, catalog, date, 2);
@@ -324,7 +454,30 @@ export function requestAlternatives(s: AppState, catalog: Catalog, date: ISODate
     return;
   }
   const note = absenceDependentNote(s, catalog, date, options.flat());
+  if (options.length === 1) {
+    // 案が1つだけ：「どちらに」と聞かず、［替える］［そのまま］で選んでもらう（「はい」と書いても替えられる）。
+    const proposal: Proposal = {
+      id: nextId(s, 'prop'),
+      kind: 'alternative',
+      date,
+      fromDishIds: [...meal.dishIds],
+      toDishIds: options[0],
+      text: `${label(s, date)}を${namesLine(s, catalog, options[0])}にしますか？`,
+    };
+    s.proposals = [...s.proposals.filter((p) => p.date !== date), proposal];
+    turn.offered.add(date);
+    const one = [...(lead ? [lead] : []), `${label(s, date)}の別の案は、これだけです。この案にしますか？`, ...(note ? [note] : [])];
+    addBotMessage(s, one.join('\n'), {
+      card: { kind: 'alternatives', date, options },
+      actions: [
+        { label: '替える', action: { type: 'accept_proposal', proposalId: proposal.id } },
+        { label: 'そのまま', action: { type: 'reject_proposal', proposalId: proposal.id } },
+      ],
+    });
+    return;
+  }
   const lines = [...(lead ? [lead] : []), `${label(s, date)}の別の案です。どちらにしますか？`, ...(note ? [note] : [])];
+  turn.offered.add(date);
   addBotMessage(s, lines.join('\n'), {
     card: { kind: 'alternatives', date, options },
     actions: options.map((o) => ({
@@ -353,6 +506,10 @@ export function chooseAlternative(s: AppState, catalog: Catalog, date: ISODate, 
     addBotMessage(s, `${label(s, date)}の献立は、もう変えられません。`, { actions: [BTN_WEEK] });
     return;
   }
+  if (everyoneOut(s.household, meal)) {
+    noDinnerReply(s, date);
+    return;
+  }
   const dishes = dishIds.map((id) => findDishIn(s.household, catalog, id));
   if (dishes.length === 0 || dishes.some((d) => !d)) {
     addBotMessage(s, 'その料理が見つかりませんでした。', { card: { kind: 'meal', date } });
@@ -370,11 +527,14 @@ export function chooseAlternative(s: AppState, catalog: Catalog, date: ISODate, 
     requestAlternatives(s, catalog, date, `献立が変わったので、この案は使えません（${stale}）。`);
     return;
   }
+  const shopBefore = s.shopping;
   replaceMeal(s, rebuildMeal(s, catalog, date, dishIds, { changedBy: 'user' }));
   dropProposalsFor(s, [date]);
   refreshShopping(s, catalog);
   const note = absenceDependentNote(s, catalog, date, dishIds);
-  addBotMessage(s, [`${label(s, date)}は${namesLine(s, catalog, dishIds)}にしました。買い物リストも直しました。`, ...(note ? [note] : [])].join('\n'), {
+  const short = shortageText(shopBefore, s.shopping, s.today);
+  const lines = [`${label(s, date)}は${namesLine(s, catalog, dishIds)}にしました。買い物リストも直しました。`, ...(short ? [short] : []), ...(note ? [note] : [])];
+  addBotMessage(s, lines.join('\n'), {
     card: { kind: 'meal', date },
     actions: mealActions(s, date),
   });
@@ -396,17 +556,19 @@ const isSeafood = (p: Dish['protein']) => p === 'fish' || p === 'seafood';
  * その食材を使う料理への差し替えを探す。
  * まず、その食材の代わりになる食材（substitutes）を使う日と、同じたんぱく源の日を探す。
  * なければ、肉なら肉の日、魚介なら魚介の日まで広げる（鶏肉の日がない週でも「鶏むねが安い」を活かせるように）。
+ * skip の日（同じ返事で、もう案を出した日）と、みんな外で食べる日は選ばない。
  */
-function findSwapFor(s: AppState, catalog: Catalog, ingredientId: string): SwapOption | null {
+function findSwapFor(s: AppState, catalog: Catalog, ingredientId: string, skip: ReadonlySet<ISODate> = new Set()): SwapOption | null {
   const ing = catalog.ingredientById.get(ingredientId);
   if (!ing) return null;
   const protein = proteinOfKind(ing.kind);
   return (
-    searchSwap(s, catalog, ing, (main, usesSub) => usesSub || (protein !== 'none' && main.protein === protein)) ??
+    searchSwap(s, catalog, ing, skip, (main, usesSub) => usesSub || (protein !== 'none' && main.protein === protein)) ??
     searchSwap(
       s,
       catalog,
       ing,
+      skip,
       (main) => (isMeat(protein) && isMeat(main.protein)) || (isSeafood(protein) && isSeafood(main.protein)),
     )
   );
@@ -416,12 +578,14 @@ function searchSwap(
   s: AppState,
   catalog: Catalog,
   ing: Ingredient,
+  skip: ReadonlySet<ISODate>,
   target: (main: Dish, usesSub: boolean) => boolean,
 ): SwapOption | null {
   const users = allDishes(s.household, catalog).filter((d) => d.role === 'main' && ingIdsOf(s, d).includes(ing.id));
   let best: SwapOption | null = null;
   for (const meal of s.meals) {
     if (meal.date < s.today || meal.status !== 'planned' || meal.kind !== 'normal' || meal.dishIds.length === 0) continue;
+    if (skip.has(meal.date) || everyoneOut(s.household, meal)) continue;
     const main = findDishIn(s.household, catalog, meal.dishIds[0]);
     if (!main) continue;
     const mainIngs = ingIdsOf(s, main);
@@ -442,14 +606,23 @@ function searchSwap(
       }
       const days = diffDays(meal.date, s.today);
       const fresh = days <= ing.shelfLifeDays ? 1.5 : ing.freezable ? 0 : -3;
-      const score = sc.score + (usesSub ? 3 : 0) + fresh - days * 0.1;
+      // 家族が自分で決めた日（自分で替えた・特売で替えた・今日は無理で移した日）は、ほかに合う日があれば、そちらを先に。
+      const score = sc.score + (usesSub ? 3 : 0) + fresh - days * 0.1 - (userDecided(meal) ? 3 : 0);
       if (!best || score > best.score) best = { meal, to, score };
     }
   }
   return best;
 }
 
-function addSwapProposal(s: AppState, catalog: Catalog, kind: Proposal['kind'], option: SwapOption, text: string, extra: string[] = []): void {
+function addSwapProposal(
+  s: AppState,
+  catalog: Catalog,
+  turn: Turn,
+  kind: Proposal['kind'],
+  option: SwapOption,
+  text: string,
+  extra: string[] = [],
+): void {
   const { meal, to } = option;
   const toIds = [to.id, ...meal.dishIds.slice(1)];
   const proposal: Proposal = {
@@ -461,6 +634,7 @@ function addSwapProposal(s: AppState, catalog: Catalog, kind: Proposal['kind'], 
     text,
   };
   s.proposals = [...s.proposals.filter((p) => p.date !== meal.date), proposal];
+  turn.offered.add(meal.date);
   addBotMessage(s, [text, ...extra].join('\n'), {
     card: { kind: 'meal', date: meal.date },
     actions: [
@@ -470,7 +644,7 @@ function addSwapProposal(s: AppState, catalog: Catalog, kind: Proposal['kind'], 
   });
 }
 
-export function sale(s: AppState, catalog: Catalog, ingredientId: string): void {
+export function sale(s: AppState, catalog: Catalog, ingredientId: string, turn: Turn = newTurn()): void {
   const ing = catalog.ingredientById.get(ingredientId);
   if (!ing) {
     addBotMessage(s, 'その食材が見つかりませんでした。');
@@ -482,8 +656,24 @@ export function sale(s: AppState, catalog: Catalog, ingredientId: string): void 
     addBotMessage(s, `${ing.name}は${excluded.names.join('・')}の除外（${excluded.reason}）に当たるので、献立には使いません。`);
     return;
   }
-  const option = findSwapFor(s, catalog, ingredientId);
+  const busy = busyDays(turn);
+  const option = findSwapFor(s, catalog, ingredientId, busy);
   if (!option) {
+    // 替えられる日が、この返事でもう案を出した日だけ：2つ目の案は出さない（前の案のボタンが使えなくなるため）。
+    const taken = busy.size > 0 ? findSwapFor(s, catalog, ingredientId) : null;
+    if (taken && turn.kept.has(taken.meal.date) && !turn.offered.has(taken.meal.date)) {
+      // 頼まれたとおりだと答えた日しかない：その料理のままにする。
+      addBotMessage(
+        s,
+        `${ing.name}、いいですね。替えられる日（${label(s, taken.meal.date)}）は、上のとおり${mealTitle(s, catalog, taken.meal)}のままにします。\n${ing.name}の案にしたいときは、もう一度「${ing.name}が安い」と送ってください。`,
+      );
+      return;
+    }
+    if (taken) {
+      const what = `替えられる日（${label(s, taken.meal.date)}）`;
+      addBotMessage(s, `${ing.name}、いいですね。${offeredText(what, { name: ing.name, words: `${ing.name}が安い` })}`);
+      return;
+    }
     addBotMessage(
       s,
       `${ing.name}、いいですね。今の献立には、替えられる日がありません。\n買ったら「${ing.name}買った」と送ってください。来週の候補に入れます。`,
@@ -498,18 +688,20 @@ export function sale(s: AppState, catalog: Catalog, ingredientId: string): void 
     (i) => i && !i.pantry && i.freezable && s.inventory.some((v) => v.ingredientId === i.id && v.level !== 'none'),
   );
   if (stocked) extra.push(`${stocked.name}は冷凍して、来週に回せます。`);
-  addSwapProposal(s, catalog, 'sale_swap', option, text, extra);
+  addSwapProposal(s, catalog, turn, 'sale_swap', option, text, extra);
 }
 
 // ---------------------------------------------------------------------------
 // 在庫
 // ---------------------------------------------------------------------------
 
+/** その食材を使う、これからの献立（家で夕食を作る日だけ。みんな外で食べる日は使わない）。 */
 function usesOf(s: AppState, catalog: Catalog, ingredientId: string): PlannedMeal[] {
   return s.meals.filter(
     (m) =>
       m.date >= s.today &&
       m.status === 'planned' &&
+      !everyoneOut(s.household, m) &&
       m.dishIds.some((id) => {
         const d = findDishIn(s.household, catalog, id);
         return !!d && ingIdsOf(s, d).includes(ingredientId);
@@ -517,7 +709,7 @@ function usesOf(s: AppState, catalog: Catalog, ingredientId: string): PlannedMea
   );
 }
 
-export function outOfStock(s: AppState, catalog: Catalog, ingredientId: string): void {
+export function outOfStock(s: AppState, catalog: Catalog, ingredientId: string, turn: Turn = newTurn()): void {
   const ing = catalog.ingredientById.get(ingredientId);
   if (!ing) {
     addBotMessage(s, 'その食材が見つかりませんでした。');
@@ -537,9 +729,9 @@ export function outOfStock(s: AppState, catalog: Catalog, ingredientId: string):
   else if (ing.pantry) lines.push('次の買い物で買い足してください。');
   addBotMessage(s, lines.join('\n'), { actions: [BTN_SHOPPING] });
 
-  // 今日使う予定なら、使わない料理への差し替えも出す。
+  // 今日使う予定なら、使わない料理への差し替えも出す（この返事で今日の案をもう出していれば、重ねない）。
   const todayUse = uses.find((m) => m.date === s.today && m.kind === 'normal');
-  if (todayUse) {
+  if (todayUse && !busyDays(turn).has(s.today)) {
     const option = alternativesFor(s, catalog, s.today, 3).find((o) =>
       o.every((id) => {
         const d = findDishIn(s.household, catalog, id);
@@ -557,6 +749,7 @@ export function outOfStock(s: AppState, catalog: Catalog, ingredientId: string):
         text: `今日の${mealTitle(s, catalog, todayUse)}で${ing.name}を使います。${to.name}に替えますか？`,
       };
       s.proposals = [...s.proposals.filter((p) => p.date !== s.today), proposal];
+      turn.offered.add(s.today);
       addBotMessage(s, `${proposal.text}\n買ってくるなら、そのままで大丈夫です。`, {
         card: { kind: 'meal', date: s.today },
         actions: [
@@ -568,7 +761,7 @@ export function outOfStock(s: AppState, catalog: Catalog, ingredientId: string):
   }
 }
 
-export function have(s: AppState, catalog: Catalog, ingredientId: string): void {
+export function have(s: AppState, catalog: Catalog, ingredientId: string, turn: Turn = newTurn()): void {
   const ing = catalog.ingredientById.get(ingredientId);
   if (!ing) {
     addBotMessage(s, 'その食材が見つかりませんでした。');
@@ -602,13 +795,15 @@ export function have(s: AppState, catalog: Catalog, ingredientId: string): void 
     return;
   }
   if (ing.shelfLifeDays <= 4) {
-    const option = findSwapFor(s, catalog, ingredientId);
+    // この返事でもう案を出した日には、重ねて提案しない（ほかに日がなければ、在庫に入れるだけ）。
+    const option = findSwapFor(s, catalog, ingredientId, busyDays(turn));
     if (option) {
       const fromMain = mealTitle(s, catalog, option.meal);
       addBotMessage(s, `${ing.name}を在庫に入れました。`);
       addSwapProposal(
         s,
         catalog,
+        turn,
         'stock_swap',
         option,
         `${ing.name}を使い切るために、${label(s, option.meal.date)}の${fromMain}を${option.to.name}に替えますか？`,
@@ -676,6 +871,7 @@ const HUSBAND = ['夫', '旦那', 'だんな', 'パパ', 'お父さん', '父', 
 const WIFE = ['妻', '嫁', 'ママ', 'お母さん', '母', '奥さん', 'つま'];
 const CHILD = ['子ども', '子供', 'こども', 'キッズ', '子'];
 const ALL = ['みんな', '全員', '家族'];
+const SELF = ['わたし', '私', 'あたし', '自分', '僕', '俺'];
 const AGE_RANK = { teen: 3, child: 2, preschool: 1, infant: 0, adult: 4 } as const;
 
 function has(text: string, words: string[]): boolean {
@@ -703,6 +899,11 @@ export function resolveMembers(members: Member[], ref: string): Member[] {
   const kids = members.filter((m) => m.role === 'child' || ['teen', 'child', 'preschool'].includes(m.ageBand));
   const nickIn = (m: Member, words: string[]) => has(normalizeJa(m.nickname), words);
   if (has(r, ALL)) return members.filter((m) => m.ageBand !== 'infant');
+  // 「わたし」「自分」：続柄が「わたし」（parent）の人（送る人がわかるときは、呼び出し側でその人の id にしてある）。
+  if (SELF.some((w) => r === normalizeJa(w))) {
+    const me = members.filter((m) => m.role === 'parent');
+    return me.length === 1 ? me : [];
+  }
   for (const [mine, theirs] of [
     [HUSBAND, WIFE],
     [WIFE, HUSBAND],
@@ -722,23 +923,105 @@ export function resolveMembers(members: Member[], ref: string): Member[] {
   return [];
 }
 
-/** 誰か分からないときの聞き返し。「夫」「妻」で大人が2人以上なら、どちらかを聞く。 */
-function askWho(s: AppState, date: ISODate, memberRef: string): void {
+/** 誰が食べないかの聞き返しに入れる語（答えの「パパ」だけの書き込みを、聞き返しへの答えとして読むために使う）。 */
+const ASK_WHO_MARKS = ['誰が食べませんか', 'どなたですか', '誰か分かりませんでした'];
+
+/** 誰が食べないかを聞き返したメッセージか。 */
+export function isAskWho(text: string): boolean {
+  return ASK_WHO_MARKS.some((w) => text.includes(w));
+}
+
+/** 誰か分からないときの聞き返し。名前だけで答えられるようにする。「夫」「妻」で大人が2人以上なら、どちらかを聞く。 */
+function askWho(s: AppState, days: ISODate[], memberRef: string): void {
   const adults = s.household.members.filter((m) => m.ageBand === 'adult' && m.role !== 'child');
   const example = adults[1]?.nickname ?? adults[0]?.nickname ?? s.household.members[0]?.nickname ?? 'パパ';
-  const when = label(s, date);
-  if (!memberRef.trim()) {
-    addBotMessage(s, `誰がいないか教えてください（例：${when}は${example}が出張）。`);
+  const when = daysLabel(s, days);
+  // member の id（LLM に見せる呼び方。書き方を変えた「member-9」「メンバー9」も）は、返事に出さない。
+  if (!memberRef.trim() || /member|メンバー/iu.test(memberRef.normalize('NFKC'))) {
+    const lines = [`${when}は、誰が食べませんか？名前だけ送ってください（例：${example}）。`];
+    lines.push(
+      days.length === 1 && days[0] === s.today
+        ? `みんな外で食べるなら「みんな」、作るのが大変なら「今日は無理」と送ってください。`
+        : `みんな外で食べるなら「みんな」と送ってください。`,
+    );
+    addBotMessage(s, lines.join('\n'));
     return;
   }
+  // 聞き返しの文には、いつの話かを入れる（答えの「パパ」を、その日の欠席にするため。サーバーは利用者の発言を残さない）。
   if (has(normalizeJa(memberRef), [...HUSBAND, ...WIFE]) && adults.length >= 2) {
     addBotMessage(
       s,
-      `「${memberRef}」が誰か、決められませんでした。${adults.map((m) => m.nickname).join('・')}のどなたですか？\nニックネームで送ってください（例：${when}は${example}が飲み会）。`,
+      `${when}いない「${memberRef}」が誰か、決められませんでした。${adults.map((m) => m.nickname).join('・')}のどなたですか？\n名前だけ送ってください（例：${example}）。`,
     );
     return;
   }
-  addBotMessage(s, `「${memberRef}」が誰か分かりませんでした。ニックネームで教えてください（例：${when}は${example}が飲み会）。`);
+  addBotMessage(s, `${when}いない「${memberRef}」が誰か分かりませんでした。名前だけ送ってください（例：${example}）。`);
+}
+
+/**
+ * まだ欠席と決まっていない書き込みの返事（献立は変えない）。
+ * late：遅くなるだけ（「水曜ははるとが塾」）。人数も除外もそのまま（除外のある人の分を減らすと、その人が食べられない料理が入るため）。
+ * maybe：予定が決まっていない（「明日パパ飲み会かも」）。決まったときの送り方を返す。
+ */
+function tentativeReply(s: AppState, dates: ISODate[], refs: string[], kind: 'late' | 'maybe', cancel: boolean): void {
+  const { who } = resolveAll(s.household.members, refs);
+  const all = who.length > 1 && who.length === eatingMembers(s.household).length;
+  // 範囲（「木曜まで残業」）の中の、献立を作らない曜日は黙って飛ばす（献立の日がなければ、そう言う）。
+  const dinnerDay = (d: ISODate) => !!mealOn(s, d) || s.household.settings.dinnerWeekdays.includes(weekdayOf(d));
+  const days = dates.filter(dinnerDay);
+  if (days.length === 0) {
+    addBotMessage(s, `${daysLabel(s, dates)}は献立の日ではありません。この日はそのままで大丈夫です。`);
+    return;
+  }
+  const date = days[0];
+  const one = days.length === 1;
+  const meal = one ? mealOn(s, date) : undefined;
+  const when = daysLabel(s, days);
+  const day = dayWord(s.today, date);
+  const span = daysWord(s, days);
+  // 1人の家族では、自分の名前を返さない（「明日は遅くなるんですね」）。
+  const self = solo(s) && who.length === 1;
+  const names = all ? 'みんな' : who.map((m) => m.nickname).join('・');
+  const card = meal ? { card: { kind: 'meal' as const, date } } : {};
+  const adults = s.household.members.filter((m) => m.ageBand === 'adult' && m.role !== 'child');
+  const example = adults[1]?.nickname ?? adults[0]?.nickname ?? 'パパ';
+  if (kind === 'maybe') {
+    const how = cancel
+      ? self
+        ? `「${span}はやっぱり家で食べる」と送ってください`
+        : `「${span}は${names || 'みんな'}もいる」と送ってください`
+      : all
+        ? `「${span}はみんな外食」と送ってください`
+        : who.length > 0
+          ? `「${span}は${who.map((m) => m.nickname).join('と')}はいらない」と送ってください`
+          : `「${day}は${example}はいらない」のように送ってください`;
+    addBotMessage(s, `まだ決まっていないんですね。献立はこのままにしておきます。\n決まったら${how}。`, card);
+    return;
+  }
+  // 遅くなるだけ
+  if (meal && who.length > 0 && who.every((m) => meal.absentMemberIds.includes(m.id))) {
+    addBotMessage(s, `${when}は、${names}の分をもう減らしています。食べるときは「${day}は${who[0].nickname}もいる」と送ってください。`, card);
+    return;
+  }
+  const lines: string[] = [];
+  const amount = meal ? `（${servingsText(s, meal, true)}）` : '';
+  if (who.length > 0) {
+    lines.push(
+      self
+        ? `了解です。${when}は遅くなるんですね。夕食はいつもどおりにしています${amount}。`
+        : `了解です。${when}は${names}が遅くなるんですね。夕食は${names}の分も入れたままにしています${amount}。`,
+    );
+    lines.push(
+      one
+        ? `家で食べないときは「${day}は${who[0].nickname}はいらない」と送ってください。`
+        : `家で食べない日があるときは「${day}は${who[0].nickname}はいらない」のように送ってください。`,
+    );
+  } else {
+    lines.push('了解です。遅くなる日も、夕食はいつもどおりにしています。');
+    lines.push(`家で食べない人がいるときは「${day}は${example}はいらない」のように送ってください。`);
+    if (days.includes(s.today)) lines.push('作るのが大変なら「今日は無理」と送ってください。');
+  }
+  addBotMessage(s, lines.join('\n'), card);
 }
 
 /** 欠席でゆるむ除外（欠席する人の除外のうち、食べる人のだれも持っていないもの）の名前。 */
@@ -757,16 +1040,65 @@ function looseningOf(s: AppState, catalog: Catalog, who: Member[], meal: Planned
   return uniq(names);
 }
 
-export function absence(s: AppState, catalog: Catalog, date: ISODate, memberRef: string, cancel = false): void {
+/**
+ * 呼び方（いくつか）から、家族の人を探す（家族の並び順）。分からなかった呼び方は unknown に返す（呼び出し側で聞き返す）。
+ */
+function resolveAll(members: Member[], refs: string[]): { who: Member[]; unknown: string[] } {
+  const found = new Set<Member>();
+  const unknown: string[] = [];
+  for (const r of refs) {
+    const hit = r.trim() ? resolveMembers(members, r) : [];
+    if (hit.length === 0) unknown.push(r);
+    for (const m of hit) found.add(m);
+  }
+  return { who: members.filter((m) => found.has(m)), unknown };
+}
+
+/**
+ * 欠席（memberRef がいくつかなら、同じ日の欠席を1つの返事にまとめる：「パパとはるとがいない」）。
+ * cancel は欠席の取り消し、tentative はまだ欠席と決まっていない書き込み。
+ */
+export function absence(
+  s: AppState,
+  catalog: Catalog,
+  dateOrDays: ISODate | ISODate[],
+  memberRef: string | string[],
+  cancel = false,
+  tentative?: 'late' | 'maybe',
+  turn: Turn = newTurn(),
+): void {
+  const refs = Array.isArray(memberRef) ? memberRef : [memberRef];
+  const days = [...new Set(Array.isArray(dateOrDays) ? dateOrDays : [dateOrDays])].sort();
+  if (days.length === 0) return;
+  // まだ決まっていない書き込み（「木曜まで残業」「明日から3日間出張かも」）は、日がいくつでも1つの返事にする。
+  if (tentative) {
+    tentativeReply(s, days, refs, tentative, cancel);
+    return;
+  }
+  if (days.length > 1) {
+    // 人が分からない範囲（「明日から木曜まで出張」）は、1回だけ聞く（答えは、聞いた日すべてに使う）。
+    if (!cancel && resolveAll(s.household.members, refs).who.length === 0) {
+      askWho(s, days, refs.find((r) => r.trim()) ?? '');
+      return;
+    }
+    for (const d of days) absence(s, catalog, d, refs, cancel, undefined, turn);
+    return;
+  }
+  const date = days[0];
   if (cancel) {
-    presence(s, catalog, date, memberRef);
+    presence(s, catalog, date, refs, turn.written.has(date), turn.text);
     return;
   }
-  const who = memberRef.trim() ? resolveMembers(s.household.members, memberRef) : [];
+  const { who, unknown } = resolveAll(s.household.members, refs);
   if (who.length === 0) {
-    askWho(s, date, memberRef);
+    askWho(s, [date], unknown[0] ?? '');
     return;
   }
+  absenceOf(s, catalog, date, who);
+  for (const r of unknown) askWho(s, [date], r);
+}
+
+function absenceOf(s: AppState, catalog: Catalog, date: ISODate, who: Member[]): void {
   const meal = mealOn(s, date);
   if (!meal) {
     // 献立を作らない曜日（土日など）には「献立ができたら」と約束しない。
@@ -781,48 +1113,131 @@ export function absence(s: AppState, catalog: Catalog, date: ISODate, memberRef:
     addBotMessage(s, `${label(s, date)}の献立は、もう変えられません。`);
     return;
   }
+  const onList = () => s.shopping.some((l) => l.date >= s.today && l.items.some((i) => i.forDates.includes(date)));
+  const listedBefore = onList();
   const newly = who.filter((m) => !meal.absentMemberIds.includes(m.id));
   meal.absentMemberIds = [...new Set([...meal.absentMemberIds, ...who.map((m) => m.id)])];
   meal.servings = servingsFor(s.household, meal.absentMemberIds);
-  meal.changedBy = 'absence';
+  // 家族が決めた日（自分で替えた・特売で替えた・今日は無理で決めた日）は、その印を残す（作り直しやリクエストで上書きしない）。
+  if (meal.changedBy !== 'user' && meal.changedBy !== 'sale') meal.changedBy = 'absence';
   refreshShopping(s, catalog);
   const names = who.map((m) => m.nickname).join('・');
-  if (eatingMembers(s.household, meal.absentMemberIds).length === 0) {
-    addBotMessage(s, `了解です。${label(s, date)}はみんな外で食べるんですね。夕食の分は買い物リストから外しました。`, {
-      card: { kind: 'meal', date },
-    });
+  if (everyoneOut(s.household, meal)) {
+    // みんな外で食べる日：夕食なし。献立は残す（「〇曜はみんないる」で、そのまま戻る）。その日の提案はもう使わない。
+    dropProposalsFor(s, [date]);
+    const everyone = eatingMembers(s.household).length > 1 ? 'みんな' : '';
+    const head = `了解です。${label(s, date)}は${everyone}外で食べるんですね。${listedBefore && !onList() ? '夕食の分は買い物リストから外しました。' : ''}`;
+    addBotMessage(s, [head, backHomeHint(s.today, date, solo(s))].join('\n'), { card: { kind: 'meal', date } });
     return;
   }
   const lines = [`了解です。${label(s, date)}は${names}の分を減らしました（${servingsText(s, meal, true)}）。`, '買い物リストも直しました。'];
-  // 除外のある人がいない日は、その除外がゆるむ。予定が変わったら取り消せることも伝える。
+  // 除外のある人がいない日は、その除外がゆるむ。予定が変わったら取り消せることも伝える（除外がゆるむ人の名前で）。
   const loosened = looseningOf(s, catalog, newly, meal);
   if (loosened.length > 0) {
-    const first = newly.find((m) => effectiveExclusions(m).length > 0) ?? newly[0];
+    const looseners = newly.filter((m) => looseningOf(s, catalog, [m], meal).length > 0);
+    const first = looseners[0] ?? newly[0];
     lines.push(
-      `${names}がいない日なので、${loosened.slice(0, 2).join('・')}を使う料理も入ることがあります。予定が変わったら「${label(s, date)}は${first.nickname}もいる」と送ってください。`,
+      `${(looseners.length > 0 ? looseners : newly).map((m) => m.nickname).join('・')}がいない日なので、${loosened.slice(0, 2).join('・')}を使う料理も入ることがあります。予定が変わったら「${dayWord(s.today, date)}は${first.nickname}もいる」と送ってください。`,
     );
   }
   addBotMessage(s, lines.join('\n'), { card: { kind: 'meal', date }, actions: [BTN_SHOPPING] });
+}
+
+/** どの日の取り消しかを聞いたメッセージの書き出し（日付だけの答え「木曜」を、この聞き返しへの答えとして読むために使う）。 */
+const WHICH_DAY = 'どの日の予定がなくなりましたか？';
+
+/** どの日の取り消しかを聞いたメッセージか。 */
+export function isAskWhichDay(text: string): boolean {
+  return text.startsWith(WHICH_DAY);
+}
+
+/** 日付を書かない取り消しで、欠席の日が2日以上あるとき：どの日か聞く（日付を書いた送り方の例を添える）。 */
+function askWhichDay(s: AppState, meals: PlannedMeal[], ids: string[]): void {
+  const who = (m: PlannedMeal) => {
+    if (everyoneOut(s.household, m)) return 'みんな';
+    return s.household.members.filter((x) => ids.includes(x.id) && m.absentMemberIds.includes(x.id)).map((x) => x.nickname).join('・');
+  };
+  const list = meals.slice(0, 4).map((m) => `${label(s, m.date)}（${who(m)}）`).join('・');
+  const last = meals[Math.min(meals.length, 4) - 1];
+  const name = who(last).split('・')[0];
+  const example = name === 'みんな' ? `${dayWord(s.today, last.date)}はみんないる` : `${dayWord(s.today, last.date)}は${name}もいる`;
+  addBotMessage(s, `${WHICH_DAY}\n${list}が、いない日になっています。\n「${example}」のように、日付を入れて送ってください。全部なら「全部」と送ってください。`, {
+    actions: [BTN_WEEK],
+  });
 }
 
 /**
  * 欠席の取り消し（「木曜ははるといる」「お泊まりなくなった」）。人数を戻し、その日の料理を、食べる人の除外でもう一度判定する。
  * 当たる料理があれば、出せる別の案に替える（なければ、はっきり注意して［別のに］を出す）。
  */
-export function presence(s: AppState, catalog: Catalog, date: ISODate, memberRef: string): void {
-  const who = memberRef.trim() ? resolveMembers(s.household.members, memberRef) : [];
+export function presence(s: AppState, catalog: Catalog, date: ISODate, memberRef: string | string[], dated = false, text = ''): void {
+  const refs = Array.isArray(memberRef) ? memberRef : [memberRef];
+  const { who, unknown } = resolveAll(s.household.members, refs);
   if (who.length === 0) {
-    askWho(s, date, memberRef);
+    askWho(s, [date], unknown[0] ?? '');
     return;
   }
+  presenceOf(s, catalog, date, who, refs.includes('みんな'), dated, text);
+  for (const r of unknown) askWho(s, [date], r);
+}
+
+/**
+ * 日付のない取り消しの候補の日（この先で、その人たちを欠席にしている日）。書いた人がみんないない日を先に。
+ * 「どの日の予定がなくなりましたか？」への「全部」の答えにも使う。
+ */
+export function cancelCandidates(s: AppState, memberRefs: string[]): PlannedMeal[] {
+  const ids = resolveAll(s.household.members, memberRefs).who.map((m) => m.id);
+  const away = s.meals.filter((m) => editable(s, m) && m.absentMemberIds.some((id) => ids.includes(id)));
+  const exact = away.filter((m) => ids.every((id) => m.absentMemberIds.includes(id)));
+  return exact.length > 0 ? exact : away;
+}
+
+/**
+ * 何日か続く予定の日（候補のうち、献立の日が続いていて、いない人が同じ日のまとまり）。2日以上のまとまりが1つだけなら、それを返す。
+ * 「出張なくなった」で、同じ週の別の予定（みんな外で食べる金曜など）まで取り消さないため。
+ */
+function multiDayRun(s: AppState, meals: PlannedMeal[]): PlannedMeal[] | null {
+  const sorted = [...meals].sort((a, b) => (a.date < b.date ? -1 : 1));
+  const key = (m: PlannedMeal) => [...m.absentMemberIds].sort().join(',');
+  const next = (a: PlannedMeal, b: PlannedMeal) => {
+    for (let d = addDays(a.date, 1); d < b.date; d = addDays(d, 1)) {
+      if (mealOn(s, d) || s.household.settings.dinnerWeekdays.includes(weekdayOf(d))) return false;
+    }
+    return key(a) === key(b);
+  };
+  const runs: PlannedMeal[][] = [];
+  for (const m of sorted) {
+    const last = runs[runs.length - 1];
+    if (last && next(last[last.length - 1], m)) last.push(m);
+    else runs.push([m]);
+  }
+  const long = runs.filter((r) => r.length >= 2);
+  return long.length === 1 ? long[0] : null;
+}
+
+function presenceOf(s: AppState, catalog: Catalog, date: ISODate, who: Member[], everyone: boolean, dated: boolean, text = ''): void {
   const ids = who.map((m) => m.id);
   const isAbsent = (m: PlannedMeal | undefined) => !!m && m.absentMemberIds.some((id) => ids.includes(id));
   let meal = mealOn(s, date);
   if (!isAbsent(meal)) {
-    // その日に欠席がなければ、この先で欠席にしている日を探す（「はるとのお泊まり中止」）。
-    const other = s.meals.find((m) => editable(s, m) && isAbsent(m));
+    // その日に欠席がなければ、この先で欠席にしている日を探す（「はるとのお泊まり中止」「外食なくなった」のように日付を書かないとき。
+    // 日付は今日になる）。書いた人がみんないない日（みんな外で食べる日など）を先に選ぶ。
+    // 日付を書いたとき（「金曜はみんないる」「今日はパパもいる」）は、ほかの日の欠席は取り消さない。
+    // 候補が2日以上あれば、どの日か聞く（「やっぱり飲み会なくなった」で、近い日を黙って取り消さない）。
+    // ただし、何日か続く予定（「出張なくなった」）で、候補の日が続いていれば、まとめて取り消す。
+    const pool = date === s.today && !dated ? cancelCandidates(s, who.map((m) => m.nickname)) : [];
+    const run = pool.length > 1 && MULTI_DAY_EVENT.test(normalizeJa(text)) ? multiDayRun(s, pool) : null;
+    if (run) {
+      for (const m of run) presenceOf(s, catalog, m.date, who, everyone, true);
+      return;
+    }
+    if (pool.length > 1) {
+      askWhichDay(s, pool, ids);
+      return;
+    }
+    const other = pool[0];
     if (!other) {
-      const names = memberRef === 'みんな' ? 'みんな' : who.map((m) => m.nickname).join('・');
+      const names = everyone ? 'みんな' : who.map((m) => m.nickname).join('・');
       addBotMessage(s, `${names}は、${label(s, date)}も食べる予定になっています。このままで大丈夫です。`, {
         card: meal ? { kind: 'meal', date } : undefined,
       });
@@ -838,9 +1253,23 @@ export function presence(s: AppState, catalog: Catalog, date: ISODate, memberRef
   const back = s.household.members.filter((m) => ids.includes(m.id) && meal!.absentMemberIds.includes(m.id));
   const names = back.map((m) => m.nickname).join('・');
   const day = meal.date;
+  const wasOut = everyoneOut(s.household, meal);
+  const shopBefore = s.shopping;
   meal.absentMemberIds = meal.absentMemberIds.filter((id) => !ids.includes(id));
   meal.servings = servingsFor(s.household, meal.absentMemberIds);
-  const lines = [`了解です。${label(s, day)}は${names}も食べるんですね（${servingsText(s, meal, true)}）。`];
+  if (everyoneOut(s.household, meal)) {
+    // 戻ったのが乳児だけ（献立の「食べる人」に含めない）：まだ夕食なし。
+    refreshShopping(s, catalog);
+    addBotMessage(s, `了解です。${label(s, day)}は、まだ家で食べる人がいません（夕食なし）。`, { card: { kind: 'meal', date: day } });
+    return;
+  }
+  // みんな外で食べる日だったなら、家で食べる日に戻ったこと（と、戻った献立）を言う。
+  const allBack = eatingMembers(s.household, meal.absentMemberIds).length === eatingMembers(s.household).length;
+  const lines = [
+    wasOut
+      ? `了解です。${label(s, day)}は${allBack ? (solo(s) ? '' : 'みんな') : `${names}が`}家で食べるんですね（${servingsText(s, meal, true)}）。`
+      : `了解です。${label(s, day)}は${names}も食べるんですね（${servingsText(s, meal, true)}）。`,
+  ];
   const actions: ActionButton[] = [BTN_SHOPPING];
   // 食べる人が増えたので、安全をもう一度判定する（欠席の日だから入っていた料理を、そのままにしない）。
   const unsafe = meal.dishIds
@@ -863,9 +1292,14 @@ export function presence(s: AppState, catalog: Catalog, date: ISODate, memberRef
       lines.push(`${unsafe[0].name}は${names}の除外（${reason}）に当たります。「別のに」で替えてください。`);
       actions.unshift({ label: '別のに', action: { type: 'request_alternatives', date: day } });
     }
+  } else if (wasOut && meal.dishIds.length > 0) {
+    lines.push(`夕食は${namesLine(s, catalog, meal.dishIds)}です。`);
   }
   refreshShopping(s, catalog);
   lines.push('買い物リストも直しました。');
+  // 買ったあとで食べる人が増えた：買った分で足りない物は、足りない分をリストに入れたと伝える。
+  const short = shortageText(shopBefore, s.shopping, s.today);
+  if (short) lines.push(short);
   addBotMessage(s, lines.join('\n'), { card: { kind: 'meal', date: day }, actions });
 }
 
@@ -916,7 +1350,7 @@ function nearbySame(s: AppState, dishId: string, date: ISODate): { eaten?: ISODa
     .sort()
     .at(-1);
   const planned = s.meals
-    .filter((m) => m.status !== 'skipped' && m.status !== 'cooked' && m.dishIds[0] === dishId && near(m.date))
+    .filter((m) => m.status !== 'skipped' && m.status !== 'cooked' && !everyoneOut(s.household, m) && m.dishIds[0] === dishId && near(m.date))
     .map((m) => m.date)
     .sort()[0];
   return { eaten, planned };
@@ -926,19 +1360,37 @@ export function request(
   s: AppState,
   catalog: Catalog,
   cmd: { date?: ISODate; dishId?: string; protein?: Dish['protein']; genre?: Dish['genre']; ingredientId?: string; dishIds?: string[] },
+  turn: Turn = newTurn(),
 ): void {
   const dish = cmd.dishId ? findDishIn(s.household, catalog, cmd.dishId) : undefined;
   if (cmd.dishId && !dish) {
     addBotMessage(s, 'その料理が見つかりませんでした。');
     return;
   }
+  // 日付がなければ、明日以降の家で夕食を作る日から。この返事でもう案を出した日には、重ねて提案しない。
+  // 家族が自分で決めた日（自分で替えた日・特売で替えた日）は、ほかに日がないときだけ選ぶ（決めたことを黙って上書きしない）。
   const candidates = cmd.date
     ? [mealOn(s, cmd.date)].filter((m): m is PlannedMeal => !!m)
-    : s.meals.filter((m) => m.date > s.today && m.status === 'planned' && m.kind === 'normal');
-  const meal = candidates.find((m) => editable(s, m));
+    : [...s.meals.filter((m) => m.date > s.today && m.status === 'planned' && m.kind === 'normal' && !everyoneOut(s.household, m))].sort(
+        (a, b) => Number(userDecided(a)) - Number(userDecided(b)) || (a.date < b.date ? -1 : 1),
+      );
+  const meal = candidates.find((m) => editable(s, m) && !turn.offered.has(m.date));
   if (!meal) {
+    const taken = candidates.find((m) => editable(s, m));
+    if (taken && everyoneOut(s.household, taken)) {
+      noDinnerReply(s, taken.date);
+      return;
+    }
+    if (taken) {
+      addBotMessage(s, offeredText(label(s, taken.date)));
+      return;
+    }
     const when = cmd.date ? label(s, cmd.date) : 'この先';
     addBotMessage(s, `${when}は変えられる献立がありません。`, { actions: [BTN_WEEK] });
+    return;
+  }
+  if (everyoneOut(s.household, meal)) {
+    noDinnerReply(s, meal.date);
     return;
   }
   const lead: string[] = [];
@@ -957,6 +1409,7 @@ export function request(
     if (ok.length === 0) {
       const current = all.find((d) => meal.dishIds.includes(d.id));
       if (current) {
+        turn.kept.add(meal.date);
         addBotMessage(s, `${label(s, meal.date)}は、もう${current.name}の予定です。`, { card: { kind: 'meal', date: meal.date } });
         return;
       }
@@ -972,6 +1425,7 @@ export function request(
         d.role === 'side' || d.role === 'soup' ? [meal.dishIds[0], d.id].filter((x): x is string => !!x) : [d.id, ...sidesFor(s, catalog, meal.date, d)],
       );
       const note = absenceDependentNote(s, catalog, meal.date, options.flat());
+      turn.offered.add(meal.date);
       addBotMessage(s, [`${label(s, meal.date)}を、どれにしますか？`, ...(note ? [note] : [])].join('\n'), {
         card: { kind: 'alternatives', date: meal.date, options },
         actions: options.map((o) => ({ label: dishName(s, catalog, o[0]), action: { type: 'choose_alternative' as const, date: meal.date, dishIds: o } })),
@@ -1026,7 +1480,22 @@ export function request(
     to = alt;
     substituted = true;
   }
+  // 日付のない頼み（「カレー食べたい」）で、その主菜がもうこれからの献立にあれば（今日も含む）、その日を伝える
+  // （別の日にも同じ主菜を入れる案を出さない）。
+  const target = to;
+  const already =
+    !cmd.date && target.role === 'main'
+      ? s.meals.find((m) => m.date >= s.today && m.status === 'planned' && !everyoneOut(s.household, m) && m.dishIds.includes(target.id))
+      : undefined;
+  if (already && !meal.dishIds.includes(target.id)) {
+    turn.kept.add(already.date);
+    addBotMessage(s, [...lead, `${label(s, already.date)}は、もう${target.name}の予定です。`].join('\n'), {
+      card: { kind: 'meal', date: already.date },
+    });
+    return;
+  }
   if (meal.dishIds.includes(to.id)) {
+    turn.kept.add(meal.date);
     addBotMessage(s, [...lead, `${label(s, meal.date)}は、もう${to.name}の予定です。`].join('\n'), {
       card: { kind: 'meal', date: meal.date },
     });
@@ -1047,6 +1516,7 @@ export function request(
     text: `${label(s, meal.date)}を${namesLine(s, catalog, toIds)}にしますか？`,
   };
   s.proposals = [...s.proposals.filter((p) => p.date !== meal.date), proposal];
+  turn.offered.add(meal.date);
   const lines = lead.length > 0 && substituted ? [...lead, `かわりに、${proposal.text}`] : [...lead, proposal.text];
   // 旬の外の料理は、入れられるが一言添える（売っていないことがある）。
   if (to.seasonMonths && to.seasonMonths.length > 0 && !inSeason(to, meal.date)) {
@@ -1085,6 +1555,10 @@ export function acceptProposal(s: AppState, catalog: Catalog, proposalId: string
     addBotMessage(s, '献立が変わったので、この提案は使えませんでした。', { card: { kind: 'meal', date: p.date } });
     return;
   }
+  if (everyoneOut(s.household, meal)) {
+    noDinnerReply(s, p.date);
+    return;
+  }
   for (const id of p.toDishIds) {
     const d = findDishIn(s.household, catalog, id);
     const problem = d ? safetyProblem(s, catalog, d, meal.absentMemberIds) : 'その料理が見つかりませんでした。';
@@ -1114,7 +1588,8 @@ export function acceptProposal(s: AppState, catalog: Catalog, proposalId: string
     if (p.kind === 'stock_swap') reasons.push('在庫に合わせて');
     if (p.kind === 'request') reasons.push('リクエストに合わせて');
   }
-  const changedBy = p.kind === 'sale_swap' ? 'sale' : p.kind === 'request' ? 'user' : 'replan';
+  const changedBy = p.kind === 'sale_swap' ? 'sale' : p.kind === 'request' || p.kind === 'alternative' ? 'user' : 'replan';
+  const shopBefore = s.shopping;
   replaceMeal(
     s,
     rebuildMeal(s, catalog, p.date, p.toDishIds, {
@@ -1125,6 +1600,8 @@ export function acceptProposal(s: AppState, catalog: Catalog, proposalId: string
   dropProposalsFor(s, [p.date]);
   refreshShopping(s, catalog);
   const lines = [`${label(s, p.date)}を${namesLine(s, catalog, p.toDishIds)}に替えました。買い物リストも直しました。`];
+  const short = shortageText(shopBefore, s.shopping, s.today);
+  if (short) lines.push(short);
   if (toMain?.role === 'main') {
     const near = nearbySame(s, toMain.id, p.date);
     if (near.planned) lines.push(`${label(s, near.planned)}にも${toMain.name}の予定があります。`);
@@ -1146,37 +1623,70 @@ export function rejectProposal(s: AppState, proposalId: string): void {
 /**
  * 週の作り直し（設定を変えたときなど）。自分で替えた日・特売で替えた日（changedBy が user・sale）は、
  * 安全・旬・献立の曜日にまだ合うかぎり残し、ほかの日だけを作り直す。
+ * みんな外で食べる日（夕食なし）は作り直さず、献立をそのまま残す（家で食べることになったら、その献立に戻す）。
+ * 食べる人のいない日を作り直すと、家族の除外や子どもに合うかを見ない料理が入ってしまうため。
  */
-export function regenerateWeek(s: AppState, catalog: Catalog, weekStart: ISODate): void {
+export function regenerateWeek(s: AppState, catalog: Catalog, weekStart: ISODate, opts: { keepSafe?: boolean } = {}): void {
   const ws = weekStartOf(weekStart);
+  const shopBefore = s.shopping;
   const todayMeal = mealOn(s, s.today);
   const todayFixed = todayMeal && (todayMeal.status === 'cooked' || todayMeal.status === 'skipped');
   const from = ws > s.today ? ws : todayFixed ? addDays(s.today, 1) : s.today;
   const end = addDays(ws, 6);
   const settings = s.household.settings;
+  const keepable = (m: PlannedMeal) =>
+    m.date >= from && m.date <= end && m.status === 'planned' && settings.dinnerWeekdays.includes(weekdayOf(m.date));
+  const outDays = s.meals.filter((m) => keepable(m) && everyoneOut(s.household, m));
   const kept = s.meals.filter((m) => {
-    if (m.date < from || m.date > end || m.status !== 'planned') return false;
-    if (m.changedBy !== 'user' && m.changedBy !== 'sale') return false;
-    if (!settings.dinnerWeekdays.includes(weekdayOf(m.date)) || m.dishIds.length === 0) return false;
+    if (!keepable(m) || everyoneOut(s.household, m)) return false;
+    // keepSafe（家族の変更）：今の家族でも出せる日は、だれが決めた日でも残す。
+    if (!opts.keepSafe && m.changedBy !== 'user' && m.changedBy !== 'sale') return false;
+    if (m.dishIds.length === 0) return false;
     return m.dishIds.every((id) => {
       const d = findDishIn(s.household, catalog, id);
       return !!d && inSeason(d, m.date) && !safetyProblem(s, catalog, d, m.absentMemberIds);
     });
   });
-  // 残す日も、人数・注意・メモは今の家族で計算し直す。
+  // 残す日も、人数・注意・メモは今の家族で計算し直す（みんな外で食べる日は、そのまま）。
   for (const m of kept) {
     replaceMeal(s, rebuildMeal(s, catalog, m.date, m.dishIds, { kind: m.kind, changedBy: m.changedBy, reasons: m.reasons }));
   }
-  const keepDates = new Set(kept.map((m) => m.date));
+  // 家族が決めたラク日（今日は無理・自分で選んだラク日）は、料理が出せなくなっても、ラク日のまま料理だけを替える
+  // （作り直しで、作るのが大変だと言った日に、ふつうの献立を入れない）。
+  const rakuRedone: ISODate[] = [];
+  for (const m of s.meals.filter((x) => keepable(x) && !everyoneOut(s.household, x) && x.kind === 'raku' && x.changedBy === 'user')) {
+    if (kept.some((k) => k.date === m.date)) continue;
+    const pick = bestRakuFor(s, catalog, m.date, m.absentMemberIds, `regen${s.seq}`)[0]?.dish;
+    if (!pick) continue;
+    replaceMeal(
+      s,
+      rebuildMeal(s, catalog, m.date, [pick.id, ...sidesFor(s, catalog, m.date, pick)], { kind: 'raku', changedBy: 'user', reasons: [rakuReason(pick)] }),
+    );
+    rakuRedone.push(m.date);
+  }
+  const keepDates = new Set([...kept.map((m) => m.date), ...outDays.map((m) => m.date), ...rakuRedone]);
   const fresh = planWeek(s, catalog, ws, from, `regen${s.seq}`, keepDates);
-  if (fresh.length === 0 && keepDates.size === 0) {
-    addBotMessage(s, 'この週は、作り直せる日がありません。', { actions: [BTN_WEEK] });
+  if (fresh.length === 0 && kept.length === 0 && rakuRedone.length === 0) {
+    const text =
+      outDays.length > 0
+        ? 'この週のこれからの日は、どれもみんな外で食べる日（夕食なし）なので、作り直す献立はありません。'
+        : 'この週は、作り直せる日がありません。';
+    addBotMessage(s, text, { actions: [BTN_WEEK] });
     return;
   }
   const dates = new Set(fresh.map((m) => m.date));
   s.meals = sortMeals([...s.meals.filter((m) => !dates.has(m.date)), ...fresh]);
-  dropProposalsFor(s, [...dates]);
+  dropProposalsFor(s, [...dates, ...rakuRedone]);
   refreshShopping(s, catalog);
-  const keptText = keepDates.size > 0 ? `自分で替えた日（${[...keepDates].sort().map(formatJa).join('・')}）は、そのままです。` : '';
-  addWeekMessage(s, catalog, ws, { intro: `${formatJa(from)}からの献立を作り直しました。${keptText}` });
+  const keptDates = kept.filter((m) => m.changedBy === 'user' || m.changedBy === 'sale').map((m) => m.date).sort();
+  const keptText = keptDates.length > 0 ? `自分で替えた日（${keptDates.map(formatJa).join('・')}）は、そのままです。` : '';
+  const rakuText = rakuRedone.length > 0 ? `${rakuRedone.map(formatJa).join('・')}は、ラク日のまま料理を替えました。` : '';
+  const short = shortageText(shopBefore, s.shopping, s.today);
+  const redone = [...dates].sort();
+  const head = !opts.keepSafe
+    ? `${formatJa(from)}からの献立を作り直しました。${keptText}${rakuText}`
+    : redone.length === 0 && rakuRedone.length === 0
+      ? '家族の変更に当たる料理はないので、献立はそのままです。人数と買い物リストは直しました。'
+      : `${redone.length > 0 ? `${redone.map(formatJa).join('・')}は、家族の変更に合わせて作り直しました。` : ''}${rakuText}ほかの日は、そのままです。`;
+  addWeekMessage(s, catalog, ws, { intro: [head, ...(short ? [short] : [])].join('\n') });
 }

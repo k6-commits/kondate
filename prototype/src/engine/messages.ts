@@ -1,9 +1,9 @@
 // bot のメッセージの組み立て（DESIGN.md 3-9）。短く、やさしく、責めない。絵文字は使わない。
 import type { ActionButton, AppState, Catalog, ChatMessage, ISODate, PlannedMeal, Reaction } from './types';
 import { addDays, formatJa, weekStartOf } from './dates';
-import { mealOn } from './context';
+import { eatingMembers, everyoneOut, mealOn } from './context';
 import { addBotMessage } from './util';
-import { dateLabel, mealMinutes, mealTitle, namesLine } from './text';
+import { NO_DINNER_TEXT, backHomeHint, dateLabel, mealMinutes, mealTitle, namesLine } from './text';
 import { summaryText, summaryWeekFor, weeklySummary } from './summary';
 
 export const BTN_WEEK: ActionButton = { label: '今週の献立', action: { type: 'open_week' } };
@@ -12,9 +12,13 @@ export const BTN_SHOPPING: ActionButton = { label: '買い物リスト', action:
 
 export const HELP_EXAMPLES = ['今日のごはん', '鶏むねが安い', '水曜は夫が飲み会', '卵切れた', '今日は無理'];
 
+/** 1日の献立のボタン。みんな外で食べる日は、作る・替えるボタンを出さない（夕食なし）。 */
 export function mealActions(s: AppState, date: ISODate): ActionButton[] {
   const meal = mealOn(s, date);
+  if (meal && everyoneOut(s.household, meal)) return [];
   if (!meal || meal.dishIds.length === 0) return [{ label: '別のに', action: { type: 'request_alternatives', date } }];
+  // 作らない日にした日：もう替えられないので［別のに］は出さない（作ったなら［作った］で直せる）。
+  if (meal.status === 'skipped') return date <= s.today ? [{ label: '作った', action: { type: 'cooked', date } }] : [];
   const btns: ActionButton[] = [];
   if (date <= s.today) btns.push({ label: '作った', action: { type: 'cooked', date } });
   btns.push({ label: '別のに', action: { type: 'request_alternatives', date } });
@@ -46,10 +50,17 @@ export function reactionActions(s: AppState, date: ISODate): ActionButton[] {
   }));
 }
 
-/** 1日の献立の文面（「今日は〇〇（20分）。理由。」）。 */
+/** 1日の献立の文面（「今日は〇〇（20分）。理由。」）。みんな外で食べる日は「夕食なし」と、戻し方。 */
 export function mealText(s: AppState, catalog: Catalog, meal: PlannedMeal): string {
   const when = dateLabel(s.today, meal.date);
+  if (everyoneOut(s.household, meal)) {
+    const solo = eatingMembers(s.household).length <= 1;
+    return [`${when}は${NO_DINNER_TEXT}です。`, ...(meal.date >= s.today ? [backHomeHint(s.today, meal.date, solo)] : [])].join('\n');
+  }
   if (meal.dishIds.length === 0) return `${when}は外食や買ってきたものでどうでしょう。`;
+  if (meal.status === 'skipped') {
+    return meal.date < s.today ? `${when}は作らなかった日です。` : `${when}は作らない日にしています。外食や買ってきたもので済ませてください。`;
+  }
   const lines: string[] = [];
   const minutes = mealMinutes(s, catalog, meal);
   if (meal.kind === 'raku') {

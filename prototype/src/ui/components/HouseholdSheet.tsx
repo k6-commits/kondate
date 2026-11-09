@@ -7,7 +7,7 @@ import { AI_MODES } from '../ai';
 import { SERVINGS_NOTE, SIDE_POLICY, cls, hasPartialServings, nextMemberId, normalizeForSearch } from '../lib';
 import { parseImportedState } from '../storage';
 import type { MemberDraft } from './Forms';
-import { MemberEditor, PlanPicker, Segmented, WeekdayPicker, emptyMemberDraft, exclusionSummary, memberLine } from './Forms';
+import { MemberEditor, PlanPicker, Segmented, WeekdayPicker, emptyMemberDraft, exclusionLine, memberLine } from './Forms';
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
 
@@ -15,6 +15,12 @@ export interface HouseholdChange {
   regenerate: boolean;
   toast: string;
   removedMemberIds?: string[];
+  /**
+   * 家族の変更（人を加える・外す・年齢帯や除外を直す）。作り直しは、今の家族で出せなくなった日だけにする
+   * （エンジンの regenerate_week の keepSafe。今の家族でも出せる日は、だれが決めた日でも残し、人数と買い物リストは直す）。
+   * 献立の曜日・買い物の曜日・ラク日・新しい料理・副菜・要確認の変更では使わない（週を作り直す）。
+   */
+  keepSafe?: boolean;
 }
 
 const MAX_MEMBERS = 6;
@@ -74,7 +80,10 @@ function exclusionsKey(exclusions: Exclusion[]): string {
  * ニックネームと続柄は献立に効かないので、それだけを直したときは献立（今日の分や選んだ差し替え）を作り直さない。
  */
 export function memberChangeAffectsMeals(before: Member, after: Member): boolean {
-  return before.ageBand !== after.ageBand || exclusionsKey(before.exclusions) !== exclusionsKey(after.exclusions);
+  if (before.ageBand !== after.ageBand) return true;
+  // 乳児（1歳未満）は献立の「食べる人」に含めないので、除外を直しても献立は変わらない（エンジンは乳児の除外で献立を選ばない）。
+  if (after.ageBand === 'infant') return false;
+  return exclusionsKey(before.exclusions) !== exclusionsKey(after.exclusions);
 }
 
 export function HouseholdSheet({
@@ -111,6 +120,8 @@ export function HouseholdSheet({
   const setSettings = (patch: Partial<HouseholdSettings>, change: HouseholdChange) =>
     onHouseholdChange({ ...h, settings: { ...settings, ...patch } }, change);
   const regen = (toast: string): HouseholdChange => ({ regenerate: true, toast });
+  /** 家族の変更：出せなくなった日だけを作り直す。 */
+  const regenFamily = (toast: string): HouseholdChange => ({ regenerate: true, toast, keepSafe: true });
 
   const saveMember = () => {
     if (!editing) return;
@@ -136,12 +147,12 @@ export function HouseholdSheet({
     setEditing(null);
     setEditError(null);
     if (!before) {
-      onHouseholdChange({ ...h, members }, regen(`${nickname}を加えました。`));
+      onHouseholdChange({ ...h, members }, regenFamily(`${nickname}を加えました。`));
       return;
     }
     onHouseholdChange(
       { ...h, members },
-      memberChangeAffectsMeals(before, member) ? regen(`${nickname}を直しました。`) : { regenerate: false, toast: `${nickname}を直しました。` },
+      memberChangeAffectsMeals(before, member) ? regenFamily(`${nickname}を直しました。`) : { regenerate: false, toast: `${nickname}を直しました。` },
     );
   };
 
@@ -150,7 +161,7 @@ export function HouseholdSheet({
     setConfirmDelete(null);
     onHouseholdChange(
       { ...h, members: h.members.filter((m) => m.id !== id) },
-      { regenerate: true, toast: `${name}を家族から外しました。`, removedMemberIds: [id] },
+      { regenerate: true, keepSafe: true, toast: `${name}を家族から外しました。`, removedMemberIds: [id] },
     );
   };
 
@@ -190,7 +201,7 @@ export function HouseholdSheet({
                 <div className="member-main">
                   <span className="member-name">{m.nickname}</span>
                   <span className="member-sub">{memberLine(m)}</span>
-                  <span className="member-ex">{exclusionSummary(m.exclusions, catalog)}</span>
+                  <span className="member-ex">{exclusionLine(m, catalog)}</span>
                 </div>
                 {confirmDelete === m.id ? (
                   <div className="confirm" role="group" aria-label={`${m.nickname}を外すかの確認`}>
@@ -329,7 +340,8 @@ export function HouseholdSheet({
             ))}
           </div>
         </fieldset>
-        <div className="toggle-row">
+        {/* 行のどこを押しても切り替わるように、行全体を label にする（チェックボックスは label の中）。 */}
+        <label className="toggle-row" htmlFor="allow-uncertain">
           <input
             id="allow-uncertain"
             type="checkbox"
@@ -341,13 +353,13 @@ export function HouseholdSheet({
               )
             }
           />
-          <label htmlFor="allow-uncertain">
+          <span>
             <span className="setting-name">要確認の料理も出す</span>
             <span className="field-note">
               除外のある家族で、市販のルウ・冷凍食品・惣菜など、銘柄で原材料が変わる物を使う料理も献立に出します。出すときは「要確認」の注意を付けるので、パッケージの表示を必ず確かめてください。ふだんはオフにしておくのがおすすめです。
             </span>
-          </label>
-        </div>
+          </span>
+        </label>
       </section>
 
       <section className="block" aria-labelledby="plan-title">

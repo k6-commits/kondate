@@ -2,15 +2,30 @@
 import type { AppState, Card, Catalog, ISODate, WeeklySummary } from './types';
 import { AISLE_LABEL, AISLE_ORDER } from './types';
 import { addDays, formatJa, weekStartOf } from './dates';
-import { findDishIn, ingredientsOf } from './context';
-import { absentText, dishName, mealLine, mealMinutes, namesLine, newDishHint, servingsText, statusLabel, weekLines } from './text';
+import { everyoneOut, findDishIn, ingredientsOf } from './context';
+import {
+  NO_DINNER_TEXT,
+  absentText,
+  dishName,
+  mealLine,
+  mealMinutes,
+  namesLine,
+  newDishHint,
+  servingsText,
+  statusLabel,
+  weekLines,
+} from './text';
 
-/** 公開API：その週の振り返り。 */
+/**
+ * 公開API：その週の振り返り。
+ * みんな外で食べた日（家で食べる人がいない日）は、献立の日に数えない（作った・作らなかった・記録なしのどれにも入れない）。
+ */
 export function weeklySummary(state: AppState, catalog: Catalog, weekStart: ISODate): WeeklySummary {
   const end = addDays(weekStart, 6);
   const inWeek = (d: ISODate) => d >= weekStart && d <= end;
-  const meals = state.meals.filter((m) => inWeek(m.date) && m.dishIds.length > 0);
-  const records = state.history.filter((r) => inWeek(r.date));
+  const outDates = new Set(state.meals.filter((m) => inWeek(m.date) && everyoneOut(state.household, m)).map((m) => m.date));
+  const meals = state.meals.filter((m) => inWeek(m.date) && m.dishIds.length > 0 && !outDates.has(m.date));
+  const records = state.history.filter((r) => inWeek(r.date) && !outDates.has(r.date));
 
   const cookedDates = new Set<ISODate>();
   for (const m of meals) if (m.status === 'cooked') cookedDates.add(m.date);
@@ -61,12 +76,21 @@ export function weeklySummary(state: AppState, catalog: Catalog, weekStart: ISOD
   };
 }
 
-/** 記録（作った・作らなかった）のある献立日の数。記録のない過ぎた日と、まだ来ていない日は数えない。 */
+/** 記録（作った・作らなかった）のある献立日の数。記録のない過ぎた日と、まだ来ていない日（みんな外で食べる日は除く）は数えない。 */
 function recordedDays(state: AppState, summary: WeeklySummary): number {
   const end = addDays(summary.weekStart, 6);
   const upcoming = new Set(
     state.meals
-      .filter((m) => m.date >= summary.weekStart && m.date <= end && m.dishIds.length > 0 && m.date >= state.today && m.status !== 'cooked' && m.status !== 'skipped')
+      .filter(
+        (m) =>
+          m.date >= summary.weekStart &&
+          m.date <= end &&
+          m.dishIds.length > 0 &&
+          m.date >= state.today &&
+          m.status !== 'cooked' &&
+          m.status !== 'skipped' &&
+          !everyoneOut(state.household, m),
+      )
       .map((m) => m.date),
   ).size;
   return Math.max(0, summary.plannedDays - (summary.unconfirmedDays ?? 0) - upcoming);
@@ -106,6 +130,12 @@ export function renderCardText(state: AppState, catalog: Catalog, card: Card): s
     case 'meal': {
       const meal = state.meals.find((m) => m.date === card.date);
       if (!meal) return `${formatJa(card.date)}の献立はありません。`;
+      // みんな外で食べる日：量・作り方・理由・メモは出さない。家で食べることになったら戻る献立だけ添える（画面と同じ）。
+      if (everyoneOut(state.household, meal)) {
+        const out = [`${formatJa(meal.date)}の夕食`, NO_DINNER_TEXT];
+        if (meal.dishIds.length > 0) out.push(`もとの献立：${namesLine(state, catalog, meal.dishIds)}`);
+        return out.join('\n');
+      }
       const lines = [`${formatJa(meal.date)}の夕食${statusLabel(meal)}`];
       if (meal.dishIds.length === 0) {
         lines.push(mealLine(state, catalog, meal));
@@ -162,7 +192,8 @@ export function renderCardText(state: AppState, catalog: Catalog, card: Card): s
       if (recorded <= 0) lines.push(`${s.plannedDays}日分の献立でした（作った・作らなかったの記録はありません）。`);
       else if (recorded < s.plannedDays) lines.push(`記録のあった${recorded}日のうち${s.decidedWithoutThinking}日、考えずに済みました。`);
       else lines.push(`${s.plannedDays}日のうち${s.decidedWithoutThinking}日、考えずに済みました。`);
-      if (s.skippedOrImpossible > 0) lines.push(`作れなかった日：${s.skippedOrImpossible}日`);
+      // 今日は無理（ラク日に替えた日）と作らなかった日。今日は無理でラク日を作った日は「考えずに済んだ日」にも入る。
+      if (s.skippedOrImpossible > 0) lines.push(`予定どおり作れなかった日：${s.skippedOrImpossible}日`);
       if (unknown > 0 && recorded > 0) lines.push(`記録なし：${unknown}日`);
       if (s.topDishIds.length > 0) {
         lines.push(`人気：${s.topDishIds.slice(0, 3).map((id) => dishName(state, catalog, id)).join('・')}`);

@@ -1,5 +1,5 @@
 // 画面で使う小さな道具（表示用の文言、日付、検索用の正規化など）。
-import type { AppState, Catalog, Dish, ISODate, MealStatus, Member, PlannedMeal, Reaction, Weekday } from '../engine';
+import type { AppState, Catalog, Dish, ISODate, MealStatus, Member, PlannedMeal, Reaction, ShoppingList, Weekday } from '../engine';
 import { SERVING_WEIGHT, WEEKDAY_JA, addDays, findDish, formatJa, isISODate } from '../engine';
 
 export type MemberRole = NonNullable<Member['role']>;
@@ -91,6 +91,33 @@ export function dishRoleLabel(meal: PlannedMeal, index: number, dish: Dish | und
 /** その日に食べる人（乳児と、欠席の人を除く）。献立の量（servings）と同じ数え方。 */
 export function eatersOf(state: AppState, meal: PlannedMeal): Member[] {
   return state.household.members.filter((m) => SERVING_WEIGHT[m.ageBand] > 0 && !meal.absentMemberIds.includes(m.id));
+}
+
+/** 家で食べる人がいない日（「金曜はみんな外食」）の表示。エンジンの文面と同じ言い方。 */
+export const NO_DINNER_TEXT = '夕食なし（みんな外で食べる）';
+
+/**
+ * 家で食べる人がいない日か（みんな外で食べる）。献立は残るが（だれかが食べることになったら戻る）、
+ * 量・作り方・［作った］［差し替え］［今日は無理］は出さない。
+ */
+export function nobodyEats(state: AppState, meal: PlannedMeal): boolean {
+  return eatersOf(state, meal).length === 0;
+}
+
+/** その日の献立が「家で食べる人がいない日」か（献立がなければ false）。 */
+export function nobodyEatsOn(state: AppState, date: ISODate): boolean {
+  const meal = state.meals.find((m) => m.date === date);
+  return !!meal && nobodyEats(state, meal);
+}
+
+/**
+ * 買い物リストの「のこり」：まだチェックしていない物の数。過ぎた買い物日のリストは、これからの献立に使う物だけを数える
+ * （過ぎた日の夕食の分と、みんな外で食べる日の分は、もう買わない。エンジンの「買い物リスト」の返事と同じ数え方）。
+ */
+export function leftCount(state: AppState, list: ShoppingList): number {
+  const unchecked = list.items.filter((i) => !i.checked);
+  if (list.date >= state.today) return unchecked.length;
+  return unchecked.filter((i) => i.forDates.some((d) => d >= state.today && !nobodyEatsOn(state, d))).length;
 }
 
 /**

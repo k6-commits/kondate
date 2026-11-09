@@ -120,10 +120,12 @@ describe('pushesToSend（有料版の配信を、送る直前の state で作り
     throw new Error('解凍の連絡ができる日が見つかりません');
   }
 
-  /** その日の「別のに」の1つ目の候補を選ぶ。 */
+  /** その日の「別のに」の1つ目の候補を選ぶ（案が1つだけなら［替える］）。 */
   function swap(state: AppState, date: ISODate): AppState {
     const alt = applyAction(state, catalog, { type: 'request_alternatives', date });
-    const choose = alt.replies.flatMap((m) => m.actions ?? []).find((a) => a.action.type === 'choose_alternative');
+    const choose = alt.replies
+      .flatMap((m) => m.actions ?? [])
+      .find((a) => a.action.type === 'choose_alternative' || a.action.type === 'accept_proposal');
     expect(choose).toBeDefined();
     return applyAction(alt.state, catalog, choose!.action as Action).state;
   }

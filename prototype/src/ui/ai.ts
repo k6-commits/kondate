@@ -5,7 +5,17 @@
 // AI には家族のニックネームを送らない（member の id に置き換える）。日付はモデルに計算させず、表から選ばせる。
 // 結果は必ずエンジンの validateCommands で検証し、1件も残らなければルールに戻る。
 import type { AppState, Catalog, Genre, ISODate, Member, ParsedCommand, Protein } from '../engine';
-import { GENRE_LABEL, PROTEIN_LABEL, WEEKDAY_JA, addDays, validateCommands, weekStartOf, weekdayOf } from '../engine';
+import {
+  GENRE_LABEL,
+  PROTEIN_LABEL,
+  WEEKDAY_JA,
+  addDays,
+  handleUserText,
+  parseMessage,
+  validateCommands,
+  weekStartOf,
+  weekdayOf,
+} from '../engine';
 
 export type AiMode = 'auto' | 'always' | 'off';
 
@@ -32,6 +42,9 @@ export interface AiReading {
 
 /** この表示中は AI を止めるエラー。 */
 const BLOCKING_CODES = new Set(['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed']);
+
+/** session_expired（見ている人の Claude のログインが切れた）の知らせ。AI は止めず、次の書き込みでまた頼む。 */
+export const SESSION_EXPIRED_NOTICE = 'Claude のログインが切れているため、ルールで読み取りました。ログインし直すと、また AI で読み取れます。';
 
 interface SampleLike {
   json: (input: string, options?: { modelTier?: 'quick' | 'default' | 'complex' }) => Promise<unknown>;
@@ -73,6 +86,8 @@ export class AiReader {
   private statusValue: AiStatus;
   private sample: SampleLike | null = null;
   private started = false;
+  /** ログインが切れたと知らせたか（続けて切れているあいだは、もう知らせない。ほかの結果が来たら戻す）。 */
+  private expiredTold = false;
   private readonly listeners = new Set<() => void>();
   private readonly parseApi: string | undefined;
   private readonly host: () => ClaudeHost | undefined;
@@ -156,10 +171,19 @@ export class AiReader {
     const input = buildAiInstruction(maskNames(text, state.household.members), state, catalog);
     try {
       const raw = await sample.json(input, { modelTier: 'quick' });
-      const commands = validateCommands(state, catalog, toParsedCommands(raw));
+      this.expiredTold = false;
+      const commands = validateCommands(state, catalog, checkMemberRefs(toParsedCommands(raw), state.household.members));
       return commands.length > 0 ? { commands, source: 'ai' } : { commands: null, source: 'rules' };
     } catch (e) {
       const code = isRecord(e) && typeof e.code === 'string' ? e.code : '';
+      if (code === 'session_expired') {
+        // 見ている人がログインし直す必要がある（sample.d.ts：知らせて、操作は残す。自分では再試行しない）。
+        // AI は止めない（ログインし直せば、次の書き込みで読める）。続けて切れているあいだは、知らせは1回だけ。
+        const told = this.expiredTold;
+        this.expiredTold = true;
+        return told ? { commands: null, source: 'rules' } : { commands: null, source: 'rules', notice: SESSION_EXPIRED_NOTICE };
+      }
+      this.expiredTold = false;
       if (BLOCKING_CODES.has(code)) {
         this.sample = null;
         this.setStatus('blocked');
@@ -188,7 +212,7 @@ export class AiReader {
       if (!res.ok) return { commands: null, source: 'rules' };
       const data: unknown = await res.json();
       if (!isRecord(data) || data.source !== 'llm') return { commands: null, source: 'rules' };
-      const commands = validateCommands(state, catalog, toParsedCommands(data.commands));
+      const commands = validateCommands(state, catalog, checkMemberRefs(toParsedCommands(data.commands), state.household.members));
       return commands.length > 0 ? { commands, source: 'ai' } : { commands: null, source: 'rules' };
     } catch {
       return { commands: null, source: 'rules' };
@@ -196,6 +220,77 @@ export class AiReader {
       if (timer) clearTimeout(timer);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// おまかせ：ルールで読めたか
+// ---------------------------------------------------------------------------
+
+/** エンジンの返事（conversation.ts の showUnknown）の書き出し：ルールで読めなかったとき。 */
+export const RULES_UNREAD_REPLY = 'すみません、うまく読み取れませんでした';
+
+/** 同じく、あいさつ・お礼への短い返事の書き出し。 */
+export const SMALL_TALK_REPLIES = ['どういたしまして。', 'はい。献立はこのまま進めます。'];
+
+/** あいさつ・お礼だけの書き込みとみなす長さ（これより長いと、ほかの用件が入っているかもしれないので AI に頼む）。 */
+const SMALL_TALK_MAX = 12;
+
+/** 「@きめとく」と前後の空白・終わりの記号を除いた本文の長さ。 */
+function bodyLength(text: string): number {
+  const body = text
+    .normalize('NFKC')
+    .replace(/^\s*@きめとく/u, '')
+    .replace(/\s+/gu, '')
+    .replace(/[!！?？。、.,〜~ー]+$/u, '');
+  return [...body].length;
+}
+
+/**
+ * おまかせのとき、ルールで読めた書き込みか（読めたら AI に送らない。利用者の Claude の利用枠を使うので、呼ぶ回数を抑える）。
+ * エンジン（handleUserText）がルールで読むものと同じにする：
+ * 1. parseMessage で命令が読めた。
+ * 2. 前日の確認への答え（「作った」「作らなかった」「昨日は無理だった」）。エンジンが記録する（短い答えだけを読む）。
+ *    AI に送ると、読みちがい（「昨日は無理だった」を今日のこと）で、今日の献立が変わることがある。
+ * 3. あいさつ・お礼（「ありがとう」）。短い書き込みだけ。長いと、ほかの用件が入っているかもしれない。
+ * handleUserText は純粋関数なので、ルールだけで処理したらどう返すかを試して決める（state は変えない）。
+ * senderId：送る人（画面の「送る人」）。人を書かない「明日飲み会」は、送る人の欠席としてルールで読める。
+ */
+export function readableByRules(state: AppState, catalog: Catalog, text: string, senderId?: string): boolean {
+  const sender = senderId || undefined;
+  const parsed = parseMessage(text, { today: state.today, members: state.household.members, catalog, senderId: sender });
+  if (parsed.some((c) => c.type !== 'unknown')) return true;
+  const first = handleUserText(state, catalog, text, undefined, { senderId: sender }).replies[0]?.text ?? '';
+  if (!first || first.startsWith(RULES_UNREAD_REPLY)) return false;
+  if (SMALL_TALK_REPLIES.some((r) => first.startsWith(r))) return bodyLength(text) <= SMALL_TALK_MAX;
+  return true;
+}
+
+/**
+ * AI に見せた member の id（member_2 など）。AI が書き方を変えたもの（「member-2」「member 2」「member２」「メンバー2」）も
+ * 同じ id とみなす（全角は NFKC でそろえてから見る）。
+ */
+const MEMBER_ID = /(?:member|メンバー)[\s_\-‐－ー・]*(\d+)/giu;
+
+/** 数字のない「member」「メンバー」も、AI が id を書きかけたもの（名前ではないので、返事に出さない）。 */
+const MEMBER_WORD = /member|メンバー/iu;
+
+/**
+ * 欠席の memberRef に書かれた member の id を確かめる。AI には名前の代わりに id だけを見せているので：
+ * - 家族にいない id（member_9 など）は読みちがい。その欠席は使わない（そのまま渡すと、返事に「member_9」が出る）。
+ *   書き方を変えた id（「member-9」「メンバー9」）や、数字のない「member」も同じ（見ている人は、この語を書いていない）。
+ * - id がいくつか書かれていたら（「member_2とmember_3」）、1人ずつの欠席に分ける（エンジンは id を1つずつ読む）。
+ * id のない言い方（「夫」「みんな」など）は、そのままエンジンに渡す。
+ */
+export function checkMemberRefs(commands: ParsedCommand[], members: Pick<Member, 'id'>[]): ParsedCommand[] {
+  const known = new Set(members.map((m) => m.id));
+  return commands.flatMap((c): ParsedCommand[] => {
+    if (c.type !== 'absence') return [c];
+    const ref = c.memberRef.normalize('NFKC');
+    const ids = [...new Set([...ref.matchAll(MEMBER_ID)].map((m) => `member_${m[1]}`))];
+    if (ids.length === 0) return MEMBER_WORD.test(ref) ? [] : [c];
+    if (ids.some((id) => !known.has(id))) return [];
+    return ids.map((id) => ({ ...c, memberRef: id }));
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -223,12 +318,22 @@ function escapeRegExp(s: string): string {
 }
 
 /**
+ * 名前のかなを含む、よくある言葉。名前として置き換えない（置き換えると、AI が書き込みを読めなくなる）。
+ * 「ママ」「パパ」と当たりやすいもの：「そのまま」「このまま」「生のまま」「冷凍したまま」「読んだまま」「ないまま」「わがまま」。
+ * ひらがな（とよく使うカタカナ）で書いたときだけ。「うちのママ」のようにカタカナで書いた名前は置き換える。
+ */
+const COMMON_WORDS = ['のまま', 'たまま', 'だまま', 'いまま', 'わがまま', 'ワガママ'];
+
+/**
  * 本文に出てくるメンバーのニックネームを、長い順に member の id に置き換える（AI に家族の名前を送らないため）。
  * サーバーの maskNicknames（server/llm.ts）と同じ考え方：
  * - 本文は NFKC にそろえる（全角英数・半角カナのゆれをなくす。そろえた文をそのまま送る）。
  * - ひらがな・カタカナの書き分け（「ゆい」「ユイ」）と、英字の大文字・小文字も置き換える（エンジンが同じ人とみなす表記）。
  * - 1文字のニックネームは、かなでないとき（漢字・英字など）だけ置き換える（エンジンの名前の照合と同じ）。
  * 1回の置き換えで済ませるので、短い名前が、置き換えた id の中に当たることはない。
+ * 名前のかなを含む、よくある言葉は置き換えない：COMMON_WORDS（「そのまま」など）と、すぐ後に「っと」が続くもの
+ * （「ぱぱっと」「パパッと」。名前のすぐ後に「っと」は続かない）。それ以外で、名前のかなを含む言葉は置き換わることがある
+ * （名前を送らないことを先にする）。
  */
 export function maskNames(text: string, members: Pick<Member, 'id' | 'nickname'>[]): string {
   const source = text.normalize('NFKC');
@@ -242,9 +347,14 @@ export function maskNames(text: string, members: Pick<Member, 'id' | 'nickname'>
     }
   }
   if (idByWord.size === 0) return source;
-  const words = [...idByWord.keys()].sort((a, b) => b.length - a.length);
-  const pattern = new RegExp(words.map(escapeRegExp).join('|'), 'giu');
-  return source.replace(pattern, (hit) => idByWord.get(hit.toLowerCase()) ?? hit);
+  // 同じ位置からは長いほうが先に当たる。よくある言葉（そのまま返す）も、名前と同じ並びに入れる（名前そのものなら名前を先にする）。
+  const keep = new Set(COMMON_WORDS.filter((w) => !idByWord.has(w.toLowerCase())));
+  const alternatives = [
+    ...[...keep].map((w) => ({ word: w, re: escapeRegExp(w) })),
+    ...[...idByWord.keys()].map((w) => ({ word: w, re: `${escapeRegExp(w)}(?![っッ]と)` })),
+  ].sort((a, b) => [...b.word].length - [...a.word].length);
+  const pattern = new RegExp(alternatives.map((a) => a.re).join('|'), 'giu');
+  return source.replace(pattern, (hit) => (keep.has(hit) ? hit : (idByWord.get(hit.toLowerCase()) ?? hit)));
 }
 
 /** 今日から days 日分の日付と曜日の表（例：'2026-11-09(月) 今日・今週'）。 */
@@ -307,11 +417,12 @@ export function buildAiInstruction(maskedText: string, state: AppState, catalog:
     '',
     '# 命令の種類（type）',
     '- show_week：今週の献立を見たい',
-    '- show_today：今日の夕食を知りたい',
-    '- show_shopping：買い物リストを見たい',
-    '- today_impossible：今日は作れない、疲れた、ラクしたい（今日の分）',
+    '- show_today：今日（またはある1日）の夕食を知りたい（date は任意。今日以外の日なら入れる。「明日の夕飯なに？」→ 明日）',
+    '- show_shopping：買い物リストを見たい（date は任意。ある日の買い物なら入れる。「明日何買えばいい？」→ 明日）',
+    '- today_impossible：今日は作れない、疲れた、ラクしたい（今日の分）。人を書かない「今日はいらない」は today_impossible にしない',
     '- want_alternatives：その日の料理を別のにしたい（date は任意。「キーマカレー飽きた」のように料理で指したら dishId）',
-    '- absence：その日の夕食を食べない人がいる（飲み会、出張、外食など。date と memberRef が必要。日付がなければ今日）。食べないと伝えていた人が、やはり食べる（欠席の取り消し）なら cancel を true',
+    '- absence：その日の夕食を食べない人がいる（飲み会、出張、外食など。date と memberRef が必要。日付がなければ今日）。食べないと伝えていた人が、やはり食べる（欠席の取り消し）なら cancel を true（「金曜はみんないる」「金曜はやっぱり家で食べる」「金曜の外食なくなった」→ memberRef は「みんな」、cancel を true）',
+    '- absence を出さないとき：「塾」「部活」「残業」「帰りが遅い」のように遅くなるだけで「いらない」「食べない」「食べてくる」と書いていない。「〜かも」「未定」のように、まだ決まっていない。誰が食べないか書いていない（「明日飲み会」「今日はいらない」。memberRef を推測で埋めない）',
     '- sale：食材が安い、特売（ingredientId が必要）',
     '- out_of_stock：食材が切れた、ない（ingredientId が必要）',
     '- have：食材を買った、ある、もらった（ingredientId が必要）。冷凍したなら frozen を true',
@@ -351,9 +462,14 @@ export function toParsedCommands(raw: unknown): ParsedCommand[] {
     if (!(COMMAND_TYPES as readonly string[]).includes(item.type)) continue;
     const type = item.type as CommandType;
     switch (type) {
-      case 'show_week':
       case 'show_today':
-      case 'show_shopping':
+      case 'show_shopping': {
+        // 日付があれば、その日の献立・買い物（「明日の夕飯なに？」）。日付の検証は validateCommands で行う（今日なら外す）。
+        const date = str(item.date);
+        out.push(date ? { type, date } : { type });
+        break;
+      }
+      case 'show_week':
       case 'today_impossible':
       case 'help':
         out.push({ type });

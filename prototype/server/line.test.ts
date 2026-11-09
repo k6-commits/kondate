@@ -210,9 +210,27 @@ describe('toLineMessages', () => {
       expect(byData.get(JSON.stringify({ type: 'reject_proposal', proposalId: p.id }))).toBe(`${formatJa(p.date)} そのまま`);
     }
     for (const item of items) expect(item.action.label.length).toBeLessThanOrEqual(LINE_LIMITS.labelLength);
+    // 片方を押すと、もう片方の案の［替える］［そのまま］が、次の返信のクイックリプライに出る（日付なし）
+    const after = applyAction(r.state, catalog, { type: 'accept_proposal', proposalId: first.id });
+    const next = quickReplyItems(after.replies, after.state);
+    expect(next.map((i) => i.action.label)).toEqual(['替える', 'そのまま', '買い物リスト']);
+    expect(JSON.parse(next[0].action.data)).toEqual({ type: 'accept_proposal', proposalId: second.id });
     // 提案が1つなら、日付は付けない
     const one = handleUserText(state, catalog, '鶏むねが安い');
     expect(quickReplyItems(one.replies, one.state).map((i) => i.action.label)).toEqual(['替える', 'そのまま']);
+  });
+
+  it('みんな外で食べる日（家で食べる人がいない日）の、作る・替えるボタンは入れない（画面の visibleActions と同じ）', () => {
+    // 今日は無理（今日をラク日に）のあと、同じ書き込みの「今日はみんな外食」で、今日は夕食なしになる
+    const r = handleUserText(state, catalog, '@きめとく 今日は無理。今日はみんな外食');
+    expect(r.replies.some((m) => m.actions?.some((a) => a.action.type === 'request_alternatives'))).toBe(true);
+    const labels = quickReplyItems(r.replies, r.state).map((i) => i.action.label);
+    expect(labels).not.toContain('ほかの案');
+    expect(labels).not.toContain('作った');
+    // 家で食べる人がいる日のボタンは、そのまま入る
+    const cookedBtn = msg('今日はさばの味噌煮です。', { actions: [{ label: '作った', action: { type: 'cooked', date: TODAY } }] });
+    expect(quickReplyItems([cookedBtn], state).map((i) => i.action.label)).toEqual(['作った']);
+    expect(quickReplyItems([cookedBtn], r.state).map((i) => i.action.label)).toEqual([]);
   });
 
   it('今日の提案のボタンには日付を付けない（日付のないボタンは今日のこと）', () => {
@@ -243,7 +261,9 @@ describe('toLineMessages', () => {
   });
 
   it('同じ返信の中で置き換わった提案（同じ日の後の提案）の［替える］［そのまま］は出さず、使える提案はすべて選べる', () => {
-    // 例：11/10「鶏むねが安い。豚こまも安い」は、11/13 の提案を作り、同じ 11/13 の別の提案に置き換える
+    // エンジンは同じ書き込みの中で同じ日に2つ目の提案を出さない（11/10「鶏むねが安い。豚こまも安い」は、11/13 の提案1つと
+    // 「上の案と重なります」の返事）。ここでは、返信に出るボタンがすべて使える提案であることを確かめる。
+    // 使えない提案のボタンを外す働き（isGoneProposal）は、念のため残している（上の「片づいた提案」のテスト）。
     const cases = [
       ['2026-11-10', '鶏むねが安い。豚こまも安い'],
       ['2026-11-09', '鶏ももが安い。鶏むねも安い'],
@@ -259,6 +279,25 @@ describe('toLineMessages', () => {
       for (const id of proposalIds) expect(r.state.proposals.some((p) => p.id === id)).toBe(true);
       for (const p of r.state.proposals) expect(proposalIds).toContain(p.id);
     }
+  });
+
+  it('みんな外で食べる日：本文とカードは「夕食なし」（0人分・作り方なし）、戻し方を伝え、作る・替えるボタンは出さない', () => {
+    const r = handleUserText(createInitialState(DEMO_ONBOARDING, catalog, '2026-11-10'), catalog, '金曜はみんな外食');
+    const lines = toLineMessages(r.state, catalog, r.replies);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].text).toContain('予定が変わったら「金曜はみんないる」と送ってください。');
+    expect(lines[0].text).toContain('11/13(金)の夕食\n夕食なし（みんな外で食べる）\nもとの献立：');
+    expect(lines[0].text).not.toMatch(/0人分|はいません|作り方|はじめての料理/);
+    expect(lines[0].quickReply).toBeUndefined();
+    // 週の献立のカードも、金曜は「夕食なし」の1行
+    const week = toLineMessages(r.state, catalog, applyAction(r.state, catalog, { type: 'open_week' }).replies);
+    expect(week[0].text).toContain('金 夕食なし（みんな外で食べる）');
+    // 当日の「今日のごはん」も、作る・替えるボタンなし
+    const today = handleUserText(r.state, catalog, '今日はみんな外食');
+    const shown = applyAction(today.state, catalog, { type: 'open_today' });
+    const items = quickReplyItems(shown.replies, shown.state).map((i) => (JSON.parse(i.action.data) as { type: string }).type);
+    expect(items.filter((t) => ['cooked', 'not_cooked', 'request_alternatives', 'today_impossible'].includes(t))).toEqual([]);
+    expect(toLineMessages(shown.state, catalog, shown.replies)[0].text).toContain('今日は夕食なし（みんな外で食べる）です。');
   });
 
   it('13個の上限はメッセージ単位：入らないメッセージのボタンは、組ごと入れない', () => {

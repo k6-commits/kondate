@@ -45,8 +45,28 @@ export function packCount(need: number, ing: Ingredient): number | null {
 }
 
 export function itemLabel(ing: Ingredient, amount: number, packs: number | null): string {
-  if (ing.pack && packs !== null) return `${ing.name} ${ing.pack.label}${packs > 1 ? `×${packs}` : ''}`;
-  return `${ing.name} ${formatAmount(amount, ing.unit)}`;
+  return `${ing.name} ${quantityText(ing, amount, packs)}`;
+}
+
+/** 量の書き方（「1パック（2切れ）×2」「200g」）。 */
+export function quantityText(ing: Ingredient, amount: number, packs: number | null): string {
+  if (ing.pack && packs !== null) return `${ing.pack.label}${packs > 1 ? `×${packs}` : ''}`;
+  return formatAmount(amount, ing.unit);
+}
+
+/** 買ったあとで要る量が増えた行の、買った分のメモの語尾（「1パック（2切れ）は買ってあります」）。 */
+export const BOUGHT_NOTE = 'は買ってあります';
+
+/** その行の量で買える量（unit）。パックがあれば、パックの数×1パックの量。 */
+export function capacityOf(item: Pick<ShoppingItem, 'amount' | 'packs'>, ing: Ingredient | undefined): number {
+  if (ing?.pack && item.packs !== null) return item.packs * ing.pack.size;
+  return item.amount;
+}
+
+/** その行で、もう買った量（unit）。記録がなければ（前の版の状態）、チェックした行の量。 */
+export function boughtOf(item: ShoppingItem, ing: Ingredient | undefined): number {
+  if (typeof item.bought === 'number' && item.bought > 0) return item.bought;
+  return item.checked ? capacityOf(item, ing) : 0;
 }
 
 function usableLevel(state: AppState, ing: Ingredient, date: ISODate): StockLevel {
@@ -67,7 +87,16 @@ export function buildShoppingLists(state: AppState, catalog: Catalog): ShoppingL
   const covered = new Set<string>();
   for (const l of past) for (const it of l.items) for (const d of it.forDates) if (d >= today) covered.add(`${it.ingredientId}|${d}`);
   const prevChecked = new Set<string>();
-  for (const l of state.shopping) for (const it of l.items) if (it.checked) prevChecked.add(`${l.date}|${it.ingredientId}`);
+  // もう買った量（チェックした行）。買ったあとで人数や料理が変わって要る量が増えたら、足りない分だけを買う物にする。
+  const prevBought = new Map<string, number>();
+  for (const l of state.shopping) {
+    for (const it of l.items) {
+      const key = `${l.date}|${it.ingredientId}`;
+      if (it.checked) prevChecked.add(key);
+      const bought = boughtOf(it, catalog.ingredientById.get(it.ingredientId));
+      if (bought > 0) prevBought.set(key, bought);
+    }
+  }
 
   const uses = new Map<string, Use[]>();
   const pantry = new Map<ISODate, Set<string>>();
@@ -126,7 +155,7 @@ export function buildShoppingLists(state: AppState, catalog: Catalog): ShoppingL
   for (const [ingId, list] of uses) {
     const ing = catalog.ingredientById.get(ingId);
     if (!ing) continue;
-    const checkedDates = new Set(list.map((u) => u.shopDate).filter((d) => prevChecked.has(`${d}|${ingId}`)));
+    const checkedDates = new Set(list.map((u) => u.shopDate).filter((d) => prevBought.has(`${d}|${ingId}`)));
     // チェックで在庫になった分は、そのリストの献立で使う前提にする（ほかのリストからは差し引かない）。
     let level: StockLevel = checkedDates.size > 0 ? 'none' : usableLevel(state, ing, list[0].date);
     const groups = new Map<ISODate, Use[]>();
@@ -153,10 +182,31 @@ export function buildShoppingLists(state: AppState, catalog: Catalog): ShoppingL
         }
       }
       if (need <= 1e-9) continue;
-      const amount = roundAmount(need, ing.unit);
-      const packs = packCount(need, ing);
+      let amount = roundAmount(need, ing.unit);
+      let packs = packCount(need, ing);
+      let label = itemLabel(ing, amount, packs);
       const late = forDates.filter((d) => diffDays(d, shopDate) > ing.shelfLifeDays);
       const notes: string[] = [];
+      // もう買った量と比べる。足りていればチェックのまま。足りなければチェックを外し、足りない分だけを買う物にする。
+      const bought = prevBought.get(`${shopDate}|${ingId}`) ?? 0;
+      let isChecked = false;
+      if (bought > 0) {
+        const boughtPacks = ing.pack && packs !== null ? Math.floor(bought / ing.pack.size + 1e-9) : null;
+        const enough = packs !== null && boughtPacks !== null ? boughtPacks >= packs : bought + 1e-9 >= amount;
+        if (enough) {
+          isChecked = true;
+        } else {
+          const boughtText = quantityText(ing, bought, boughtPacks);
+          if (packs !== null && boughtPacks !== null && ing.pack) {
+            packs -= boughtPacks;
+            amount = packs * ing.pack.size;
+          } else {
+            amount = roundAmount(amount - bought, ing.unit);
+          }
+          label = `${ing.name} あと${quantityText(ing, amount, packs)}`;
+          notes.push(`${boughtText}${BOUGHT_NOTE}`);
+        }
+      }
       if (late.length > 0) {
         if (ing.freezable) {
           notes.push(late.length === forDates.length ? FREEZE_NOTE : `${FREEZE_NOTE}（${late.map(formatJa).join('・')}の分）`);
@@ -171,12 +221,13 @@ export function buildShoppingLists(state: AppState, catalog: Catalog): ShoppingL
         amount,
         unit: ing.unit,
         packs,
-        label: itemLabel(ing, amount, packs),
+        label,
         forDates: forDates.sort(),
-        checked,
+        checked: isChecked,
         notes,
         uncertain: ing.uncertain && markUncertain,
       };
+      if (bought > 0) item.bought = bought;
       itemsByDate.set(shopDate, [...(itemsByDate.get(shopDate) ?? []), item]);
       shopDates.add(shopDate);
     }

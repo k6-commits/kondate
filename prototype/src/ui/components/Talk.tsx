@@ -1,10 +1,10 @@
 // トーク画面（LINE のグループで使う想定のトーク画面の試作）。
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactElement } from 'react';
-import type { Action, AppState, Card, Catalog, ChatMessage, ISODate, Member } from '../../engine';
+import type { Action, ActionButton, AppState, Card, Catalog, ChatMessage, ISODate, Member } from '../../engine';
 import { formatJa, weekStartOf } from '../../engine';
 import type { AiStatus } from '../ai';
-import { cls } from '../lib';
+import { cls, nobodyEatsOn } from '../lib';
 import { ChatCard } from './ChatCard';
 import type { CardHandlers } from './ChatCard';
 import { Hanko, Icon } from './Icon';
@@ -47,6 +47,67 @@ function timeOf(at: string): string {
 }
 
 /**
+ * 出す時刻（メッセージの id ごと）。同じ日の中で、前のメッセージより早い時刻にはしない（前の時刻にそろえる）。
+ * エンジンの時刻は日付と採番から作る目安で、書き込みとその返事は朝、配信は夕方の時刻になる。そのままだと、
+ * 夕方の配信（17:18）のあとに書いた「作った」が 08:19 と出て、時刻が戻って見える。
+ */
+export function displayTimes(chat: ChatMessage[]): Map<string, string> {
+  const out = new Map<string, string>();
+  let day = '';
+  let latest = '';
+  for (const m of chat) {
+    const d = m.at.slice(0, 10);
+    if (d !== day) {
+      day = d;
+      latest = '';
+    }
+    const t = timeOf(m.at);
+    if (t > latest) latest = t;
+    out.set(m.id, t ? latest : '');
+  }
+  return out;
+}
+
+/** ボタンの日付（同じ文字のボタンを見分けるため。LINE のクイックリプライの actionDate（server/line.ts）と同じ）。 */
+function actionDate(state: AppState, action: Action): ISODate | null {
+  switch (action.type) {
+    case 'cooked':
+    case 'not_cooked':
+    case 'request_alternatives':
+    case 'choose_alternative':
+    case 'today_impossible':
+    case 'react':
+      return action.date;
+    case 'check_item':
+      return action.shoppingDate;
+    case 'regenerate_week':
+      return action.weekStart;
+    case 'accept_proposal':
+    case 'reject_proposal':
+      return state.proposals.find((p) => p.id === action.proposalId)?.date ?? null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * 今出すボタンの文字（メッセージごと。groups と同じ並び）。同じ文字のボタン（「作った」など）が2つ以上のメッセージに
+ * あるときは、そのメッセージの、今日でない日のボタンに日付を付けて見分ける（LINE のクイックリプライと同じ）。
+ * 例：有料版で翌日へ進むと、昨日の確認は［11/9(月) 作った］［11/9(月) 作らなかった］、今日の配信は［作った］。
+ */
+export function actionLabels(state: AppState, groups: ActionButton[][]): string[][] {
+  const messagesByLabel = new Map<string, number>();
+  for (const g of groups) for (const label of new Set(g.map((b) => b.label))) messagesByLabel.set(label, (messagesByLabel.get(label) ?? 0) + 1);
+  return groups.map((g) => {
+    const shared = g.some((b) => (messagesByLabel.get(b.label) ?? 0) > 1);
+    return g.map((b) => {
+      const date = actionDate(state, b.action);
+      return shared && date && date !== state.today ? `${formatJa(date)} ${b.label}` : b.label;
+    });
+  });
+}
+
+/**
  * あとのメッセージに、同じ日（週）のカードがあるメッセージの id。
  * 1日のカードと週のカードは日付だけを持ち、中身を今の献立で描く。あとで献立が変わると、古いメッセージの文と
  * カードが食い違うので、古いカードは畳んで「いまの献立を見る」にする（その日の最新のカードは、そのまま出す）。
@@ -67,6 +128,32 @@ export function supersededCards(chat: ChatMessage[]): Set<string> {
     }
   }
   return out;
+}
+
+/** その日の献立を作る・替えるボタン（作った・作らなかった・別のに・案を選ぶ・今日は無理）。 */
+const DAY_ACTIONS: ReadonlySet<Action['type']> = new Set<Action['type']>([
+  'cooked',
+  'not_cooked',
+  'request_alternatives',
+  'choose_alternative',
+  'today_impossible',
+]);
+
+/** 献立を替えるボタン（別のに・案を選ぶ・今日は無理）。過ぎた日の献立は、もう変えられない。 */
+const CHANGE_ACTIONS: ReadonlySet<Action['type']> = new Set<Action['type']>(['request_alternatives', 'choose_alternative', 'today_impossible']);
+
+/**
+ * 返事のボタンのうち、今出すもの。
+ * - みんな外で食べる日（家で食べる人がいない日）の、作る・替えるボタンは出さない。
+ * - 過ぎた日の献立を替えるボタン（［別のに］［今日は無理］、別の案）は出さない（押しても「もう変えられません」になるだけ）。
+ *   作った・作らなかったの記録のボタンは、過ぎた日にも出す。
+ */
+export function visibleActions(state: AppState, actions: ActionButton[] | undefined): ActionButton[] {
+  return (actions ?? []).filter((b) => {
+    if (!('date' in b.action)) return true;
+    if (DAY_ACTIONS.has(b.action.type) && nobodyEatsOn(state, b.action.date)) return false;
+    return !(CHANGE_ACTIONS.has(b.action.type) && b.action.date < state.today);
+  });
 }
 
 function foldLabel(card: Card): string {
@@ -137,10 +224,17 @@ export function Talk(props: TalkProps) {
   }, []);
 
   const superseded = supersededCards(chat);
+  const times = displayTimes(chat);
+  // ボタンは、最後の書き込みより後のメッセージにだけ出す。同じ文字のボタンは、日付を付けて見分ける。
+  const actionGroups = chat
+    .map((m, i) => ({ id: m.id, actions: m.from === 'bot' && i > lastUser ? visibleActions(state, m.actions) : [] }))
+    .filter((g) => g.actions.length > 0);
+  const labels = actionLabels(state, actionGroups.map((g) => g.actions));
+  const actionsById = new Map(actionGroups.map((g, k) => [g.id, g.actions.map((b, j) => ({ ...b, label: labels[k][j] }))]));
   const rows: ReactElement[] = [];
   let prevDay = '';
   let prevFrom: ChatMessage['from'] | null = null;
-  chat.forEach((m, i) => {
+  chat.forEach((m) => {
     const day = m.at.slice(0, 10);
     const newDay = day !== prevDay;
     if (newDay) rows.push(<DayDivider key={`day-${m.id}`} day={day} today={state.today} />);
@@ -153,7 +247,7 @@ export function Talk(props: TalkProps) {
           <div className="msg-body">
             {startsGroup ? <div className="msg-name msg-name--user">{nameOf(props.senders[m.id])}</div> : null}
             <div className="msg-line msg-line--user">
-              <span className="msg-time num">{timeOf(m.at)}</span>
+              <span className="msg-time num">{times.get(m.id)}</span>
               <div className="bubble bubble--user">
                 <UserText text={m.text} />
               </div>
@@ -164,7 +258,8 @@ export function Talk(props: TalkProps) {
       return;
     }
     const mark = props.marks[m.id];
-    const showActions = i > lastUser && !!m.actions && m.actions.length > 0;
+    const actions = actionsById.get(m.id) ?? [];
+    const showActions = actions.length > 0;
     rows.push(
       <div key={m.id} className={cls('msg', 'msg--bot', startsGroup && 'starts-group')} data-from="bot">
         <div className="msg-avatar">{startsGroup ? <Hanko /> : null}</div>
@@ -172,7 +267,7 @@ export function Talk(props: TalkProps) {
           {startsGroup ? <div className="msg-name">きめとく</div> : null}
           <div className="msg-line">
             <div className="bubble bubble--bot">{m.text}</div>
-            <span className="msg-time num">{timeOf(m.at)}</span>
+            <span className="msg-time num">{times.get(m.id)}</span>
           </div>
           {m.card ? (
             superseded.has(m.id) ? (
@@ -200,7 +295,7 @@ export function Talk(props: TalkProps) {
           ) : null}
           {showActions ? (
             <div className="chips" role="group" aria-label="返事のボタン">
-              {m.actions!.map((b, k) => (
+              {actions.map((b, k) => (
                 <button key={k} type="button" className="chip chip--action" disabled={props.busy} onClick={() => props.onAction(b.action)}>
                   {b.label}
                 </button>
@@ -292,7 +387,8 @@ function Composer(props: TalkProps) {
           send(text);
         }}
       >
-        <div className="composer-field">
+        {/* label にして、「@きめとく」や余白を押しても入力欄に入れるようにする（押せる所を広く）。 */}
+        <label className="composer-field">
           <span className="mention" aria-hidden="true">
             {MENTION}
           </span>
@@ -314,7 +410,7 @@ function Composer(props: TalkProps) {
               composing.current = false;
             }}
           />
-        </div>
+        </label>
         <button type="submit" className="send-btn" disabled={props.busy || !text.trim()}>
           {props.busy ? '読み取り中…' : '送る'}
         </button>

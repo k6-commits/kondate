@@ -4,7 +4,7 @@ import type { Catalog, Household, ISODate, OnboardingInput, Weekday } from '../.
 import { WEEKDAY_JA, householdNotices } from '../../engine';
 import { cls, normalizeForSearch } from '../lib';
 import type { MemberDraft } from './Forms';
-import { DishPicker, MemberEditor, PLAN_INFO, PlanPicker, WeekdayPicker, emptyMemberDraft, exclusionSummary, memberLine } from './Forms';
+import { DishPicker, MemberEditor, PLAN_INFO, PlanPicker, WeekdayPicker, emptyMemberDraft, exclusionLine, memberLine } from './Forms';
 import { Icon } from './Icon';
 
 const STEPS = ['家族', '買い物の日', '定番', 'プラン', '確認'] as const;
@@ -115,7 +115,10 @@ export function Onboarding({
     <div className="onboarding">
       <header className="ob-head">
         <div className="ob-head-row">
-          <h1 className="ob-title">はじめの設定</h1>
+          {/* 幅が狭くなって左の案内が隠れたときの、フォーカスの行き先（tabindex=-1）。 */}
+          <h1 className="ob-title" tabIndex={-1}>
+            はじめの設定
+          </h1>
           {onCancel ? (
             <button type="button" className="text-btn" onClick={onCancel}>
               やめて戻る
@@ -211,7 +214,7 @@ export function Onboarding({
                     <div className="member-main">
                       <span className="member-name">{m.nickname || '（名前なし）'}</span>
                       <span className="member-sub">{memberLine(m)}</span>
-                      <span className="member-ex">{exclusionSummary(m.exclusions, catalog)}</span>
+                      <span className="member-ex">{exclusionLine(m, catalog)}</span>
                     </div>
                     <div className="row-actions">
                       <button type="button" className="btn btn--small" disabled={editing !== null} onClick={() => setEditing(i)}>
@@ -293,7 +296,7 @@ export function Onboarding({
                 <dd>
                   {members.map((m) => (
                     <span key={m.nickname} className="confirm-member">
-                      {m.nickname}（{memberLine(m)}）{m.exclusions.length > 0 ? ` ${exclusionSummary(m.exclusions, catalog)}` : ''}
+                      {m.nickname}（{memberLine(m)}）{m.exclusions.length > 0 ? ` ${exclusionLine(m, catalog)}` : ''}
                     </span>
                   ))}
                 </dd>

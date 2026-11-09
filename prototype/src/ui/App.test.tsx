@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { AppState, ChatMessage } from '../engine';
-import { AISLE_ORDER, advanceDay, applyAction, createInitialState, householdNotices } from '../engine';
+import { AISLE_ORDER, advanceDay, applyAction, createInitialState, handleUserText, householdNotices } from '../engine';
 import { DEMO_ONBOARDING, defaultCatalog } from '../data';
 import { App, ROUTES, WIDE_QUERY } from './App';
 import { STORAGE_KEY, UI_STORAGE_KEY } from './storage';
@@ -187,6 +187,17 @@ describe('トーク', () => {
     expect(talkLog().querySelector('[data-from="user"] .msg-name')?.textContent).toBe('パパ');
   });
 
+  it('人を書かない「明日飲み会」は、送る人の欠席にする（誰かを聞き返さない）', () => {
+    render(<App todayFn={todayFn} />);
+    fireEvent.change(screen.getByLabelText('送る人'), { target: { value: 'member_2' } });
+    send('明日飲み会');
+    const tue = saved().meals.find((m) => m.date === '2026-11-10')!;
+    expect(tue.absentMemberIds).toEqual(['member_2']);
+    const reply = [...talkLog().querySelectorAll('[data-from="bot"] .bubble--bot')].pop()?.textContent ?? '';
+    expect(reply).not.toContain('誰が食べませんか');
+    expect(reply).toContain('パパ');
+  });
+
   it('ボタン（チップ）を押すと applyAction の返事が入る', () => {
     render(<App todayFn={todayFn} />);
     const chips = within(talkLog()).getAllByRole('button', { name: '今日のごはん' });
@@ -257,7 +268,8 @@ describe('有料版の反応', () => {
     fireEvent.click(within(screen.getByRole('group', { name: 'プラン（デモ）' })).getByRole('button', { name: '有料' }));
     fireEvent.click(screen.getByRole('button', { name: '翌日へ進む' }));
     const ask = [...talkLog().querySelectorAll('[data-from="bot"]')].find((m) => /は作りましたか？/.test(m.textContent ?? '')) as HTMLElement;
-    fireEvent.click(within(ask).getByRole('button', { name: '作った' }));
+    // 今日の配信にも［作った］があるので、昨日の確認のボタンには日付が付く
+    fireEvent.click(within(ask).getByRole('button', { name: '11/9(月) 作った' }));
     fireEvent.click(within(talkLog()).getByRole('button', { name: 'ママ ◎' }));
     expect(within(talkLog()).getByText(/ほかの人の分もどうぞ/)).toBeTruthy();
     expect(within(talkLog()).queryByRole('button', { name: 'ママ ◎' })).toBeNull();
@@ -270,6 +282,48 @@ describe('有料版の反応', () => {
     // まだ押していない人（はると・ゆい）のボタンは残る
     expect(within(talkLog()).getByRole('button', { name: 'はると ◎' })).toBeTruthy();
     expect(within(talkLog()).queryByRole('button', { name: 'パパ ◎' })).toBeNull();
+  });
+
+  it('昨日の確認と今日の配信の両方に［作った］があるとき、昨日のボタンには日付を付ける（今日のボタンを押しても昨日にならない）', () => {
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(within(screen.getByRole('group', { name: 'プラン（デモ）' })).getByRole('button', { name: '有料' }));
+    fireEvent.click(screen.getByRole('button', { name: '翌日へ進む' }));
+    const bots = [...talkLog().querySelectorAll('[data-from="bot"]')] as HTMLElement[];
+    const ask = bots.find((m) => /は作りましたか？/.test(m.textContent ?? '')) as HTMLElement;
+    const push = bots.filter((m) => m.querySelector('.tag--push') && within(m).queryByRole('button', { name: '別のに' })).at(-1) as HTMLElement;
+    const names = (el: HTMLElement) => within(el).getAllByRole('button').map((b) => b.textContent);
+    expect(names(ask)).toEqual(['11/9(月) 作った', '11/9(月) 作らなかった']);
+    expect(names(push)).toEqual(['作った', '別のに', '今日は無理']);
+    // 日付のない［作った］は今日（11/10）の分
+    fireEvent.click(within(push).getByRole('button', { name: '作った' }));
+    expect(saved().meals.find((m) => m.date === '2026-11-10')?.status).toBe('cooked');
+    expect(saved().meals.find((m) => m.date === MONDAY)?.status).toBe('unconfirmed');
+  });
+
+  it('同じ日の時刻は戻らない（夕方の配信のあとの書き込みは、配信より前の時刻にしない）', () => {
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(within(screen.getByRole('group', { name: 'プラン（デモ）' })).getByRole('button', { name: '有料' }));
+    fireEvent.click(screen.getByRole('button', { name: '翌日へ進む' }));
+    fireEvent.change(screen.getByLabelText('きめとくへの書き込み'), { target: { value: '作った' } });
+    fireEvent.click(screen.getByRole('button', { name: '送る' }));
+    // 日の区切りのあとは、朝の時刻から数え直す
+    let prev = '';
+    let checked = 0;
+    for (const el of talkLog().querySelectorAll('.day-divider, .msg')) {
+      if (el.classList.contains('day-divider')) {
+        prev = '';
+        continue;
+      }
+      const t = el.querySelector('.msg-time')?.textContent ?? '';
+      if (!/^\d{2}:\d{2}$/.test(t)) continue;
+      expect(t >= prev).toBe(true);
+      prev = t;
+      checked += 1;
+    }
+    expect(checked).toBeGreaterThan(3);
+    // 「作った」は夕方の配信のあと（17時台以降）の時刻
+    const users = [...talkLog().querySelectorAll('[data-from="user"] .msg-time')];
+    expect(users.at(-1)?.textContent && users.at(-1)!.textContent! >= '17:00').toBe(true);
   });
 });
 
@@ -409,6 +463,21 @@ describe('家族と設定', () => {
     expect(s.household.settings.rakuPerWeek).toBe(0);
     expect(s.meals.filter((m) => m.kind === 'raku').length).toBe(0);
     expect(screen.getByRole('status').textContent).toContain('献立も作り直しました');
+  });
+
+  it('これからの日がみんな外で食べる日だけなら、設定を変えても作り直さず、知らせも「作り直しました」と言わない', () => {
+    // 金曜（その週の最後の献立日）に「今日はみんな外食」
+    let s = createInitialState(DEMO_ONBOARDING, defaultCatalog, MONDAY);
+    for (let i = 0; i < 4; i++) s = advanceDay(s, defaultCatalog).state;
+    s = handleUserText(s, defaultCatalog, '@きめとく 今日はみんな外食').state;
+    const fri = s.meals.find((m) => m.date === s.today)!;
+    expect(fri.absentMemberIds.length).toBe(4);
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+    render(<App todayFn={() => s.today} />);
+    fireEvent.click(within(menu()).getByRole('button', { name: '家族と設定' }));
+    fireEvent.click(within(screen.getByRole('group', { name: 'ラク日の数' })).getByRole('button', { name: '0日' }));
+    expect(screen.getByRole('status').textContent).toBe('ラク日を週0日にしました。');
+    expect(saved().meals.find((m) => m.date === s.today)!.dishIds).toEqual(fri.dishIds);
   });
 
   it('設定で作り直しても、自分で替えた日は残り、知らせでもそう言う', () => {
@@ -778,5 +847,122 @@ describe('はじめての人への案内', () => {
     render(<App todayFn={todayFn} />);
     expect(screen.queryByRole('button', { name: '試し方を見る' })).toBeNull();
     expect(uiPrefs().aboutSeen).toBe(true);
+  });
+});
+
+describe('U3：幅が変わっても、フォーカスを BODY に落とさない', () => {
+  /** 広い画面で左に出る案内の見出し。 */
+  function aboutColHeading(): HTMLElement {
+    return document.querySelector('.about-col .about-title') as HTMLElement;
+  }
+
+  function helpButton(): HTMLElement {
+    return screen.getByRole('button', { name: 'このプロトタイプについて' });
+  }
+
+  function inertParts(): string[] {
+    return [...document.querySelectorAll('[inert]')].map((e) => e.className);
+  }
+
+  it('左の案内の見出しは、フォーカスの行き先にできる（tabindex=-1）。重ねた案内の見出しは今までどおり', () => {
+    mockMatchMedia(false);
+    render(<App todayFn={todayFn} />);
+    expect(aboutColHeading().getAttribute('tabindex')).toBe('-1');
+    fireEvent.click(helpButton());
+    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'このプロトタイプについて' }).hasAttribute('tabindex')).toBe(false);
+  });
+
+  it('重ねた案内を開いたまま広げると、左の案内の見出しへ。狭く戻すと「?」へ。どこも inert にならない', () => {
+    const media = mockMatchMedia(false);
+    render(<App todayFn={todayFn} />);
+    helpButton().focus();
+    fireEvent.click(helpButton());
+    expect(document.activeElement).toBe(within(screen.getByRole('dialog')).getByRole('button', { name: '閉じる' }));
+
+    media.set(true);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(aboutColHeading());
+    expect(inertParts()).toEqual([]);
+
+    media.set(false);
+    expect(document.activeElement).toBe(helpButton());
+    expect(inertParts()).toEqual([]);
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    // もう一度広げても、BODY に落ちない（「?」は広い画面では出ない）
+    media.set(true);
+    expect(document.activeElement).toBe(aboutColHeading());
+    send('卵切れた');
+    expect(userCount()).toBe(1);
+  });
+
+  it('「試し方を見る」から開いて広げても、左の案内の見出しへ', () => {
+    const media = mockMatchMedia(false);
+    render(<App todayFn={todayFn} />);
+    const hint = screen.getByRole('button', { name: '試し方を見る' });
+    hint.focus();
+    fireEvent.click(hint);
+    media.set(true);
+    expect(document.activeElement).toBe(aboutColHeading());
+  });
+
+  it('「?」や「試し方を見る」にフォーカスがあるまま広げても（案内は開かない）、左の案内の見出しへ', () => {
+    const media = mockMatchMedia(false);
+    render(<App todayFn={todayFn} />);
+    helpButton().focus();
+    media.set(true);
+    expect(document.activeElement).toBe(aboutColHeading());
+    media.set(false);
+    expect(document.activeElement).toBe(helpButton());
+
+    window.localStorage.clear();
+    cleanup();
+    const media2 = mockMatchMedia(false);
+    render(<App todayFn={todayFn} />);
+    screen.getByRole('button', { name: '試し方を見る' }).focus();
+    media2.set(true);
+    expect(screen.queryByRole('button', { name: '試し方を見る' })).toBeNull();
+    expect(document.activeElement).toBe(aboutColHeading());
+  });
+
+  it('シートの上に案内を重ねて開いて広げても、左の案内の見出しへ。シートは操作できる（シートの層は inert でない）', () => {
+    const media = mockMatchMedia(false);
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(within(menu()).getByRole('button', { name: '今週の献立' }));
+    helpButton().focus();
+    fireEvent.click(helpButton());
+    expect(document.querySelector('.sheet-layer')?.hasAttribute('inert')).toBe(true);
+    media.set(true);
+    expect(document.activeElement).toBe(aboutColHeading());
+    // シートを開いているあいだ、トークは今までどおり inert。シートと、デモの操作は inert でない
+    expect(inertParts()).toEqual(['talk-layer']);
+    fireEvent.click(screen.getByRole('button', { name: '戻る' }));
+    expect(document.querySelector('[data-sheet]')).toBeNull();
+    expect(inertParts()).toEqual([]);
+  });
+
+  it('初回設定の画面で、左の案内にフォーカスがあるまま狭くすると、初回設定の見出しへ', () => {
+    const media = mockMatchMedia(true);
+    window.location.hash = '#start';
+    render(<App todayFn={todayFn} />);
+    const start = within(document.querySelector('.about-col') as HTMLElement).getByRole('button', { name: 'はじめから設定する' });
+    start.focus();
+    media.set(false);
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'はじめの設定' }));
+  });
+
+  it('フォーカスがほかの所（書き込み欄）にあるとき、フォーカスがないときは、幅を変えても動かさない', () => {
+    const media = mockMatchMedia(false);
+    render(<App todayFn={todayFn} />);
+    expect(document.activeElement).toBe(document.body);
+    media.set(true);
+    media.set(false);
+    expect(document.activeElement).toBe(document.body);
+
+    input().focus();
+    media.set(true);
+    expect(document.activeElement).toBe(input());
+    media.set(false);
+    expect(document.activeElement).toBe(input());
   });
 });

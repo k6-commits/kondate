@@ -46,7 +46,8 @@ export function AboutPanel({
     <div className="about">
       <div className="about-head">
         <p className="about-kicker">試作・きめとく（仮）</p>
-        <h2 className="about-title" id={onClose ? 'about-overlay-title' : 'about-title'}>
+        {/* 左に出す案内の見出しは、幅が広がって重ねた案内が閉じたときのフォーカスの行き先（tabindex=-1）。 */}
+        <h2 className="about-title" id={onClose ? 'about-overlay-title' : 'about-title'} tabIndex={onClose ? undefined : -1}>
           このプロトタイプについて
         </h2>
         {onClose ? (

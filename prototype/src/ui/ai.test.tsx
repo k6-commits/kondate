@@ -1,9 +1,20 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { createInitialState } from '../engine';
+import { advanceDay, createInitialState, handleUserText } from '../engine';
 import { DEMO_ONBOARDING, defaultCatalog } from '../data';
 import type { AppState } from '../engine';
-import { AiReader, buildAiInstruction, dateTable, maskNames, toParsedCommands } from './ai';
+import {
+  AiReader,
+  RULES_UNREAD_REPLY,
+  SESSION_EXPIRED_NOTICE,
+  SMALL_TALK_REPLIES,
+  buildAiInstruction,
+  checkMemberRefs,
+  dateTable,
+  maskNames,
+  readableByRules,
+  toParsedCommands,
+} from './ai';
 import { App } from './App';
 import { STORAGE_KEY } from './storage';
 
@@ -77,6 +88,30 @@ describe('送る前の下ごしらえ', () => {
     expect(maskNames('明日はKがいない、Ｋの好物は？ kも', [{ id: 'member_4', nickname: 'K' }])).toBe(
       '明日はmember_4がいない、member_4の好物は? member_4も',
     );
+  });
+
+  it('名前のかなを含む、よくある言葉（そのまま・ぱぱっと・わがまま）は置き換えない。名前は置き換える', () => {
+    const ms = demo().household.members; // ママ（member_1）・パパ（member_2）・はると・ゆい
+    for (const t of [
+      '今日はぱぱっと作れるものがいい',
+      'パパッと作れるのがいい',
+      '今日はそのままでいい',
+      'このままでいい',
+      'わがまま言っていい?',
+      'ワガママ言っていい?',
+      '鮭は生のままある',
+      '冷凍したままの鶏もも',
+      '解凍しないままでいい',
+    ]) {
+      expect(maskNames(t, ms)).toBe(t);
+    }
+    expect(maskNames('ママ、そのままでいい', ms)).toBe('member_1、そのままでいい');
+    expect(maskNames('ぱぱって今日いる?', ms)).toBe('member_2って今日いる?');
+    expect(maskNames('明日はぱぱが飲み会、ままは家', ms)).toBe('明日はmember_2が飲み会、member_1は家');
+    expect(maskNames('うちのママとパパ', ms)).toBe('うちのmember_1とmember_2');
+    expect(maskNames('はるとがそのまま食べる', ms)).toBe('member_3がそのまま食べる');
+    // 名前そのものがよくある言葉と同じなら、名前として置き換える
+    expect(maskNames('わがままが来る', [{ id: 'member_7', nickname: 'わがまま' }])).toBe('member_7が来る');
   });
 
   it('AI に送る文に、表記ゆれの名前が残らない', () => {
@@ -163,6 +198,106 @@ describe('送る前の下ごしらえ', () => {
     ]);
   });
 
+  it('家族にいない member の id の欠席は使わない。id がいくつかなら1人ずつに分ける', () => {
+    const ms = demo().household.members;
+    const cmds = checkMemberRefs(
+      [
+        { type: 'absence', date: '2026-11-10', memberRef: 'member_9' },
+        { type: 'absence', date: '2026-11-10', memberRef: 'member_0' },
+        { type: 'absence', date: '2026-11-11', memberRef: 'member_2とmember_9' },
+        { type: 'absence', date: '2026-11-12', memberRef: 'member_2とmember_3', cancel: true },
+        { type: 'absence', date: '2026-11-13', memberRef: 'Member_4さん' },
+        { type: 'absence', date: '2026-11-13', memberRef: '夫' },
+        { type: 'sale', ingredientId: 'chicken_breast' },
+      ],
+      ms,
+    );
+    expect(cmds).toEqual([
+      { type: 'absence', date: '2026-11-12', memberRef: 'member_2', cancel: true },
+      { type: 'absence', date: '2026-11-12', memberRef: 'member_3', cancel: true },
+      { type: 'absence', date: '2026-11-13', memberRef: 'member_4' },
+      { type: 'absence', date: '2026-11-13', memberRef: '夫' },
+      { type: 'sale', ingredientId: 'chicken_breast' },
+    ]);
+  });
+
+  it('書き方を変えた id（member-9・member９・メンバー9）や数字のない「member」も、家族にいなければ使わない', () => {
+    const ms = demo().household.members;
+    const cmds = checkMemberRefs(
+      [
+        { type: 'absence', date: '2026-11-10', memberRef: 'member-9' },
+        { type: 'absence', date: '2026-11-10', memberRef: 'member９' },
+        { type: 'absence', date: '2026-11-10', memberRef: 'member 9' },
+        { type: 'absence', date: '2026-11-10', memberRef: 'メンバー9' },
+        { type: 'absence', date: '2026-11-10', memberRef: 'ﾒﾝﾊﾞｰ9' },
+        { type: 'absence', date: '2026-11-10', memberRef: 'member' },
+        { type: 'absence', date: '2026-11-10', memberRef: 'member_02' },
+        { type: 'absence', date: '2026-11-11', memberRef: 'ｍｅｍｂｅｒ＿２' },
+        { type: 'absence', date: '2026-11-11', memberRef: 'member-3' },
+        { type: 'absence', date: '2026-11-12', memberRef: 'メンバー1・メンバー4' },
+        { type: 'absence', date: '2026-11-13', memberRef: 'みんな' },
+      ],
+      ms,
+    );
+    expect(cmds).toEqual([
+      { type: 'absence', date: '2026-11-11', memberRef: 'member_2' },
+      { type: 'absence', date: '2026-11-11', memberRef: 'member_3' },
+      { type: 'absence', date: '2026-11-12', memberRef: 'member_1' },
+      { type: 'absence', date: '2026-11-12', memberRef: 'member_4' },
+      { type: 'absence', date: '2026-11-13', memberRef: 'みんな' },
+    ]);
+  });
+
+  it('エンジンの返事の書き出し（読めなかった・あいさつ）が、画面の判定と合っている', () => {
+    const s = demo();
+    expect(handleUserText(s, defaultCatalog, '@きめとく あのさー').replies[0].text.startsWith(RULES_UNREAD_REPLY)).toBe(true);
+    expect(handleUserText(s, defaultCatalog, '@きめとく ありがとう').replies[0].text.startsWith(SMALL_TALK_REPLIES[0])).toBe(true);
+    expect(handleUserText(s, defaultCatalog, '了解').replies[0].text.startsWith(SMALL_TALK_REPLIES[1])).toBe(true);
+  });
+
+  it('おまかせ：前日の確認への答えと短いあいさつは、ルールで読めたとみなす（AI に送らない）', () => {
+    const s = demo();
+    const next = advanceDay(s, defaultCatalog).state; // 火曜。「昨日のさばの味噌煮は作りましたか？」が来ている
+    const readable = (st: AppState, t: string) => readableByRules(st, defaultCatalog, `@きめとく ${t}`);
+    expect(readable(next, '作った')).toBe(true);
+    expect(readable(next, '作らなかった')).toBe(true);
+    expect(readable(next, '昨日は無理だった')).toBe(true);
+    expect(readable(next, 'ありがとう')).toBe(true);
+    expect(readable(next, 'いつもありがとう！')).toBe(true);
+    expect(readable(s, '卵切れた')).toBe(true);
+    // ルールで読めない、あいさつに用件がついている
+    expect(readable(next, 'あのさー')).toBe(false);
+    expect(readable(next, '今日はぱぱっと作れるものがいい')).toBe(false);
+    expect(readable(next, 'ありがとう、明日はぱぱっと作れるのがいい')).toBe(false);
+    // 試すだけで、state は変えない
+    expect(next.chat.some((m) => m.from === 'user')).toBe(false);
+  });
+
+  it('「明日の夕飯なに？」のような、日付つきの見るだけの命令は、日付も渡す（サーバーの toParsedCommand と同じ）', () => {
+    const cmds = toParsedCommands({
+      commands: [
+        { type: 'show_today', ...NULLS, date: '2026-11-10' },
+        { type: 'show_shopping', ...NULLS, date: '2026-11-12' },
+        { type: 'show_today', ...NULLS },
+      ],
+    });
+    expect(cmds).toEqual([
+      { type: 'show_today', date: '2026-11-10' },
+      { type: 'show_shopping', date: '2026-11-12' },
+      { type: 'show_today' },
+    ]);
+  });
+
+  it('指示に、遅くなるだけ・決まっていない・人を書かない欠席の決まりと、みんな外で食べる日の戻し方が入る（サーバーの指示と同じ）', () => {
+    const text = buildAiInstruction('水曜はmember_3が塾', demo(), defaultCatalog);
+    expect(text).toContain('「塾」「部活」「残業」「帰りが遅い」');
+    expect(text).toContain('「〜かも」「未定」');
+    expect(text).toContain('memberRef を推測で埋めない');
+    expect(text).toContain('「今日はいらない」は today_impossible にしない');
+    expect(text).toContain('「金曜はみんないる」「金曜はやっぱり家で食べる」「金曜の外食なくなった」');
+    expect(text).toContain('「明日の夕飯なに？」→ 明日');
+  });
+
   it('指示に、取り消し・質問・冷凍の項目と、過ぎたことでは献立を変えない決まりが入る', () => {
     const s = demo();
     const text = buildAiInstruction('豆腐あったっけ？', s, defaultCatalog);
@@ -215,6 +350,38 @@ describe('AiReader', () => {
     expect(r2).toEqual({ commands: null, source: 'rules' });
     expect(reader.status).toBe('claude');
     expect(json).toHaveBeenCalledTimes(2);
+  });
+
+  it('家族にいない member の id の欠席（member_9）は使わず、ルールに戻る', async () => {
+    mockClaude(async () => ({ commands: [{ type: 'absence', ...NULLS, date: '2026-11-10', memberRef: 'member_9' }] }));
+    const reader = new AiReader({ parseApi: undefined });
+    reader.start();
+    await waitFor(() => expect(reader.status).toBe('claude'));
+    expect(await reader.read('あのさー', demo(), defaultCatalog)).toEqual({ commands: null, source: 'rules' });
+  });
+
+  it('session_expired はログインし直すように1回だけ知らせ、AI は止めない（次の書き込みでまた頼む。自分では再試行しない）', async () => {
+    let fail = true;
+    const { json } = mockClaude(async () => {
+      if (fail) throw { code: 'session_expired', message: 'x' };
+      return { commands: [] };
+    });
+    const reader = new AiReader({ parseApi: undefined });
+    reader.start();
+    await waitFor(() => expect(reader.status).toBe('claude'));
+    const r1 = await reader.read('うーん', demo(), defaultCatalog);
+    expect(r1).toEqual({ commands: null, source: 'rules', notice: SESSION_EXPIRED_NOTICE });
+    expect(r1.notice).toMatch(/ログインし直す/);
+    expect(reader.status).toBe('claude');
+    expect(json).toHaveBeenCalledTimes(1);
+    // 続けて切れているあいだは、もう知らせない
+    expect(await reader.read('うーん', demo(), defaultCatalog)).toEqual({ commands: null, source: 'rules' });
+    // ログインし直して読めたあと、また切れたら、また知らせる
+    fail = false;
+    await reader.read('うーん', demo(), defaultCatalog);
+    fail = true;
+    expect((await reader.read('うーん', demo(), defaultCatalog)).notice).toBe(SESSION_EXPIRED_NOTICE);
+    expect(json).toHaveBeenCalledTimes(4);
   });
 
   it('use("sample") が null なら AI なし', async () => {
@@ -322,6 +489,76 @@ describe('画面での AI の読み取り', () => {
 
     fireEvent.click(within(screen.getByRole('navigation', { name: 'メニュー' })).getByRole('button', { name: '家族と設定' }));
     expect(screen.getByTestId('ai-status').textContent).toContain('この画面では AI を使えません');
+  });
+
+  it('おまかせでは、前日の確認への答え（作った・昨日は無理だった）とお礼を AI に送らない。AI が読みちがえても今日の献立は変わらない', async () => {
+    // AI は「今日は無理」と読みちがえる（呼ばれたら、今日の献立が変わってしまう）
+    const { json } = mockClaude(async () => ({ commands: [{ type: 'today_impossible', ...NULLS }] }));
+    const saved = () => JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null') as AppState;
+    render(<App todayFn={() => MONDAY} />);
+    await waitFor(() => expect(form().getAttribute('data-ai-status')).toBe('claude'));
+    fireEvent.click(screen.getByRole('button', { name: '翌日へ進む' }));
+    const tuesday = saved().meals.find((m) => m.date === '2026-11-10')?.dishIds;
+
+    send('昨日は無理だった');
+    await waitFor(() => expect(within(log()).getAllByText('ルールで読み取り')).toHaveLength(1));
+    expect(json).not.toHaveBeenCalled();
+    expect(saved().meals.find((m) => m.date === '2026-11-09')?.status).toBe('skipped');
+    expect(saved().meals.find((m) => m.date === '2026-11-10')?.dishIds).toEqual(tuesday);
+
+    send('ありがとう');
+    await waitFor(() => expect(within(log()).getAllByText('ルールで読み取り')).toHaveLength(2));
+    expect(within(log()).getByText(/どういたしまして/)).toBeTruthy();
+    expect(json).not.toHaveBeenCalled();
+
+    // ルールで読めない書き込みは、今までどおり AI に頼む
+    send('ふわふわのやつ');
+    await waitFor(() => expect(json).toHaveBeenCalledTimes(1));
+  });
+
+  it('おまかせで「作った」と答えても AI を呼ばず、昨日を作ったと記録する', async () => {
+    const { json } = mockClaude(async () => ({ commands: [] }));
+    const saved = () => JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null') as AppState;
+    render(<App todayFn={() => MONDAY} />);
+    await waitFor(() => expect(form().getAttribute('data-ai-status')).toBe('claude'));
+    fireEvent.click(screen.getByRole('button', { name: '翌日へ進む' }));
+    send('作った');
+    await waitFor(() => expect(within(log()).getByText(/おつかれさまでした/)).toBeTruthy());
+    expect(screen.queryByText('読み取り中…')).toBeNull();
+    expect(json).not.toHaveBeenCalled();
+    expect(saved().meals.find((m) => m.date === '2026-11-09')?.status).toBe('cooked');
+  });
+
+  it('session_expired は、ログインし直すようにトーストで知らせ、ルールで返事する', async () => {
+    mockClaude(async () => {
+      throw { code: 'session_expired', message: 'x' };
+    });
+    render(<App todayFn={() => MONDAY} />);
+    await waitFor(() => expect(form().getAttribute('data-ai-status')).toBe('claude'));
+    send('ふわふわのやつ');
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('ログインし直すと'));
+    expect(within(log()).getByText('ルールで読み取り')).toBeTruthy();
+    expect(form().getAttribute('data-ai-status')).toBe('claude');
+  });
+
+  it('AI が家族にいない member（member_9）を返しても、返事に id を出さない', async () => {
+    mockClaude(async () => ({ commands: [{ type: 'absence', ...NULLS, date: '2026-11-10', memberRef: 'member_9' }] }));
+    render(<App todayFn={() => MONDAY} />);
+    await waitFor(() => expect(form().getAttribute('data-ai-status')).toBe('claude'));
+    send('あのさー');
+    await waitFor(() => expect(within(log()).getByText('ルールで読み取り')).toBeTruthy());
+    expect(log().textContent).not.toContain('member_');
+    expect(within(log()).getByText(/うまく読み取れませんでした/)).toBeTruthy();
+  });
+
+  it.each(['member-9', 'メンバー9'])('AI が id の書き方を変えても（%s）、返事に出さない', async (memberRef) => {
+    mockClaude(async () => ({ commands: [{ type: 'absence', ...NULLS, date: '2026-11-10', memberRef }] }));
+    render(<App todayFn={() => MONDAY} />);
+    await waitFor(() => expect(form().getAttribute('data-ai-status')).toBe('claude'));
+    send('あのさー');
+    await waitFor(() => expect(within(log()).getByText('ルールで読み取り')).toBeTruthy());
+    expect(log().textContent).not.toMatch(/member|メンバー/i);
+    expect(within(log()).getByText(/うまく読み取れませんでした/)).toBeTruthy();
   });
 
   it('「使わない」にすると AI を呼ばない', async () => {

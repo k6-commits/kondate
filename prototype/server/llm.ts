@@ -136,10 +136,21 @@ function escapeRegExp(s: string): string {
 }
 
 /**
+ * 名前のかなを含む、よくある言葉。名前として置き換えない（置き換えると、LLM が書き込みを読めなくなる）。
+ * 「ママ」「パパ」と当たりやすいもの：「そのまま」「このまま」「生のまま」「冷凍したまま」「読んだまま」「ないまま」「わがまま」。
+ * ひらがな（とよく使うカタカナ）で書いたときだけ。「うちのママ」のようにカタカナで書いた名前は置き換える。
+ * 画面の maskNames（src/ui/ai.ts）と同じ。
+ */
+const COMMON_WORDS = ['のまま', 'たまま', 'だまま', 'いまま', 'わがまま', 'ワガママ'];
+
+/**
  * 本文のニックネームを、長い順に member の id に置き換える（LLM に名前を送らないため）。
  * - 本文は NFKC にそろえる（全角英数・半角カナのゆれをなくす）。
  * - ひらがな・カタカナの書き分け（「はると」「ハルト」）と、英字の大文字・小文字も置き換える。
  * - 1文字のニックネームは、かなでないとき（漢字・英字など）だけ置き換える（エンジンの名前の照合と同じ。かな1文字は、ほかの言葉の一部を壊しやすい）。
+ * - 名前のかなを含む、よくある言葉は置き換えない：COMMON_WORDS（「そのまま」など）と、すぐ後に「っと」が続くもの
+ *   （「ぱぱっと」「パパッと」。名前のすぐ後に「っと」は続かない）。それ以外で、名前のかなを含む言葉は置き換わることがある
+ *   （名前を送らないことを先にする）。画面の maskNames と同じ決まり。
  */
 export function maskNicknames(text: string, members: Pick<Member, 'id' | 'nickname'>[]): string {
   const source = text.normalize('NFKC');
@@ -153,9 +164,14 @@ export function maskNicknames(text: string, members: Pick<Member, 'id' | 'nickna
     }
   }
   if (idByWord.size === 0) return source;
-  const words = [...idByWord.keys()].sort((a, b) => b.length - a.length);
-  const pattern = new RegExp(words.map(escapeRegExp).join('|'), 'giu');
-  return source.replace(pattern, (hit) => idByWord.get(hit.toLowerCase()) ?? hit);
+  // 同じ位置からは長いほうが先に当たる。よくある言葉（そのまま返す）も、名前と同じ並びに入れる（名前そのものなら名前を先にする）。
+  const keep = new Set(COMMON_WORDS.filter((w) => !idByWord.has(w.toLowerCase())));
+  const alternatives = [
+    ...[...keep].map((w) => ({ word: w, re: escapeRegExp(w) })),
+    ...[...idByWord.keys()].map((w) => ({ word: w, re: `${escapeRegExp(w)}(?![っッ]と)` })),
+  ].sort((a, b) => [...b.word].length - [...a.word].length);
+  const pattern = new RegExp(alternatives.map((a) => a.re).join('|'), 'giu');
+  return source.replace(pattern, (hit) => (keep.has(hit) ? hit : (idByWord.get(hit.toLowerCase()) ?? hit)));
 }
 
 /** LLM に渡すメンバー（名前は入れない）。 */
@@ -215,12 +231,15 @@ export function buildSystemPrompt(catalog: Catalog): string {
 
 ## 命令の種類（type）
 - show_week：今週や来週の献立を見たい。例「今週の献立は？」「来週なに？」
-- show_today：今日の献立を知りたい。例「今日のごはん何？」
-- show_shopping：買い物リストを見たい。例「買い物リスト」「何を買えばいい？」
-- today_impossible：今日は作れない・作りたくない。例「今日は無理」「疲れた」「今日は帰りが遅い」
+- show_today：今日（またはある1日）の献立を知りたい。今日以外の日なら date に入れます。例「今日のごはん何？」。「明日の夕飯なに？」→ date＝明日
+- show_shopping：買い物リストを見たい。ある日の買い物なら date に入れます。例「買い物リスト」「何を買えばいい？」。「明日何買えばいい？」→ date＝明日
+- today_impossible：今日は作れない・作りたくない。例「今日は無理」「疲れた」「今日は帰りが遅い」。人を書かない「今日はいらない」（だれかが食べないだけかもしれない）は、today_impossible にしません
 - want_alternatives：その日の料理を別のものに変えたい。日付の指定があれば date に入れます。今日以外の日の「無理」もこれです。料理で指したら dishId に入れます。例「明日のは別のにして」→ date＝明日。「木曜は無理」→ date＝木曜。「キーマカレー飽きた」→ dishId＝"keema_curry"
 - absence：その日の夕食を食べない人がいる。date と memberRef は必ず入れます（日付の指定がなければ今日）。例「水曜は夫が飲み会」→ date＝水曜、memberRef＝"夫"。「金曜は外食」→ memberRef＝"みんな"
-  - 欠席の取り消し（食べないと伝えていた人が、やはり食べる）は cancel＝true にします。例「木曜は member_3 もいる」→ date＝木曜、memberRef＝"member_3"、cancel＝true
+  - 「塾」「部活」「残業」「帰りが遅い」のように遅くなるだけで、「いらない」「食べない」「食べてくる」と書いていないときは、absence を出しません（あとで家で食べることが多いため）。例「水曜は member_3 が塾」→ commands は空
+  - 「〜かも」「未定」のように、まだ決まっていないときも absence を出しません。例「明日 member_2 飲み会かも」→ commands は空
+  - 誰が食べないか書いていないとき（「明日飲み会」「今日はいらない」）は、memberRef を推測で埋めません（absence を出しません）
+  - 欠席の取り消し（食べないと伝えていた人が、やはり食べる）は cancel＝true にします。例「木曜は member_3 もいる」→ date＝木曜、memberRef＝"member_3"、cancel＝true。「金曜はみんないる」「金曜はやっぱり家で食べる」「金曜の外食なくなった」→ date＝金曜、memberRef＝"みんな"、cancel＝true
 - sale：食材が安い・特売。ingredientId は必ず入れます。例「鶏むねが安い」→ ingredientId＝"chicken_breast"
 - out_of_stock：食材が切れた・なくなった。例「卵切れた」→ ingredientId＝"egg"
 - have：食材を買った・ある・もらった。例「豚こま買った」→ ingredientId＝"pork_komagire"。冷凍したなら frozen＝true。例「鶏もも冷凍した」→ ingredientId＝"chicken_thigh"、frozen＝true
@@ -312,9 +331,11 @@ function isGenre(v: string | undefined): v is Genre {
 export function toParsedCommand(c: LlmCommand): ParsedCommand | null {
   const date = present(c.date);
   switch (c.type) {
-    case 'show_week':
     case 'show_today':
     case 'show_shopping':
+      // 日付があれば、その日の献立・買い物（「明日の夕飯なに？」）。日付の検証は validateCommands で行う。
+      return date ? { type: c.type, date } : { type: c.type };
+    case 'show_week':
     case 'today_impossible':
     case 'help':
       return { type: c.type };

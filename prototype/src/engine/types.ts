@@ -233,6 +233,11 @@ export interface ShoppingItem {
   checked: boolean;
   notes: string[]; // '買ったら冷凍' など
   uncertain: boolean; // 要確認の加工品
+  /**
+   * このリストで、もう買った量（unit）。チェックしたときに記録する。
+   * 買ったあとで要る量が増えたら、チェックを外して、足りない分だけを amount・packs・label にする（「さば あと1パック」）。
+   */
+  bought?: number;
 }
 
 export interface ShoppingList {
@@ -258,7 +263,11 @@ export type Action =
   | { type: 'reject_proposal'; proposalId: string }
   | { type: 'react'; date: ISODate; memberId: string | 'household'; reaction: Reaction }
   | { type: 'check_item'; shoppingDate: ISODate; ingredientId: string; checked: boolean }
-  | { type: 'regenerate_week'; weekStart: ISODate };
+  /**
+   * keepSafe：家族の変更（アレルギー・年齢・人の追加や削除）のとき。今の家族でも出せる日は残し、出せなくなった日だけを作り直す
+   * （人数・注意・買い物リストは直す）。なければ、自分で替えた日・特売で替えた日だけを残して作り直す（献立の曜日やラク日の数を変えたとき）。
+   */
+  | { type: 'regenerate_week'; weekStart: ISODate; keepSafe?: boolean };
 
 export interface ActionButton {
   label: string;
@@ -286,7 +295,8 @@ export interface ChatMessage {
 
 export interface Proposal {
   id: string;
-  kind: 'sale_swap' | 'stock_swap' | 'request';
+  /** alternative：「別のに」で案が1つだけのとき（［替える］［そのまま］で選ぶ）。 */
+  kind: 'sale_swap' | 'stock_swap' | 'request' | 'alternative';
   date: ISODate;
   fromDishIds: string[];
   toDishIds: string[];
@@ -299,16 +309,21 @@ export interface Proposal {
  */
 export type ParsedCommand =
   | { type: 'show_week' }
-  | { type: 'show_today' }
-  | { type: 'show_shopping' }
+  /** date：今日以外の日の献立を聞かれた（「明日の夕飯なに？」）。 */
+  | { type: 'show_today'; date?: ISODate }
+  /** date：その日の買い物を聞かれた（「明日何買えばいい？」）。 */
+  | { type: 'show_shopping'; date?: ISODate }
   | { type: 'today_impossible' }
   /** dishId：「キーマカレー飽きた」のように料理で指したとき（date がなければ、その料理の日を探す）。 */
   | { type: 'want_alternatives'; date?: ISODate; dishId?: string }
   /**
    * memberRef：ニックネームか「夫」「妻」など（空なら「誰がいないか」を聞き返す）。
    * cancel：欠席の取り消し（「木曜ははるといる」「お泊まりなくなった」）。
+   * tentative：まだ欠席と決まっていない（献立は変えずに、決まったときの送り方を返す）。
+   *   'late'：遅くなるだけ（「水曜ははるとが塾」「パパは残業」。あとで家で食べることが多いので、人数も除外もそのまま）。
+   *   'maybe'：予定が決まっていない（「明日パパ飲み会かも」）。
    */
-  | { type: 'absence'; date: ISODate; memberRef: string; cancel?: boolean }
+  | { type: 'absence'; date: ISODate; memberRef: string; cancel?: boolean; tentative?: 'late' | 'maybe' }
   | { type: 'sale'; ingredientId: string }
   /** question：在庫を聞かれた（「卵って切れてる？」）。状態は変えずに答える。 */
   | { type: 'out_of_stock'; ingredientId: string; question?: boolean }
@@ -326,6 +341,8 @@ export interface ParseContext {
   today: ISODate;
   members: Member[];
   catalog: Catalog;
+  /** 書き込んだ人（member の id。画面の「送る人」）。人を書かない「明日飲み会」「今日はいらない」を、この人の欠席として読む。 */
+  senderId?: string;
 }
 
 // ---------------------------------------------------------------------------

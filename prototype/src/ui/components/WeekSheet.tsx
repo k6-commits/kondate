@@ -2,9 +2,9 @@
 import { useState } from 'react';
 import type { Action, AppState, Catalog, ISODate, PlannedMeal } from '../../engine';
 import { addDays, alternativesFor, findDish, formatJa, weekStartOf, weeklySummary } from '../../engine';
-import { REACTIONS, SERVINGS_NOTE, cls, hasPartialServings } from '../lib';
+import { REACTIONS, SERVINGS_NOTE, cls, hasPartialServings, nobodyEats } from '../lib';
 import { SummaryBody } from './ChatCard';
-import { MealDetails, RakuBadge, StatusBadge } from './MealDetails';
+import { MealDetails, RakuBadge, StatusBadge, statusBadgeShown } from './MealDetails';
 import { Sheet } from './Sheet';
 
 export function WeekSheet({
@@ -109,19 +109,21 @@ function DayCard({ state, catalog, meal, onAction }: { state: AppState; catalog:
   const date = meal.date;
   const isToday = date === today;
   const isPast = date < today;
-  const open = meal.status === 'planned' || meal.status === 'unconfirmed';
+  // みんな外で食べる日は、作る・替えるボタンを出さない（だれかが食べることになったら、トークで知らせると戻る）。
+  const none = nobodyEats(state, meal);
+  const open = !none && (meal.status === 'planned' || meal.status === 'unconfirmed');
   const editable = date >= today && open;
   const canCook = meal.dishIds.length > 0 && date <= today && open;
   const canSkip = canCook && isPast;
-  const canImpossible = isToday && meal.status === 'planned' && meal.kind !== 'raku';
+  const canImpossible = isToday && open && meal.status === 'planned' && meal.kind !== 'raku';
 
   return (
     <li className={cls('day', isToday && 'is-today', isPast && 'is-past')} data-date={date}>
       <header className="day-head">
         <span className="day-date num">{formatJa(date)}</span>
         {isToday ? <span className="badge badge--today">今日</span> : null}
-        {meal.kind === 'raku' ? <RakuBadge /> : null}
-        <StatusBadge meal={meal} />
+        {meal.kind === 'raku' && !none ? <RakuBadge /> : null}
+        {statusBadgeShown(state, meal) ? <StatusBadge meal={meal} /> : null}
       </header>
       <MealDetails state={state} catalog={catalog} meal={meal} />
       {canCook || canSkip || canImpossible || editable ? (
@@ -153,7 +155,7 @@ function DayCard({ state, catalog, meal, onAction }: { state: AppState; catalog:
           ) : null}
         </div>
       ) : null}
-      {alts ? (
+      {alts && editable ? (
         <div className="alts" role="group" aria-label={`${formatJa(date)}の別の案`}>
           {alts.length === 0 ? (
             <p className="hint">ほかに合う料理が見つかりませんでした。</p>

@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Action, AppState, Catalog, ISODate } from '../../engine';
 import { AISLE_LABEL, AISLE_ORDER, formatJa, renderCardText } from '../../engine';
-import { cls, quantityOf } from '../lib';
+import { cls, leftCount, quantityOf } from '../lib';
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
 
@@ -70,7 +70,7 @@ export function ShoppingSheet({
         <>
           <div className="tabs" role="group" aria-label="買い物の日">
             {lists.map((l) => {
-              const left = l.items.filter((i) => !i.checked).length;
+              const left = leftCount(state, l);
               return (
                 <button
                   key={l.date}
@@ -98,6 +98,9 @@ export function ShoppingSheet({
               テキストでコピー
             </button>
           </div>
+          {current.date < state.today ? (
+            <p className="hint">済んだ買い物日のリストです。「のこり」は、まだチェックしていない物のうち、これからの献立に使う物の数です。</p>
+          ) : null}
           {copyFallback !== null ? (
             <div className="copy-fallback">
               <label htmlFor="shopping-copy-text">コピーできませんでした。下のテキストを選択してコピーしてください。</label>

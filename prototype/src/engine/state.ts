@@ -15,7 +15,7 @@ import type {
 } from './types';
 import { addDays, formatJa, weekStartOf, weekdayOf } from './dates';
 import { seedFrom } from './rng';
-import { dinnerDatesOfWeek, findDishIn, ingredientsOf, mealOn, sortMeals } from './context';
+import { dinnerDatesOfWeek, everyoneOut, findDishIn, ingredientsOf, mealOn, sortMeals } from './context';
 import { planWeek } from './planner';
 import { buildShoppingLists, FREEZE_NOTE } from './shopping';
 import { householdNotices } from './safety';
@@ -276,8 +276,9 @@ export function advanceDay(state: AppState, catalog: Catalog): StepResult {
   s.proposals = s.proposals.filter((p) => p.date >= s.today);
 
   // 前日の確認：無反応を「作った」とみなさない。1問だけ聞く。
+  // みんな外で食べた日は、作る日ではなかったので聞かない（status は planned のまま。記録も付けない。主菜はまた献立に入れられる）。
   const ym = mealOn(s, yesterday);
-  const askAbout = ym && ym.status === 'planned' && ym.dishIds.length > 0 ? ym : undefined;
+  const askAbout = ym && ym.status === 'planned' && ym.dishIds.length > 0 && !everyoneOut(s.household, ym) ? ym : undefined;
   if (askAbout) askAbout.status = 'unconfirmed';
 
   const current = ensureCurrentWeek(s, catalog);
@@ -302,10 +303,12 @@ export function advanceDay(state: AppState, catalog: Catalog): StepResult {
       addWeekMessage(s, catalog, ws, { push: true, summary });
       summary = undefined;
     }
+    // 今日の配信と解凍の連絡は、家で夕食を作る日だけ（みんな外で食べる日には送らない）。
+    const cooking = (m: PlannedMeal | undefined): m is PlannedMeal => !!m && m.status === 'planned' && !everyoneOut(s.household, m);
     const todayMeal = mealOn(s, s.today);
-    if (todayMeal && todayMeal.status === 'planned') addMealMessage(s, catalog, s.today, { push: true });
+    if (cooking(todayMeal)) addMealMessage(s, catalog, s.today, { push: true });
     const tomorrow = mealOn(s, addDays(s.today, 1));
-    if (tomorrow && tomorrow.status === 'planned') {
+    if (cooking(tomorrow)) {
       const plan = thawPlan(s, catalog, tomorrow);
       if (plan.length > 0) {
         // その食材を使う料理の名前で言う（「明日のしらす丼用に、あさりを」のように、主菜の名前にしない）。

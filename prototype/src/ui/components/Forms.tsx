@@ -19,6 +19,36 @@ const AGE_BANDS: AgeBand[] = ['adult', 'teen', 'child', 'preschool', 'infant'];
 const CHILD_BANDS: AgeBand[] = ['teen', 'child', 'preschool', 'infant'];
 
 /**
+ * 年齢を選んだときの入力。続柄が年齢と食い違わないようにする（そのままだと「小学生・パートナー」「大人・子ども」になる）。
+ * 子どもの年齢にしたら「わたし」「パートナー」は「子ども」に、大人にしたら「子ども」は「その他」にする。
+ * 大人の子どもなら、このあと続柄で「子ども」を選び直せる。
+ */
+export function withAgeBand(draft: MemberDraft, ageBand: AgeBand): MemberDraft {
+  const role = draft.role;
+  if (CHILD_BANDS.includes(ageBand) && (!role || role === 'parent' || role === 'partner')) return { ...draft, ageBand, role: 'child' };
+  if (ageBand === 'adult' && role === 'child') return { ...draft, ageBand, role: 'other' };
+  return { ...draft, ageBand };
+}
+
+/** 年齢に合わせて続柄を直したときの覚え：直す前の続柄（from）と、直したあとの続柄（to）。 */
+export interface RoleMemo {
+  from: MemberRole | undefined;
+  to: MemberRole | undefined;
+}
+
+/**
+ * 年齢を選んだときの入力と、続柄の覚え（入力欄の中だけで持つ）。続柄は、選んであった続柄に withAgeBand を当てて決める。
+ * 年齢に合わせて続柄を直したら、直す前の続柄を覚えておき、年齢を選び直して合うようになったら戻す。
+ * うっかり押して年齢を戻したとき、続柄も戻るように（はるとを「大人」→「小学生」なら「子ども」、ママを「中高生」→「大人」なら「わたし」）。
+ * 続柄を自分で選んだら、覚えは消す（memo を null にする）。
+ */
+export function pickAgeBand(draft: MemberDraft, ageBand: AgeBand, memo: RoleMemo | null): { draft: MemberDraft; memo: RoleMemo | null } {
+  const base = memo && memo.to === draft.role ? memo.from : draft.role;
+  const next = withAgeBand({ ...draft, role: base }, ageBand);
+  return { draft: next, memo: next.role === base ? null : { from: base, to: next.role } };
+}
+
+/**
  * 新しく加える家族の入力の既定（index は何人目か、0 から）。
  * 1人目は「わたし」、2人目は「パートナー」（どちらも大人）、3人目からは「子ども」（小学生）で始める。
  */
@@ -150,6 +180,15 @@ export function memberLine(m: MemberDraft): string {
   return [AGE_BAND_LABEL[m.ageBand], m.role ? ROLE_LABEL[m.role] : null].filter(Boolean).join('・');
 }
 
+/**
+ * 家族のカードに出す除外の行。乳児（1歳未満）は献立の「食べる人」に含めない（エンジンは乳児の除外で献立を選ばない）ので、
+ * 除外があれば、献立には使わないと添える（「除外：卵」とだけ出すと、献立で除いていると思われる）。
+ */
+export function exclusionLine(m: MemberDraft, catalog: Catalog): string {
+  const summary = exclusionSummary(m.exclusions, catalog);
+  return m.ageBand === 'infant' && m.exclusions.length > 0 ? `${summary}（1歳未満なので、献立には使いません）` : summary;
+}
+
 function shortList(names: string[], max = 5): string {
   return names.length > max ? `${names.slice(0, max).join('・')} ほか${names.length - max}品` : names.join('・');
 }
@@ -204,6 +243,8 @@ export function MemberEditor({
   const allergenOf = (id: AllergenId) => value.exclusions.find((e): e is Extract<Exclusion, { type: 'allergen' }> => e.type === 'allergen' && e.id === id);
   const [showMore, setShowMore] = useState(() => recommended.some((a) => allergenOf(a.id)));
   const [query, setQuery] = useState('');
+  /** 年齢に合わせて続柄を直したときの、直す前の続柄（年齢を戻したら、続柄も戻す）。 */
+  const [roleMemo, setRoleMemo] = useState<RoleMemo | null>(null);
   const excludedIngredientIds = useMemo(
     () => new Set(value.exclusions.flatMap((e) => (e.type === 'ingredient' ? [e.id] : []))),
     [value.exclusions],
@@ -272,14 +313,11 @@ export function MemberEditor({
                 type="radio"
                 name={`${idPrefix}-age`}
                 checked={value.ageBand === b}
-                onChange={() =>
-                  set(
-                    // 子どもの年齢にしたら、続柄の「わたし」「パートナー」は「子ども」にする（そのままだと「小学生・パートナー」になる）。
-                    CHILD_BANDS.includes(b) && (!value.role || value.role === 'parent' || value.role === 'partner')
-                      ? { ageBand: b, role: 'child' }
-                      : { ageBand: b },
-                  )
-                }
+                onChange={() => {
+                  const next = pickAgeBand(value, b, roleMemo);
+                  setRoleMemo(next.memo);
+                  onChange(next.draft);
+                }}
               />
               {AGE_BAND_LABEL[b]}
             </label>
@@ -292,7 +330,14 @@ export function MemberEditor({
         <div className="choice-row">
           {ROLE_ORDER.map((r) => (
             <label key={r} className={cls('choice', value.role === r && 'is-on')}>
-              <input type="radio" name={`${idPrefix}-role`} checked={value.role === r} onChange={() => set({ role: r })} />
+              <input
+                type="radio"
+                name={`${idPrefix}-role`}
+                checked={value.role === r}
+                // 続柄を自分で選んだら（選んである続柄を押し直したときも）、年齢に合わせて直す前の続柄は忘れる。
+                onClick={() => setRoleMemo(null)}
+                onChange={() => set({ role: r })}
+              />
               {ROLE_LABEL[r]}
             </label>
           ))}
@@ -301,6 +346,11 @@ export function MemberEditor({
 
       <fieldset className="field">
         <legend className="field-label">除外（アレルギー・食べない物）</legend>
+        {value.ageBand === 'infant' ? (
+          <p className="field-note">
+            1歳未満の子は、献立の「食べる人」に含めません。ここで選んだ除外は、献立には使いません（離乳食は対象外です）。
+          </p>
+        ) : null}
         <p className="field-note">表示義務のある品目（特定原材料）</p>
         <div className="chip-grid">{mandatory.map(allergenChip)}</div>
         <button type="button" className="text-btn" aria-expanded={showMore} onClick={() => setShowMore(!showMore)}>
@@ -314,11 +364,12 @@ export function MemberEditor({
             {selectedAllergens.map((e) => {
               const name = catalog.allergens.find((a) => a.id === e.id)?.name ?? e.id;
               const id = `${idPrefix}-severe-${e.id}`;
+              // 行の全体（高さ 44px）を押せるように、チェックボックスを label の中に入れる。
               return (
                 <li key={e.id}>
-                  <input id={id} type="checkbox" checked={!!e.severe} onChange={(ev) => setSevere(e.id, ev.target.checked)} />
-                  <label htmlFor={id}>
-                    {name}：重い（アナフィラキシーの経験など）
+                  <label htmlFor={id} className="severe-item">
+                    <input id={id} type="checkbox" checked={!!e.severe} onChange={(ev) => setSevere(e.id, ev.target.checked)} />
+                    <span>{name}：重い（アナフィラキシーの経験など）</span>
                   </label>
                 </li>
               );
@@ -423,6 +474,33 @@ export function MemberEditor({
 
 const PROTEIN_ORDER: Protein[] = ['chicken', 'pork', 'beef', 'ground', 'fish', 'seafood', 'egg', 'tofu', 'none'];
 
+/**
+ * 名前だけで加える定番（マスタにない料理）の判定。エンジンが作る自由入力の定番（材料がわからない主菜、state.ts の customDish）と
+ * 同じ形の料理で checkDishSafety を呼ぶ。名前に除外の語（「卵とじ」の卵など）が入っていれば「除外」、アレルギーの除外があれば「要確認」。
+ */
+export function customDishSafety(name: string, household: Household, catalog: Catalog): 'ok' | 'excluded' | 'uncertain' {
+  const dish: Dish = {
+    id: 'custom_draft',
+    name: name.trim(),
+    role: 'main',
+    protein: 'none',
+    genre: 'wa',
+    minutes: 30,
+    ingredients: [],
+    kidFriendly: true,
+    spicy: false,
+    tags: ['custom'],
+    custom: true,
+  };
+  return checkDishSafety(dish, household, catalog).status;
+}
+
+function SafetyFlag({ status }: { status: 'ok' | 'excluded' | 'uncertain' }) {
+  if (status === 'excluded') return <span className="chip-flag">除外</span>;
+  if (status === 'uncertain') return <span className="chip-flag">要確認</span>;
+  return null;
+}
+
 export function DishPicker({
   catalog,
   household,
@@ -453,6 +531,8 @@ export function DishPicker({
   const exact = q && catalog.dishes.some((d) => normalizeForSearch(d.name) === q);
   const customTaken = customNames.some((n) => normalizeForSearch(n) === q);
   const total = selectedIds.length + customNames.length;
+  // 名前だけで加える料理も、マスタの料理と同じく、除外に当たれば「除外」として加えられないようにする。
+  const querySafety = q && !exact && !customTaken ? customDishSafety(query, household, catalog) : 'ok';
 
   const toggle = (id: string) =>
     onChange(selectedIds.includes(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id], customNames);
@@ -500,7 +580,10 @@ export function DishPicker({
             ))}
             {customNames.map((n) => (
               <li key={`custom-${n}`}>
-                <span>{n}（マスタにない料理）</span>
+                <span>
+                  {n}（マスタにない料理）
+                  <SafetyFlag status={customDishSafety(n, household, catalog)} />
+                </span>
                 <button
                   type="button"
                   className="icon-btn"
@@ -535,16 +618,20 @@ export function DishPicker({
           {!exact && !customTaken ? (
             <button
               type="button"
-              className="chip chip--free"
+              className={cls('chip', 'chip--free', querySafety !== 'ok' && 'is-flagged')}
+              disabled={querySafety === 'excluded'}
               onClick={() => {
                 onChange(selectedIds, [...customNames, query.trim()]);
                 setQuery('');
               }}
             >
               <Icon name="plus" size={15} />「{query.trim()}」を追加（マスタにない料理）
+              <SafetyFlag status={querySafety} />
             </button>
           ) : null}
-          {matches.length === 0 ? (
+          {querySafety === 'excluded' ? (
+            <p className="hint">「{query.trim()}」は、名前が家族の除外に当たるので、定番に加えられません。</p>
+          ) : matches.length === 0 ? (
             <p className="hint">
               マスタに見つかりませんでした。名前だけで追加できます（材料がわからないので、アレルギーの除外がある家族では「要確認」になり、献立には出ません）。
             </p>
@@ -560,7 +647,9 @@ export function DishPicker({
           ))}
         </div>
       )}
-      <p className="hint">「除外」は家族の除外に当たる料理、「要確認」は銘柄で原材料が変わる物を使う料理です。</p>
+      <p className="hint">
+        「除外」は家族の除外に当たる料理、「要確認」は銘柄で原材料が変わる物を使う料理と、材料がわからない料理（名前だけで加えた料理）です。
+      </p>
     </div>
   );
 }

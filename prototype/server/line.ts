@@ -1,6 +1,7 @@
 // LINE Messaging API：署名の検証、「@きめとく」の判定、返信メッセージの組み立て、reply / push。
 import { randomUUID } from 'node:crypto';
 import {
+  SERVING_WEIGHT,
   formatJa,
   renderCardText,
   type Action,
@@ -139,12 +140,33 @@ export function chatMessageText(state: AppState, catalog: Catalog, message: Chat
 }
 
 /**
- * もう使えない提案のボタンか（同じ返信の中で、同じ日の後の提案に置き換わったものなど）。
- * 押しても「その提案は、もう使えません。」になるだけなので、クイックリプライには入れない。
+ * もう使えない提案のボタンか（state.proposals にない提案）。押しても「その提案は、もう使えません。」になるだけなので、
+ * クイックリプライには入れない。エンジンは同じ返信の中で同じ日に2つ目の提案を出さない（あとの案は別の日を選ぶか、
+ * 重なると伝える）が、念のため、ここでも外す。
  */
 function isGoneProposal(action: Action, state: AppState): boolean {
   if (action.type !== 'accept_proposal' && action.type !== 'reject_proposal') return false;
   return !state.proposals.some((p) => p.id === action.proposalId);
+}
+
+/** その日の献立を作る・替えるボタン（作った・作らなかった・別のに・案を選ぶ・今日は無理）。 */
+const DAY_ACTIONS: ReadonlySet<Action['type']> = new Set<Action['type']>([
+  'cooked',
+  'not_cooked',
+  'request_alternatives',
+  'choose_alternative',
+  'today_impossible',
+]);
+
+/**
+ * みんな外で食べる日（家で食べる人がいない日）の、作る・替えるボタンか。夕食を作らない日なので出さない
+ * （同じ返信の中で、前のメッセージのボタンの日が、あとの欠席でみんな外で食べる日になったときなど）。画面の visibleActions と同じ。
+ */
+function isNoDinnerDayAction(action: Action, state: AppState): boolean {
+  if (!DAY_ACTIONS.has(action.type) || !('date' in action)) return false;
+  const meal = state.meals.find((m) => m.date === action.date);
+  if (!meal) return false;
+  return !state.household.members.some((m) => SERVING_WEIGHT[m.ageBand] > 0 && !meal.absentMemberIds.includes(m.id));
 }
 
 /** ボタンの日付（見分けるために付ける）。提案（替える・そのまま）は、state.proposals の提案の日。 */
@@ -182,7 +204,8 @@ interface QuickButton {
  *   最後のメッセージだけで13個を超えるときは、その先頭から13個。
  * - ラベルは20文字まで（超えたら「…」）。displayText はラベル。
  * - postback の data は JSON.stringify(action)。300文字を超えるものは入れない。同じ data は1つに（後ろのメッセージのものを残す）。
- *   もう state.proposals にない提案（同じ返信の中で置き換わったもの）の［替える］［そのまま］も入れない。
+ *   もう state.proposals にない提案（片づいた提案など）の［替える］［そのまま］と、みんな外で食べる日の
+ *   ［作った］［作らなかった］［別のに］［今日は無理］も入れない。
  * - 同じラベルのボタンが2つ以上のメッセージにあるときは、それらのメッセージの日付のあるボタンに日付を付けて見分ける
  *   （例：「11/8(日) 作った」「11/8(日) 作らなかった」、提案が2つなら「11/10(火) 替える」「11/12(木) 替える」）。
  *   今日のボタンには付けない（日付のないボタンは今日のこと）。見分けられないボタンは入れない。
@@ -197,7 +220,7 @@ export function quickReplyItems(messages: ChatMessage[], state: AppState): LineQ
       const label = button.label.trim();
       const data = JSON.stringify(button.action);
       if (label.length === 0 || data.length > LINE_LIMITS.postbackData || seenData.has(data)) continue;
-      if (isGoneProposal(button.action, state)) continue;
+      if (isGoneProposal(button.action, state) || isNoDinnerDayAction(button.action, state)) continue;
       seenData.add(data);
       group.push({ label, data, date: actionDate(button.action, state) });
     }

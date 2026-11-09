@@ -1,8 +1,17 @@
 // 1日の献立の中身（トークのカードと「今週の献立」で共通）。すべて今の state から描く。
 import type { AppState, Catalog, PlannedMeal } from '../../engine';
 import { findDish } from '../../engine';
-import { STATUS_LABEL, absentNames, cls, dishRoleLabel, eatersOf, mealMinutes, servingsLabel } from '../lib';
+import { NO_DINNER_TEXT, STATUS_LABEL, absentNames, cls, dishNames, dishRoleLabel, eatersOf, mealMinutes, nobodyEats, servingsLabel } from '../lib';
 import { Icon } from './Icon';
+
+/**
+ * 見出しに献立の状態の印（予定・未確認・作った など）を出すか。家で食べる人がいない日は出さない（中身の「夕食なし」で分かる）。
+ * 記録（作った・作らなかった）があっても出さない：みんな外で食べる日は、献立の日に数えない（週の振り返りにも入れない）。
+ * エンジンのカードの文（renderCardText）と週の行（LINE）も、この日は状態を付けない。
+ */
+export function statusBadgeShown(state: AppState, meal: PlannedMeal): boolean {
+  return !nobodyEats(state, meal);
+}
 
 export function StatusBadge({ meal }: { meal: PlannedMeal }) {
   return <span className={cls('badge', `badge--${meal.status}`)}>{STATUS_LABEL[meal.status] ?? meal.status}</span>;
@@ -41,6 +50,20 @@ export function MealDetails({
   meal: PlannedMeal;
   compact?: boolean;
 }) {
+  if (nobodyEats(state, meal)) {
+    // みんな外で食べる日：量・作り方・理由・注意は出さない。だれかが食べることになったら戻る献立を、小さく添える。
+    return (
+      <div className="meal">
+        <p className="meal-empty">{NO_DINNER_TEXT}</p>
+        {meal.dishIds.length > 0 ? (
+          <p className="meal-was">
+            <span className="meal-was-key">もとの献立</span>
+            <span>{dishNames(state, catalog, meal.dishIds)}</span>
+          </p>
+        ) : null}
+      </div>
+    );
+  }
   const minutes = mealMinutes(state, catalog, meal);
   const absent = absentNames(state, meal);
   // 新しい料理（はじめて作る料理）には、作り方の手がかりを添える（アプリは作り方の本文を持たない）。

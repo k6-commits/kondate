@@ -50,7 +50,7 @@ export const ActionSchema = z.discriminatedUnion('type', [
     reaction: z.enum(['great', 'ok', 'meh']),
   }),
   z.object({ type: z.literal('check_item'), shoppingDate: isoDate, ingredientId: ref, checked: z.boolean() }),
-  z.object({ type: z.literal('regenerate_week'), weekStart: isoDate }),
+  z.object({ type: z.literal('regenerate_week'), weekStart: isoDate, keepSafe: z.boolean().optional() }),
 ]);
 
 /** postback の data を Action にする。JSON でない・形が違う・長すぎるものは null（無視する）。 */

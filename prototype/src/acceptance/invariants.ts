@@ -54,8 +54,12 @@ export function eatersOf(s: AppState, meal: PlannedMeal): Member[] {
 const label = (s: AppState, catalog: Catalog, meal: PlannedMeal) =>
   `${meal.date} ${meal.dishIds.map((id) => findDish(s, catalog, id)?.name ?? id).join('／') || '（料理なし）'}`;
 
-/** 献立の対象にする日（作らなかった日は除く）。 */
-const liveMeals = (s: AppState) => s.meals.filter((m) => m.status !== 'skipped');
+/**
+ * 献立の対象にする日（作らなかった日と、みんな外で食べて過ぎた日は除く。どちらも、その主菜は食べていない）。
+ * これからのみんな外で食べる日は、家で食べることになったら戻るので、予定として数える（エンジンと同じ）。
+ */
+const liveMeals = (s: AppState) =>
+  s.meals.filter((m) => m.status !== 'skipped' && !(m.date < s.today && eatersOf(s, m).length === 0));
 
 // ---------------------------------------------------------------------------
 // 安全
