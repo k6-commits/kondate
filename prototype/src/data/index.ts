@@ -17,3 +17,4 @@ export function buildCatalog(dishes: Dish[], ingredients: Ingredient[], allergen
 export const defaultCatalog: Catalog = buildCatalog(DISHES, INGREDIENTS, ALLERGENS);
 
 export { ALLERGENS, INGREDIENTS, DISHES };
+export { DEMO_ONBOARDING } from './demo';
