@@ -66,10 +66,22 @@ export const LlmCommandSchema = z.object({
     .string()
     .describe('absence のときだけ。member の id（member_1 など）か「夫」「妻」「みんな」などの語。ほかは null')
     .nullable(),
-  ingredientId: z.string().describe('sale / out_of_stock / have のときだけ。食材マスタの id。ほかは null').nullable(),
-  dishId: z.string().describe('request のときだけ。料理マスタか、この世帯だけの料理の id。ほかは null').nullable(),
+  ingredientId: z
+    .string()
+    .describe('sale / out_of_stock / have / request のときだけ。食材マスタの id（request は食材を名指ししたとき）。ほかは null')
+    .nullable(),
+  dishId: z
+    .string()
+    .describe('request / want_alternatives のときだけ。料理マスタか、この世帯だけの料理の id。ほかは null')
+    .nullable(),
   protein: z.string().describe(`request のときだけ。${PROTEINS.join(' / ')} のどれか。ほかは null`).nullable(),
   genre: z.string().describe(`request のときだけ。${GENRES.join(' / ')} のどれか。ほかは null`).nullable(),
+  cancel: z.boolean().describe('absence のときだけ。欠席の取り消し（その日に食べないと伝えていた人が、やはり食べる）なら true。ほかは null').nullable(),
+  question: z
+    .boolean()
+    .describe('out_of_stock / have のときだけ。在庫を聞いている・買ってきてと頼んでいる・「〜たら」の仮定・「切れてない」の打ち消しなら true。ほかは null')
+    .nullable(),
+  frozen: z.boolean().describe('have のときだけ。「〇〇冷凍した」なら true。ほかは null').nullable(),
 });
 
 export const LlmOutputSchema = z.object({
@@ -152,9 +164,10 @@ export function buildSystemPrompt(catalog: Catalog): string {
 
 ## 出力の規則
 - { "commands": [...] } の形の JSON だけを返します。
-- 命令はどれも type, date, memberRef, ingredientId, dishId, protein, genre をすべて持ちます。その type で使わない項目は null にします。
+- 命令はどれも type, date, memberRef, ingredientId, dishId, protein, genre, cancel, question, frozen をすべて持ちます。その type で使わない項目は null にします。
 - 1つの書き込みに用件がいくつかあれば、書かれた順に並べます（5件まで）。同じ命令は重ねません。
 - 用件が読み取れないとき、あいさつやお礼だけのときは、commands を空の配列にします。わからないところを推測で埋めません。
+- 過ぎたことを話しているだけの文（「昨日は無理だった」「先週は外食が多かった」）、打ち消し（「今日は無理じゃない」）、仮定（「無理なら」）では、today_impossible・want_alternatives・absence を出しません。
 
 ## 日付（date）
 - 日付は自分で計算しません。ユーザーのメッセージにある「日付の表」から選び、YYYY-MM-DD で書きます。
@@ -171,12 +184,14 @@ export function buildSystemPrompt(catalog: Catalog): string {
 - show_today：今日の献立を知りたい。例「今日のごはん何？」
 - show_shopping：買い物リストを見たい。例「買い物リスト」「何を買えばいい？」
 - today_impossible：今日は作れない・作りたくない。例「今日は無理」「疲れた」「今日は帰りが遅い」
-- want_alternatives：その日の料理を別のものに変えたい。日付の指定があれば date に入れます。今日以外の日の「無理」もこれです。例「明日のは別のにして」→ date＝明日。「木曜は無理」→ date＝木曜
+- want_alternatives：その日の料理を別のものに変えたい。日付の指定があれば date に入れます。今日以外の日の「無理」もこれです。料理で指したら dishId に入れます。例「明日のは別のにして」→ date＝明日。「木曜は無理」→ date＝木曜。「キーマカレー飽きた」→ dishId＝"keema_curry"
 - absence：その日の夕食を食べない人がいる。date と memberRef は必ず入れます（日付の指定がなければ今日）。例「水曜は夫が飲み会」→ date＝水曜、memberRef＝"夫"。「金曜は外食」→ memberRef＝"みんな"
+  - 欠席の取り消し（食べないと伝えていた人が、やはり食べる）は cancel＝true にします。例「木曜は member_3 もいる」→ date＝木曜、memberRef＝"member_3"、cancel＝true
 - sale：食材が安い・特売。ingredientId は必ず入れます。例「鶏むねが安い」→ ingredientId＝"chicken_breast"
 - out_of_stock：食材が切れた・なくなった。例「卵切れた」→ ingredientId＝"egg"
-- have：食材を買った・ある・もらった。例「豚こま買った」→ ingredientId＝"pork_komagire"
-- request：食べたい料理・たんぱく源・ジャンルの希望。dishId・protein・genre のうち1つ以上を入れ、日付の指定があれば date に入れます。例「金曜はカレーがいい」→ date＝金曜、dishId＝"curry_rice"。「魚が食べたい」→ protein＝"fish"。「中華にして」→ genre＝"chu"
+- have：食材を買った・ある・もらった。例「豚こま買った」→ ingredientId＝"pork_komagire"。冷凍したなら frozen＝true。例「鶏もも冷凍した」→ ingredientId＝"chicken_thigh"、frozen＝true
+  - out_of_stock・have で、在庫を聞いているだけ（「豆腐あったっけ？」「卵ある？」）、買ってきてと頼んでいる（「豆腐買ってきて」）、仮定（「卵が切れたら」）、打ち消し（「卵は切れてない」）のときは question＝true にします（在庫は変えずに答えます）。例「豆腐あったっけ？」→ type＝have、ingredientId＝"tofu_firm"、question＝true
+- request：食べたい料理・たんぱく源・ジャンルの希望。dishId・protein・genre・ingredientId のうち1つ以上を入れ、日付の指定があれば date に入れます。例「金曜はカレーがいい」→ date＝金曜、dishId＝"curry_rice"。「魚が食べたい」→ protein＝"fish"。「中華にして」→ genre＝"chu"。食材を名指ししたら ingredientId に入れます。例「明日はさばがいい」→ date＝明日、ingredientId＝"mackerel"
 - help：使い方を聞いている。例「何ができるの？」「使い方を教えて」
 
 ## id と値
@@ -269,28 +284,45 @@ export function toParsedCommand(c: LlmCommand): ParsedCommand | null {
     case 'today_impossible':
     case 'help':
       return { type: c.type };
-    case 'want_alternatives':
-      return date ? { type: 'want_alternatives', date } : { type: 'want_alternatives' };
+    case 'want_alternatives': {
+      const dishId = present(c.dishId);
+      return { type: 'want_alternatives', ...(date ? { date } : {}), ...(dishId ? { dishId } : {}) };
+    }
     case 'absence': {
       const memberRef = present(c.memberRef);
-      return date && memberRef ? { type: 'absence', date, memberRef } : null;
+      if (!date || !memberRef) return null;
+      return { type: 'absence', date, memberRef, ...(c.cancel === true ? { cancel: true } : {}) };
     }
-    case 'sale':
-    case 'out_of_stock':
+    case 'sale': {
+      const ingredientId = present(c.ingredientId);
+      return ingredientId ? { type: 'sale', ingredientId } : null;
+    }
+    case 'out_of_stock': {
+      const ingredientId = present(c.ingredientId);
+      return ingredientId ? { type: 'out_of_stock', ingredientId, ...(c.question === true ? { question: true } : {}) } : null;
+    }
     case 'have': {
       const ingredientId = present(c.ingredientId);
-      return ingredientId ? { type: c.type, ingredientId } : null;
+      if (!ingredientId) return null;
+      return {
+        type: 'have',
+        ingredientId,
+        ...(c.question === true ? { question: true } : {}),
+        ...(c.frozen === true ? { frozen: true } : {}),
+      };
     }
     case 'request': {
       const dishId = present(c.dishId);
       const protein = present(c.protein);
       const genre = present(c.genre);
+      const ingredientId = present(c.ingredientId);
       return {
         type: 'request',
         ...(date ? { date } : {}),
         ...(dishId ? { dishId } : {}),
         ...(isProtein(protein) ? { protein } : {}),
         ...(isGenre(genre) ? { genre } : {}),
+        ...(ingredientId ? { ingredientId } : {}),
       };
     }
     default:

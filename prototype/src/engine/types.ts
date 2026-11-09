@@ -80,6 +80,15 @@ export interface Ingredient {
   seasonMonths?: number[]; // 旬（1〜12）
   /** 特売などで置き換えられる食材の id（例：鶏もも ↔ 鶏むね）。 */
   substitutes?: string[];
+  /**
+   * 総称（「鶏肉」「豚肉」「きのこ」など）。特売・在庫の書き込み（「鶏肉が安い」）で、この食材を代表として当てるときだけ使う。
+   * 除外の判定・検索には使わない（総称で1つの食材だけを除外してしまわないように）。
+   */
+  genericAliases?: string[];
+  /**
+   * 冷凍した物の戻し方。'fridge'（既定）：前日の夜に冷蔵室へ移して解凍。'from_frozen'：凍ったまま加熱する（貝・冷凍野菜・きのこ・惣菜など）。
+   */
+  thaw?: 'fridge' | 'from_frozen';
 }
 
 export type DishRole = 'main' | 'side' | 'soup' | 'raku'; // raku = ラク日用（冷凍食品・惣菜・5分メニュー）
@@ -284,18 +293,32 @@ export interface Proposal {
   text: string;
 }
 
-/** 話し言葉の解釈結果。ルールベースの parseMessage と、サーバーの LLM の両方がこの形を返す。 */
+/**
+ * 話し言葉の解釈結果。ルールベースの parseMessage と、サーバーの LLM の両方がこの形を返す。
+ * 任意の欄（?）は、なくても動く（LLM は使わなくてよい）。
+ */
 export type ParsedCommand =
   | { type: 'show_week' }
   | { type: 'show_today' }
   | { type: 'show_shopping' }
   | { type: 'today_impossible' }
-  | { type: 'want_alternatives'; date?: ISODate }
-  | { type: 'absence'; date: ISODate; memberRef: string } // memberRef：ニックネームか「夫」「妻」など
+  /** dishId：「キーマカレー飽きた」のように料理で指したとき（date がなければ、その料理の日を探す）。 */
+  | { type: 'want_alternatives'; date?: ISODate; dishId?: string }
+  /**
+   * memberRef：ニックネームか「夫」「妻」など（空なら「誰がいないか」を聞き返す）。
+   * cancel：欠席の取り消し（「木曜ははるといる」「お泊まりなくなった」）。
+   */
+  | { type: 'absence'; date: ISODate; memberRef: string; cancel?: boolean }
   | { type: 'sale'; ingredientId: string }
-  | { type: 'out_of_stock'; ingredientId: string }
-  | { type: 'have'; ingredientId: string }
-  | { type: 'request'; date?: ISODate; dishId?: string; protein?: Protein; genre?: Genre }
+  /** question：在庫を聞かれた（「卵って切れてる？」）。状態は変えずに答える。 */
+  | { type: 'out_of_stock'; ingredientId: string; question?: boolean }
+  /** question：在庫を聞かれた・頼まれた（「豆腐あったっけ？」「豆腐買ってきて」）。frozen：「〇〇冷凍した」。 */
+  | { type: 'have'; ingredientId: string; question?: boolean; frozen?: boolean }
+  /**
+   * ingredientId：食材を名指ししたリクエスト（「明日はさばがいい」）。その食材を使う主菜を先に探す。
+   * dishIds：あいまいな言い方（「塩焼きがいい」「肉がいい」）で当たる料理の候補。候補から選んでもらう。
+   */
+  | { type: 'request'; date?: ISODate; dishId?: string; protein?: Protein; genre?: Genre; ingredientId?: string; dishIds?: string[] }
   | { type: 'help' }
   | { type: 'unknown'; text: string };
 
@@ -353,4 +376,6 @@ export interface WeeklySummary {
   skippedOrImpossible: number;
   topDishIds: string[]; // ◎の多かった料理
   usedUpIngredientIds: string[];
+  /** 過ぎた献立日のうち、「作った」「作らなかった」の記録がない日（分からない日。0日とは数えない）。 */
+  unconfirmedDays?: number;
 }

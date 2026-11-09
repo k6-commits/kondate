@@ -162,6 +162,50 @@ describe('INGREDIENTS', () => {
     for (const id of ['onion', 'cabbage', 'chicken_thigh', 'egg']) expect(ing(id).seasonMonths, id).toBeUndefined();
   });
 
+  it('keeps generic terms out of aliases (searching 「鶏肉」「きのこ」 must not pick just one ingredient)', () => {
+    // 総称は genericAliases（特売・在庫の書き込みで代表の食材に当てる）にだけ置く。aliases は除外の検索と判定に使う。
+    const GENERIC = ['鶏肉', 'とり肉', 'とりにく', '鳥肉', 'チキン', '豚肉', 'ぶた肉', 'ぶたにく', 'ポーク', '牛肉', 'ぎゅう肉', 'ぎゅうにく', 'ビーフ',
+      'ひき肉', '挽き肉', 'ひきにく', 'ミンチ', 'きのこ', 'キノコ', '肉', '魚', '貝', '乳製品', '甲殻類'];
+    for (const i of INGREDIENTS) {
+      for (const w of [i.name, ...i.aliases]) expect(GENERIC, `${i.id}: ${w}`).not.toContain(w);
+    }
+    const generic = INGREDIENTS.flatMap((i) => i.genericAliases ?? []);
+    expect(duplicates(generic)).toEqual([]);
+    const terms = new Set(INGREDIENTS.flatMap((i) => [i.name, ...i.aliases]));
+    for (const g of generic) expect(terms.has(g), g).toBe(false);
+    expect(ing('chicken_thigh').genericAliases).toEqual(expect.arrayContaining(['鶏肉', 'とり肉', 'チキン']));
+    expect(ing('pork_komagire').genericAliases).toEqual(expect.arrayContaining(['豚肉', 'ぶた肉']));
+    expect(ing('beef_komagire').genericAliases).toEqual(expect.arrayContaining(['牛肉', 'ぎゅう肉']));
+    expect(ing('ground_mixed').genericAliases).toEqual(expect.arrayContaining(['ひき肉', 'ミンチ', '挽き肉']));
+    expect(ing('shimeji').genericAliases).toContain('きのこ');
+  });
+
+  it('lists the representative allergens of brand-dependent processed foods (as the comments say)', () => {
+    // 銘柄で原材料が違う加工品にも、わかっている代表的なアレルゲンを入れる（ファイル冒頭の決まり）。
+    const cases: [string, AllergenId[]][] = [
+      ['chuka_men', ['wheat', 'egg', 'soy', 'pork', 'chicken']], // 生の中華麺は卵を使う商品がある。スープは豚・鶏のエキス
+      ['bread', ['wheat', 'milk', 'egg', 'soy']], // 卵を使う食パンもある
+      ['yakisoba_men', ['wheat', 'soy']],
+      ['chikuwa', ['egg', 'wheat']], ['kamaboko', ['egg', 'wheat']], ['crab_stick', ['crab', 'egg', 'wheat']],
+      ['ham', ['pork', 'egg', 'milk']], ['sausage', ['pork', 'milk']], ['bacon', ['pork']],
+      ['curry_roux', ['wheat', 'milk']], ['stew_roux', ['wheat', 'milk']], ['frozen_gyoza', ['wheat', 'pork']],
+      ['deli_karaage', ['chicken', 'wheat', 'egg']], ['deli_potato_salad', ['egg']], ['deli_croquette', ['wheat', 'milk', 'egg']],
+      ['dressing', ['egg', 'wheat']], ['mentsuyu', ['wheat', 'soy', 'mackerel']], ['consomme', ['wheat', 'milk']],
+    ];
+    for (const [id, expected] of cases) {
+      expect(ing(id).uncertain, id).toBe(true);
+      expect(ing(id).allergens, id).toEqual(expect.arrayContaining(expected));
+    }
+  });
+
+  it('marks what is cooked from frozen (clams, mushrooms, frozen vegetables, deli) and keeps meat and fish thawed in the fridge', () => {
+    for (const id of ['clam', 'shimeji', 'enoki', 'shiitake', 'frozen_mixed_veg', 'deli_karaage', 'spinach', 'broccoli', 'bean_sprouts']) {
+      expect(ing(id).thaw, id).toBe('from_frozen');
+    }
+    for (const id of ['chicken_thigh', 'pork_komagire', 'ground_mixed', 'salmon', 'mackerel', 'shrimp']) expect(ing(id).thaw, id).toBeUndefined();
+    for (const i of INGREDIENTS) if (i.thaw) expect(i.freezable, i.id).toBe(true);
+  });
+
   it('links common substitutes and spoken aliases', () => {
     expect(ing('chicken_thigh').substitutes).toContain('chicken_breast');
     expect(ing('chicken_breast').substitutes).toContain('chicken_thigh');
@@ -239,6 +283,16 @@ describe('DISHES', () => {
     }
     const eggFreeRaku = DISHES.filter((d) => d.role === 'raku' && !containsAny(d, ['egg']) && !usesUncertain(d));
     expect(eggFreeRaku.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('tags dishes that need no side (complete) or no soup (soupy)', () => {
+    const byId = new Map(DISHES.map((d) => [d.id, d]));
+    expect(byId.get('natto_gohan_miso')?.tags).toContain('complete');
+    for (const id of ['tamago_udon', 'kitsune_soba', 'cream_stew', 'drumette_pot_au_feu', 'hakusai_mille_feuille']) {
+      expect(byId.get(id)?.tags, id).toContain('soupy');
+    }
+    // complete・soupy は主菜かラク日用の料理だけに付ける
+    for (const d of DISHES) if (d.tags.includes('complete') || d.tags.includes('soupy')) expect(['main', 'raku'], d.id).toContain(d.role);
   });
 
   it('limits seasonal dishes to their months', () => {

@@ -289,9 +289,46 @@ describe('話し言葉の解釈（本物のマスタ）', () => {
     ['金曜は魚がいい', [{ type: 'request', date: '2026-11-13', protein: 'fish' }]],
     ['別のにして', [{ type: 'want_alternatives' }]],
     ['使い方', [{ type: 'help' }]],
+    // 総称（「鶏肉」）は特売・在庫で代表の食材に当てる（除外の検索・判定には使わない）
+    ['鶏肉が安い', [{ type: 'sale', ingredientId: 'chicken_thigh' }]],
+    ['きのこが安い', [{ type: 'sale', ingredientId: 'shimeji' }]],
+    // ひらがな2文字の食材（いか・たら・さけ）は、普通の言葉の一部に当てない
+    ['鶏むねが安いから', [{ type: 'sale', ingredientId: 'chicken_breast' }]],
+    ['豚こまが安いかも', [{ type: 'sale', ingredientId: 'pork_komagire' }]],
+    ['えびといかが特売', [{ type: 'sale', ingredientId: 'shrimp' }, { type: 'sale', ingredientId: 'squid' }]],
+    ['いかが安い', [{ type: 'sale', ingredientId: 'squid' }]],
+    ['さけ買った', [{ type: 'have', ingredientId: 'salmon' }]],
+    ['牛乳ないから買ってきて', [{ type: 'out_of_stock', ingredientId: 'milk' }]],
+    ['たらこ買った', [{ type: 'unknown', text: 'たらこ買った' }]],
+    // 料理名のあいまいな一致と、ジャンルの語
+    ['生姜焼きがいい', [{ type: 'request', dishId: 'shogayaki' }]],
+    ['しょうが焼きがいい', [{ type: 'request', dishId: 'shogayaki' }]],
+    ['金曜は中華がいい', [{ type: 'request', date: '2026-11-13', genre: 'chu' }]],
+    ['金曜は冷やし中華がいい', [{ type: 'request', date: '2026-11-13', dishId: 'hiyashi_chuka' }]],
+    ['たこ焼き食べたい', [{ type: 'unknown', text: 'たこ焼き食べたい' }]],
+    ['おむすびがいい', [{ type: 'unknown', text: 'おむすびがいい' }]],
+    ['明日はさばがいい', [{ type: 'request', date: '2026-11-10', protein: 'fish', ingredientId: 'mackerel' }]],
   ];
   it.each(cases)('「%s」', (text, expected) => {
     expect(parseMessage(text, ctx)).toEqual(expected);
+  });
+
+  it('ひらがな2文字の食材を、ほかの言葉の中で読まない（いか・たら・さけ）', () => {
+    for (const t of ['今日は買い物いかない', '忙しいから簡単なのがいい', 'さけるチーズ買った', 'いかがですか']) {
+      const ids = parseMessage(t, ctx).flatMap((c) => ('ingredientId' in c && c.ingredientId ? [c.ingredientId] : []));
+      expect(ids, t).not.toContain('squid');
+      expect(ids, t).not.toContain('cod');
+      expect(ids, t).not.toContain('salmon');
+    }
+  });
+
+  it('「塩焼きがいい」「炒め物がいい」は候補から選んでもらい、頼んでいない料理を除外の理由で断らない', () => {
+    for (const t of ['塩焼きがいい', '炒め物がいい', '照り焼きがいい']) {
+      const r = handleUserText(s, catalog, t);
+      expect(r.replies[0].text, t).not.toContain('除外の条件');
+      expect(r.replies[0].card?.kind, t).toBe('alternatives');
+      expect(eggDishes(r.state), t).toEqual([]);
+    }
   });
 
   it('「今日のごはん」で今日の献立のカードとボタンを返す', () => {
@@ -475,8 +512,16 @@ describe('自由入力の除外（text）', () => {
       return checkDishSafety(catalog.dishById.get(dishId)!, h, catalog).status;
     };
     expect(judge('卵アレルギー', 'tonkatsu')).toBe('excluded'); // 衣の卵
+    expect(judge('卵白', 'tonkatsu')).toBe('excluded');
+    expect(judge('卵黄', 'potato_salad')).toBe('excluded'); // マヨネーズの卵
     expect(judge('えび・かに', 'shirasu_don')).toBe('excluded'); // しらすに混ざることがある
     expect(judge('甲殻類', 'shirasu_don')).toBe('excluded');
+    expect(judge('甲殻類アレルギー', 'shirasu_don')).toBe('excluded');
+    expect(judge('甲殻類のアレルギー', 'ebi_broccoli_shio')).toBe('excluded');
+    expect(judge('とり肉', 'curry_rice')).not.toBe('ok'); // カレールウ（要確認）と鶏肉
+    expect(judge('チキン', 'chicken_broccoli_shio')).toBe('excluded');
+    expect(judge('ポーク', 'shogayaki')).toBe('excluded');
+    expect(judge('ビーフ', 'nikujaga')).toBe('excluded');
     expect(judge('乳製品', 'salmon_foil')).toBe('excluded'); // バター
     expect(judge('鶏肉', 'chicken_broccoli_shio')).toBe('excluded'); // 鶏むね肉
     expect(judge('鶏肉', 'wakame_soup')).not.toBe('ok'); // 鶏ガラスープの素（要確認の加工品）
@@ -494,6 +539,143 @@ describe('自由入力の除外（text）', () => {
         }
       }
     }
+  });
+});
+
+describe('自由入力の除外（分類の語・並べた語）', () => {
+  /** その種類（kind）の食材を使う料理が、4週間で1つも入らない。 */
+  const noKind = (text: string, kinds: string[], ids: string[] = []) => {
+    const { state, meals, problems } = fourWeeks(demoWith({ harutoExclusions: [{ type: 'allergen', id: 'egg' }, { type: 'text', text }] }));
+    expect(problems).toEqual([]);
+    const hits: string[] = [];
+    for (const m of meals) {
+      if (m.status === 'skipped') continue;
+      for (const d of dishesOf(state, catalog, m)) {
+        for (const i of ingredientObjs(state, catalog, d)) if (kinds.includes(i.kind) || ids.includes(i.id)) hits.push(`${m.date} ${d.name}（${i.name}）`);
+      }
+    }
+    expect(hits, text).toEqual([]);
+    return meals;
+  };
+
+  it('「魚」なら、魚（鮭・さば・ぶり・しらす・さば缶など）を使う料理が4週間入らない', () => {
+    const meals = noKind('魚', ['fish']);
+    expect(meals.filter((m) => m.dishIds.length > 0).length).toBeGreaterThanOrEqual(15);
+  });
+
+  it('「貝」ならあさり、「きのこ」ならきのこ類、「ピーマン、しいたけ」なら両方が入らない', () => {
+    noKind('貝', [], ['clam', 'oyster_sauce']);
+    noKind('きのこ', ['mushroom']);
+    noKind('ピーマン、しいたけ', [], ['green_pepper', 'shiitake']);
+  });
+});
+
+/** n 週間（advanceDay を毎日）進め、毎日の献立と返事を集める。check_item で買い物もする。 */
+function weeksOf(input: OnboardingInput, start: ISODate, weeks: number, impossible = true) {
+  let s = createInitialState(input, catalog, start);
+  const meals = new Map<ISODate, AppState['meals'][number]>();
+  const replies: AppState['chat'] = [];
+  const record = () => {
+    for (const m of s.meals) meals.set(m.date, m);
+  };
+  record();
+  for (let i = 0; i < weeks * 7; i++) {
+    const list = s.shopping.find((l) => l.date === s.today);
+    for (const it of list?.items ?? []) {
+      s = applyAction(s, catalog, { type: 'check_item', shoppingDate: s.today, ingredientId: it.ingredientId, checked: true }).state;
+    }
+    const today = mealOn(s, s.today);
+    if (impossible && today && today.dishIds.length > 0 && i % 3 === 1) {
+      const r = handleUserText(s, catalog, '今日は無理');
+      s = r.state;
+      replies.push(...r.replies);
+    }
+    if (mealOn(s, s.today)?.dishIds.length) s = applyAction(s, catalog, { type: 'cooked', date: s.today }).state;
+    record();
+    const r = advanceDay(s, catalog);
+    s = r.state;
+    replies.push(...r.replies);
+    record();
+  }
+  return { state: s, meals: [...meals.values()], replies };
+}
+
+describe('1食の組み方（汁物の重なり・主な材料の重なり・ラク日の副菜・解凍）', () => {
+  const families: [string, OnboardingInput][] = [
+    ['デモの家族', DEMO_ONBOARDING],
+    ['除外なし', demoWith({ harutoExclusions: [] })],
+  ];
+  const starts = ['2026-01-05', '2026-04-06', '2026-07-06', '2026-11-09'];
+  const runs = families.flatMap(([name, input]) => starts.map((start) => ({ name, start, ...weeksOf(input, start, 4) })));
+
+  it('「納豆ごはんと味噌汁」には何も足さず、汁のある料理（麺・シチュー・鍋）に汁物を足さない（「今日は無理」の組み直しも）', () => {
+    const problems: string[] = [];
+    for (const r of runs) {
+      for (const m of r.meals) {
+        const [head, ...rest] = dishesOf(r.state, catalog, m);
+        if (!head) continue;
+        if (head.tags.includes('complete') && rest.length > 0) problems.push(`${r.name} ${m.date} ${head.name}＋${rest.map((d) => d.name).join('・')}`);
+        if (head.tags.includes('soupy') && rest.some((d) => d.role === 'soup')) problems.push(`${r.name} ${m.date} ${head.name}＋汁物`);
+      }
+    }
+    expect(problems).toEqual([]);
+  });
+
+  it('主菜の主役の材料を、副菜・汁物の主役にもう一度使わない（肉じゃが＋じゃがいもの味噌汁、かに玉＋たまごスープ など）', () => {
+    const bad: [string, string][] = [
+      ['nikujaga', 'potato_onion_miso'], ['shio_nikujaga', 'potato_onion_miso'], ['kanitama', 'chinese_egg_soup'],
+      ['tomato_egg', 'chinese_egg_soup'], ['niratama', 'chinese_egg_soup'], ['cream_stew', 'corn_soup'], ['ika_daikon', 'miso_daikon_age'],
+      ['sabakan_cabbage_miso', 'cabbage_shiomomi'], ['pork_moyashi_range', 'moyashi_namul'], ['chicken_broccoli_shio', 'broccoli_okaka'],
+    ];
+    const problems: string[] = [];
+    for (const r of runs) {
+      for (const m of r.meals) {
+        const [head, ...rest] = dishesOf(r.state, catalog, m);
+        if (!head) continue;
+        for (const side of rest) {
+          if (bad.some(([a, b]) => a === head.id && b === side.id)) problems.push(`${r.name} ${m.date} ${head.name}＋${side.name}`);
+          if (side.protein !== 'none' && side.protein === head.protein) problems.push(`${r.name} ${m.date} ${head.name}＋${side.name}（同じたんぱく源）`);
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+  });
+
+  it('ラク日の副菜は、買ってから冷凍・解凍しなくてよい物だけ。惣菜は当日に買い、「買ったら冷凍」を付けない', () => {
+    const problems: string[] = [];
+    for (const r of runs) {
+      for (const m of r.meals) {
+        if (m.kind !== 'raku') continue;
+        for (const note of m.notes) if (/解凍|買ったら冷凍/.test(note)) problems.push(`${r.name} ${m.date} ${note}`);
+      }
+      for (const l of r.state.shopping) {
+        for (const it of l.items) {
+          if (it.aisle !== 'deli') continue;
+          if (it.notes.some((n) => n.includes('冷凍'))) problems.push(`${r.name} ${l.date} ${it.name}に冷凍の印`);
+          if (it.forDates.some((d) => d !== l.date)) problems.push(`${r.name} ${l.date} ${it.name}を前の買い物日に買う`);
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+  });
+
+  it('凍ったまま加熱する物（あさり・きのこ・冷凍野菜）に「前日の夜に冷蔵室へ」と案内せず、解凍の連絡は使う料理の名前で言う', () => {
+    const paid = weeksOf({ ...structuredClone(DEMO_ONBOARDING), plan: 'paid', shoppingWeekdays: [0] }, '2026-11-15', 3, false);
+    const problems: string[] = [];
+    for (const m of paid.meals) for (const n of m.notes) if (/^(冷凍の)?(あさり|しめじ|えのき|生しいたけ)/.test(n) && n.includes('冷蔵室')) problems.push(`${m.date} ${n}`);
+    const thaw = paid.replies.filter((m) => m.push && m.text.includes('冷凍室から冷蔵室へ'));
+    expect(thaw.length).toBeGreaterThan(0);
+    for (const msg of thaw) {
+      expect(msg.text).not.toContain('あさり');
+      const date = msg.card?.kind === 'meal' ? msg.card.date : '';
+      const meal = paid.meals.find((x) => x.date === date)!;
+      const named = dishesOf(paid.state, catalog, meal).filter((d) => msg.text.includes(`${d.name}`));
+      expect(named.length, msg.text).toBeGreaterThan(0);
+      const ingNames = named.flatMap((d) => ingredientObjs(paid.state, catalog, d).map((i) => i.name));
+      const listed = msg.text.split('用に、')[1]?.split('を冷凍室')[0]?.split('と') ?? [];
+      for (const n of listed) expect(ingNames, msg.text).toContain(n);
+    }
+    expect(problems).toEqual([]);
   });
 });
 

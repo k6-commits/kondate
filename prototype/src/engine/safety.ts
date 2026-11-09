@@ -1,6 +1,16 @@
 // 安全（DESIGN.md 3-4）。除外とアレルゲンの判定はコードで行い、わからない物は「要確認」で止める。
-import type { AllergenId, Catalog, Dish, Exclusion, Household, Ingredient, Member, Notice, SafetyResult } from './types';
-import { allergenName, eatingMembers, effectiveExclusions, ingredientsOf } from './context';
+import type { AllergenId, Catalog, Dish, Exclusion, Household, Ingredient, IngredientKind, Member, Notice, SafetyResult } from './types';
+import {
+  TEXT_SEPARATORS,
+  allergenName,
+  allergenWords,
+  allergensOfText,
+  eatingMembers,
+  effectiveExclusions,
+  ingredientsOf,
+  textCategoryOf,
+  textNameKey,
+} from './context';
 import { normalizeJa } from './util';
 
 type Hit = SafetyResult['hits'][number];
@@ -9,8 +19,42 @@ function namesOf(ing: Ingredient): string[] {
   return [ing.name, ...ing.aliases].map(normalizeJa).filter((n) => n.length > 0);
 }
 
+/** 料理名の照合に使ってよい語か（ひらがな1文字は誤って当たりやすいので使わない。漢字1文字の「鮭」は使う）。 */
+function nameWordOk(n: string): boolean {
+  return n.length >= 2 || (n.length === 1 && !/[぀-ゟ]/.test(n));
+}
+
 function pushHit(hits: Hit[], hit: Hit): void {
   if (!hits.some((h) => h.ingredientId === hit.ingredientId && h.reason === hit.reason)) hits.push(hit);
+}
+
+/** 自由入力の除外の1語（「ピーマン、しいたけ」なら「ピーマン」と「しいたけ」）。 */
+interface TextPart {
+  text: string; // 表示用（区切った語）
+  key: string; // 名前の照合用（normalizeJa し、「アレルギー」「類」「苦手」などの語尾を外したもの）
+  kinds: IngredientKind[]; // 分類の語なら、その種類
+  names: string[]; // 分類の語なら、名前に含まれていれば当てる語（練り物・かつお節など）
+}
+
+/** 自由入力の除外を語に分ける（区切り：、・,／ 空白 かっこ）。 */
+export function textParts(text: string): TextPart[] {
+  return text
+    .normalize('NFKC')
+    .split(TEXT_SEPARATORS)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0)
+    .map((p) => {
+      const cat = textCategoryOf(p);
+      return { text: p, key: textNameKey(p), kinds: cat?.kinds ?? [], names: cat?.names ?? [] };
+    })
+    .filter((p) => p.key.length > 0);
+}
+
+/** その食材が自由入力の除外の1語に当たるか（名前・別名に含まれる、または分類の語の種類・名前に当たる）。 */
+function textHitsIngredient(part: TextPart, ing: Ingredient, names: string[] = namesOf(ing)): boolean {
+  if (names.some((n) => n.includes(part.key))) return true;
+  if (part.kinds.includes(ing.kind)) return true;
+  return part.names.some((w) => names.some((n) => n.includes(w)));
 }
 
 /**
@@ -27,14 +71,13 @@ export function checkDishSafetyFor(dish: Dish, members: Member[], household: Hou
   let excluded = false;
   let uncertain = false;
   const dishName = normalizeJa(dish.name);
+  const parts = exclusions.flatMap((ex) => (ex.type === 'text' ? textParts(ex.text) : []));
 
   // 料理名に除外の語が入っていれば除外（自由入力の定番にも効く）。
-  for (const ex of exclusions) {
-    if (ex.type !== 'text') continue;
-    const t = normalizeJa(ex.text);
-    if (t && dishName.includes(t)) {
+  for (const part of parts) {
+    if (dishName.includes(part.key)) {
       excluded = true;
-      pushHit(hits, { ingredientId: '', reason: `除外：${ex.text.trim()}` });
+      pushHit(hits, { ingredientId: '', reason: `除外：${part.text}` });
     }
   }
 
@@ -44,19 +87,33 @@ export function checkDishSafetyFor(dish: Dish, members: Member[], household: Hou
     for (const ex of exclusions) {
       if (ex.type === 'ingredient') {
         const ing = catalog.ingredientById.get(ex.id);
-        if (ing && namesOf(ing).some((n) => dishName.includes(n))) {
+        if (ing && namesOf(ing).some((n) => nameWordOk(n) && dishName.includes(n))) {
           excluded = true;
           pushHit(hits, { ingredientId: ing.id, reason: `除外：${ing.name}` });
         }
       } else if (ex.type === 'allergen') {
-        const name = normalizeJa(allergenName(catalog, ex.id));
+        // アレルゲンの呼び方（「鮭」「豚」などの漢字1文字を含む）か、そのアレルゲンを含む食材の名前が料理名にあれば除外。
+        const byWord = allergenWords(ex.id, catalog).some((w) => dishName.includes(w));
         const byIngredient = catalog.ingredients.find(
-          (i) => i.allergens.includes(ex.id) && !i.pantry && namesOf(i).some((n) => n.length >= 2 && dishName.includes(n)),
+          (i) => i.allergens.includes(ex.id) && !i.pantry && namesOf(i).some((n) => nameWordOk(n) && dishName.includes(n)),
         );
-        if ((name.length >= 1 && dishName.includes(name)) || byIngredient) {
+        if (byWord || byIngredient) {
           excluded = true;
           pushHit(hits, { ingredientId: byIngredient?.id ?? '', reason: allergenName(catalog, ex.id) });
         }
+      }
+    }
+    // 分類の語（「魚」「きのこ」など）は、その種類の食材の名前が料理名にあれば除外（「鯵の南蛮漬け」と「魚」）。
+    for (const part of parts) {
+      if (part.kinds.length === 0 && part.names.length === 0) continue;
+      const byCategory = catalog.ingredients.find((i) => {
+        const names = namesOf(i);
+        return (part.kinds.includes(i.kind) || part.names.some((w) => names.some((n) => n.includes(w)))) &&
+          names.some((n) => nameWordOk(n) && dishName.includes(n));
+      });
+      if (byCategory) {
+        excluded = true;
+        pushHit(hits, { ingredientId: byCategory.id, reason: `除外：${part.text}` });
       }
     }
     if (!excluded && hasAllergen) {
@@ -86,12 +143,12 @@ export function checkDishSafetyFor(dish: Dish, members: Member[], household: Hou
           excluded = true;
           pushHit(hits, { ingredientId: ing.id, reason: `除外：${ing.name}` });
         }
-      } else {
-        const t = normalizeJa(ex.text);
-        if (t && names.some((n) => n.includes(t))) {
-          excluded = true;
-          pushHit(hits, { ingredientId: ing.id, reason: `除外：${ex.text.trim()}` });
-        }
+      }
+    }
+    for (const part of parts) {
+      if (textHitsIngredient(part, ing, names)) {
+        excluded = true;
+        pushHit(hits, { ingredientId: ing.id, reason: `除外：${part.text}` });
       }
     }
     if (ing.uncertain && hasAllergen) {
@@ -101,6 +158,41 @@ export function checkDishSafetyFor(dish: Dish, members: Member[], household: Hou
   }
 
   return { status: excluded ? 'excluded' : uncertain ? 'uncertain' : 'ok', hits };
+}
+
+/** 自由入力の除外が何に当たるか（画面で「当たる食材」を見せるため）。 */
+export interface TextExclusionTargets {
+  /** アレルゲンとしても扱う id（「卵」「甲殻類アレルギー」「肉」など）。 */
+  allergenIds: AllergenId[];
+  /** 名前・別名・分類（魚・きのこ など）で当たる食材の id。アレルゲンで当たる食材（派生原材料）は含めない。 */
+  ingredientIds: string[];
+  /** 料理名に語が入っている料理の id。 */
+  dishIds: string[];
+  /** どの食材・料理・アレルゲンにも当たらない語。 */
+  unmatched: string[];
+}
+
+/** 公開API：自由入力の除外の語が、どのアレルゲン・食材・料理に当たるか。登録のときに「当たる食材はありません」と分かるようにする。 */
+export function textExclusionTargets(text: string, catalog: Catalog): TextExclusionTargets {
+  const allergenIds = allergensOfText(text);
+  const ingredientIds: string[] = [];
+  const dishIds: string[] = [];
+  const unmatched: string[] = [];
+  for (const part of textParts(text)) {
+    let hit = allergensOfText(part.text).length > 0;
+    for (const ing of catalog.ingredients) {
+      if (!textHitsIngredient(part, ing)) continue;
+      hit = true;
+      if (!ingredientIds.includes(ing.id)) ingredientIds.push(ing.id);
+    }
+    for (const d of catalog.dishes) {
+      if (!normalizeJa(d.name).includes(part.key)) continue;
+      hit = true;
+      if (!dishIds.includes(d.id)) dishIds.push(d.id);
+    }
+    if (!hit) unmatched.push(part.text);
+  }
+  return { allergenIds, ingredientIds, dishIds, unmatched };
 }
 
 /** 世帯全体（乳児を除く全員）で判定する。 */

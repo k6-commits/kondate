@@ -266,7 +266,7 @@ export function buildAiInstruction(maskedText: string, state: AppState, catalog:
   const proteins = (Object.keys(PROTEIN_LABEL) as Protein[]).map((p) => `${p}（${PROTEIN_LABEL[p]}）`).join('、');
   const genres = (Object.keys(GENRE_LABEL) as Genre[]).map((g) => `${g}（${GENRE_LABEL[g]}）`).join('、');
   const example =
-    '{"commands":[{"type":"absence","date":"YYYY-MM-DD","memberRef":"member_2","ingredientId":null,"dishId":null,"protein":null,"genre":null}]}';
+    '{"commands":[{"type":"absence","date":"YYYY-MM-DD","memberRef":"member_2","ingredientId":null,"dishId":null,"protein":null,"genre":null,"cancel":null,"question":null,"frozen":null}]}';
 
   return [
     'あなたは、家族の夕食の献立アプリ「きめとく」で、家族の書き込みをアプリの命令に直す係です。',
@@ -284,14 +284,16 @@ export function buildAiInstruction(maskedText: string, state: AppState, catalog:
     '- show_today：今日の夕食を知りたい',
     '- show_shopping：買い物リストを見たい',
     '- today_impossible：今日は作れない、疲れた、ラクしたい（今日の分）',
-    '- want_alternatives：その日の料理を別のにしたい（date は任意）',
-    '- absence：その日の夕食を食べない人がいる（飲み会、出張、外食など。date と memberRef が必要。日付がなければ今日）',
+    '- want_alternatives：その日の料理を別のにしたい（date は任意。「キーマカレー飽きた」のように料理で指したら dishId）',
+    '- absence：その日の夕食を食べない人がいる（飲み会、出張、外食など。date と memberRef が必要。日付がなければ今日）。食べないと伝えていた人が、やはり食べる（欠席の取り消し）なら cancel を true',
     '- sale：食材が安い、特売（ingredientId が必要）',
     '- out_of_stock：食材が切れた、ない（ingredientId が必要）',
-    '- have：食材を買った、ある、もらった（ingredientId が必要）',
-    '- request：その日に食べたい料理、たんぱく源、和洋中（date は任意。dishId・protein・genre のどれか1つ以上が必要）',
+    '- have：食材を買った、ある、もらった（ingredientId が必要）。冷凍したなら frozen を true',
+    '- out_of_stock・have で、在庫を聞いているだけ（「豆腐あったっけ？」）、買ってきてと頼んでいる（「豆腐買ってきて」）、仮定（「卵が切れたら」）、打ち消し（「卵は切れてない」）なら question を true（在庫は変えない）',
+    '- request：その日に食べたい料理、たんぱく源、和洋中（date は任意。dishId・protein・genre・ingredientId のどれか1つ以上が必要。食材を名指ししたら ingredientId）',
     '- help：使い方を知りたい',
     '1つの書き込みに複数の命令があってもよい。当てはまるものがなければ {"commands":[]} を返す。',
+    '過ぎたことを話しているだけの文（「昨日は無理だった」）、打ち消し（「今日は無理じゃない」）、仮定（「無理なら」）では、today_impossible・want_alternatives・absence を出さない。',
     '',
     `# たんぱく源（protein）：${proteins}`,
     `# 和洋中（genre）：${genres}`,
@@ -332,20 +334,36 @@ export function toParsedCommands(raw: unknown): ParsedCommand[] {
         break;
       case 'want_alternatives': {
         const date = str(item.date);
-        out.push(date ? { type, date } : { type });
+        const dishId = str(item.dishId);
+        out.push({ type, ...(date ? { date } : {}), ...(dishId ? { dishId } : {}) });
         break;
       }
       case 'absence': {
         const date = str(item.date);
         const memberRef = str(item.memberRef);
-        if (date && memberRef) out.push({ type, date, memberRef });
+        if (date && memberRef) out.push({ type, date, memberRef, ...(item.cancel === true ? { cancel: true } : {}) });
         break;
       }
-      case 'sale':
-      case 'out_of_stock':
-      case 'have': {
+      case 'sale': {
         const ingredientId = str(item.ingredientId);
         if (ingredientId) out.push({ type, ingredientId });
+        break;
+      }
+      case 'out_of_stock': {
+        const ingredientId = str(item.ingredientId);
+        if (ingredientId) out.push({ type, ingredientId, ...(item.question === true ? { question: true } : {}) });
+        break;
+      }
+      case 'have': {
+        const ingredientId = str(item.ingredientId);
+        if (ingredientId) {
+          out.push({
+            type,
+            ingredientId,
+            ...(item.question === true ? { question: true } : {}),
+            ...(item.frozen === true ? { frozen: true } : {}),
+          });
+        }
         break;
       }
       case 'request': {
@@ -354,10 +372,12 @@ export function toParsedCommands(raw: unknown): ParsedCommand[] {
         const dishId = str(item.dishId);
         const protein = str(item.protein);
         const genre = str(item.genre);
+        const ingredientId = str(item.ingredientId);
         if (date) cmd.date = date;
         if (dishId) cmd.dishId = dishId;
         if (protein) cmd.protein = protein as Protein;
         if (genre) cmd.genre = genre as Genre;
+        if (ingredientId) cmd.ingredientId = ingredientId;
         out.push(cmd);
         break;
       }

@@ -137,7 +137,8 @@ describe('advanceDay', () => {
     const weekly = replies[4].find((m) => m.push && m.card?.kind === 'week');
     expect(weekly?.card).toEqual({ kind: 'week', weekStart: NEXT_MONDAY });
     expect(weekly?.text).toContain('来週の夕食です');
-    expect(weekly?.text).toContain('今週は5日のうち1日、考えずに済みました');
+    // 記録のない日は「分からない」として数えない（5日のうち1日、とは言わない）
+    expect(weekly?.text).toContain('今週は記録のあった1日のうち1日、考えずに済みました');
     expect(weekly?.text).toContain('いちばん人気は');
   });
 
@@ -189,7 +190,58 @@ describe('weeklySummary', () => {
     s = advance(s, 5).state; // 土曜
     const r = handleUserText(s, catalog, '今週の献立');
     const week = r.replies.find((m) => m.card?.kind === 'week' && m.card.weekStart === NEXT_MONDAY);
-    expect(week?.text).toContain('今週は5日のうち1日、考えずに済みました');
+    expect(week?.text).toContain('今週は記録のあった1日のうち1日、考えずに済みました');
     expect(addDays(s.today, 0)).toBe('2026-11-14');
+  });
+});
+
+describe('レビューで見つかった問題の再発防止（配信・振り返り・反応・買い物）', () => {
+  it('有料版で何も押さない週の配信に「0日、考えずに済みました」と出さない', () => {
+    const paid = createInitialState(demoInput({ plan: 'paid' }), catalog, MONDAY);
+    const { replies } = advance(paid, 5); // 土曜：来週の献立の配信
+    const weekly = replies.flat().find((m) => m.push && m.card?.kind === 'week' && m.card.weekStart === NEXT_MONDAY);
+    expect(weekly?.text).toContain('今週は5日分の献立でした');
+    expect(weekly?.text).not.toContain('0日、考えずに');
+    const sum = weeklySummary(advance(paid, 6).state, catalog, MONDAY);
+    expect(sum.unconfirmedDays).toBe(5);
+  });
+
+  it('有料版の反応は一人ずつ：押した人のあとも、残りの人のボタンが付く。全員そろったら付けない', () => {
+    const paid = createInitialState(demoInput({ plan: 'paid' }), catalog, MONDAY);
+    let s = applyAction(paid, catalog, { type: 'cooked', date: MONDAY }).state;
+    const ids = s.household.members.filter((m) => m.ageBand !== 'infant').map((m) => m.id);
+    for (let i = 0; i < ids.length; i++) {
+      const r = applyAction(s, catalog, { type: 'react', date: MONDAY, memberId: ids[i], reaction: 'great' });
+      s = r.state;
+      const left = ids.length - i - 1;
+      expect(r.replies[0].actions?.length ?? 0, `${i}`).toBe(left * 3);
+      if (left > 0) expect(r.replies[0].text).toContain('ほかの人の分もどうぞ');
+      else expect(r.replies[0].text).toContain('全員分そろいました');
+    }
+    expect(s.history.find((h) => h.date === MONDAY)?.reactions).toHaveLength(ids.length);
+  });
+
+  it('献立の曜日が週の後半だけ（水〜金、買い物は水）でも、作る日（火曜）に週の献立を配信する', () => {
+    const base = createInitialState(demoInput({ plan: 'paid', shoppingWeekdays: [3] }), catalog, MONDAY);
+    const s: AppState = structuredClone(base);
+    s.household.settings.dinnerWeekdays = [3, 4, 5];
+    const { replies } = advance(s, 9); // 11/18（水）まで
+    const pushed = replies.map((day, i) => ({ day: addDays(MONDAY, i + 1), weeks: day.filter((m) => m.push && m.card?.kind === 'week').map((m) => (m.card?.kind === 'week' ? m.card.weekStart : '')) }));
+    expect(pushed.find((p) => p.weeks.includes(NEXT_MONDAY))?.day).toBe('2026-11-17');
+  });
+
+  it('来週の作る日を過ぎてから始めたら（水曜に始め、買い物も水曜）、来週の献立も知らせる', () => {
+    const s = createInitialState(demoInput({ plan: 'paid', shoppingWeekdays: [3] }), catalog, '2026-11-11');
+    const weeks = s.chat.filter((m) => m.card?.kind === 'week').map((m) => (m.card?.kind === 'week' ? m.card.weekStart : ''));
+    expect(weeks).toEqual([MONDAY, NEXT_MONDAY]);
+    expect(s.chat.filter((m) => m.card?.kind === 'week').every((m) => m.push)).toBe(true);
+  });
+
+  it('過ぎた買い物日のリストで、まだチェックしていない物も「買い物リスト」で見せる', () => {
+    const start = createInitialState(demoInput(), catalog, MONDAY);
+    const tue = advanceDay(start, catalog).state;
+    const r = handleUserText(tue, catalog, '買い物リスト');
+    expect(r.replies[0].card).toEqual({ kind: 'shopping', date: MONDAY });
+    expect(r.replies[0].text).toContain('まだチェックしていない物');
   });
 });

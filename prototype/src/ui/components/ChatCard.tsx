@@ -1,6 +1,6 @@
 // トークのカード（Card）。カードは参照だけを持つので、中身は今の state から描く。
 import type { AppState, Card, Catalog, ISODate } from '../../engine';
-import { AISLE_LABEL, AISLE_ORDER, WEEKDAY_JA, findDish, formatJa, weekStartOf, weekdayOf, weeklySummary } from '../../engine';
+import { AISLE_LABEL, AISLE_ORDER, WEEKDAY_JA, addDays, findDish, formatJa, weekStartOf, weekdayOf, weeklySummary } from '../../engine';
 import { cls, dishNames } from '../lib';
 import { Icon } from './Icon';
 import { MealDetails, RakuBadge, StatusBadge } from './MealDetails';
@@ -156,21 +156,60 @@ function AlternativesCard({ date, options, state, catalog }: { date: ISODate; op
   );
 }
 
+/**
+ * 記録（作った・作らなかった）のある献立日の数。記録のない過ぎた日（unconfirmedDays）と、まだ来ていない日は数えない。
+ * エンジンの振り返りの文（renderCardText の summary）と同じ数え方。
+ */
+function recordedDays(state: AppState, weekStart: ISODate, plannedDays: number, unconfirmedDays: number): number {
+  const end = addDays(weekStart, 6);
+  const upcoming = new Set(
+    state.meals
+      .filter(
+        (m) =>
+          m.date >= weekStart &&
+          m.date <= end &&
+          m.dishIds.length > 0 &&
+          m.date >= state.today &&
+          m.status !== 'cooked' &&
+          m.status !== 'skipped',
+      )
+      .map((m) => m.date),
+  ).size;
+  return Math.max(0, plannedDays - unconfirmedDays - upcoming);
+}
+
 export function SummaryBody({ weekStart, state, catalog }: { weekStart: ISODate; state: AppState; catalog: Catalog }) {
   const s = weeklySummary(state, catalog, weekStart);
   if (s.plannedDays === 0) return <p className="card-empty">この週の記録はありません。</p>;
+  // 記録のない日は「分からない日」。0日とは言わない（記録が1日もなければ、数を出さない）。
+  const unknown = s.unconfirmedDays ?? 0;
+  const recorded = recordedDays(state, weekStart, s.plannedDays, unknown);
   return (
     <dl className="summary">
-      <div>
-        <dt>考えずに済んだ日</dt>
-        <dd className="num">
-          {s.plannedDays}日のうち<strong>{s.decidedWithoutThinking}日</strong>
-        </dd>
-      </div>
+      {recorded > 0 ? (
+        <div>
+          <dt>考えずに済んだ日</dt>
+          <dd className="num">
+            {recorded < s.plannedDays ? `記録のあった${recorded}日のうち` : `${s.plannedDays}日のうち`}
+            <strong>{s.decidedWithoutThinking}日</strong>
+          </dd>
+        </div>
+      ) : (
+        <div>
+          <dt>献立の日</dt>
+          <dd className="num">{s.plannedDays}日分（作った・作らなかったの記録はありません）</dd>
+        </div>
+      )}
       {s.skippedOrImpossible > 0 ? (
         <div>
           <dt>作れなかった日</dt>
           <dd className="num">{s.skippedOrImpossible}日</dd>
+        </div>
+      ) : null}
+      {unknown > 0 && recorded > 0 ? (
+        <div>
+          <dt>記録なし</dt>
+          <dd className="num">{unknown}日</dd>
         </div>
       ) : null}
       {s.topDishIds.length > 0 ? (

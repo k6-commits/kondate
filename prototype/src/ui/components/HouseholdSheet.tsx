@@ -260,7 +260,7 @@ export function HouseholdSheet({
         <div className="setting-row">
           <div>
             <p className="setting-name">ラク日の数（1週間）</p>
-            <p className="field-note">冷凍食品や惣菜で済ませる日です。</p>
+            <p className="field-note">冷凍食品・惣菜や、火をほとんど使わない料理で済ませる日です（アレルギーの除外がある家族では、市販品はふだん使いません）。</p>
           </div>
           <Segmented
             label="ラク日の数"

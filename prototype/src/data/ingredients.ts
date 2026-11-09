@@ -11,6 +11,10 @@ interface Spec {
   aliases?: string[];
   /** [size, label]。size は unit での量。 */
   pack?: [number, string];
+  /** 総称（「鶏肉」「きのこ」など）。特売・在庫の書き込みで代表として当てるだけ（除外の検索・判定には使わない）。 */
+  generic?: string[];
+  /** 冷凍した物の戻し方（既定は冷蔵室で解凍）。 */
+  thaw?: 'fridge' | 'from_frozen';
   shelf: number;
   freeze?: boolean;
   allergens?: AllergenId[];
@@ -37,6 +41,8 @@ function make(id: string, name: string, kind: IngredientKind, aisle: Aisle, unit
   if (s.pack) item.pack = { size: s.pack[0], label: s.pack[1] };
   if (s.season) item.seasonMonths = s.season;
   if (s.subs) item.substitutes = s.subs;
+  if (s.generic) item.genericAliases = s.generic;
+  if (s.thaw) item.thaw = s.thaw;
   return item;
 }
 
@@ -59,7 +65,8 @@ const meat = (id: string, name: string, kind: IngredientKind, s: Spec) =>
 
 const MEAT: Ingredient[] = [
   meat('chicken_thigh', '鶏もも肉', 'chicken', {
-    aliases: ['鶏もも', 'とりもも', 'もも肉', '鶏モモ', 'とりモモ', '鶏肉', 'とり肉', 'チキン'],
+    aliases: ['鶏もも', 'とりもも', 'もも肉', '鶏モモ', 'とりモモ'],
+    generic: ['鶏肉', 'とり肉', 'とりにく', 'チキン'],
     pack: [300, '1パック（約300g）'], shelf: 2, allergens: ['chicken'], subs: ['chicken_breast'],
   }),
   meat('chicken_breast', '鶏むね肉', 'chicken', {
@@ -83,7 +90,8 @@ const MEAT: Ingredient[] = [
     pack: [250, '1パック（約250g）'], shelf: 1, allergens: ['chicken'], subs: ['ground_pork'],
   }),
   meat('pork_komagire', '豚こま切れ肉', 'pork', {
-    aliases: ['豚こま', '豚小間', '豚こま切れ', 'こま切れ', '豚切り落とし', '豚の切り落とし', '豚肉', 'ぶた肉'],
+    aliases: ['豚こま', '豚小間', '豚こま切れ', 'こま切れ', '豚切り落とし', '豚の切り落とし'],
+    generic: ['豚肉', 'ぶた肉', 'ぶたにく', 'ポーク'],
     pack: [300, '1パック（約300g）'], shelf: 2, allergens: ['pork'], subs: ['pork_belly', 'pork_loin_sliced'],
   }),
   meat('pork_belly', '豚バラ薄切り肉', 'pork', {
@@ -103,11 +111,13 @@ const MEAT: Ingredient[] = [
     pack: [250, '1パック（約250g）'], shelf: 1, allergens: ['pork'], subs: ['ground_mixed', 'ground_chicken'],
   }),
   meat('ground_mixed', '合いびき肉', 'ground', {
-    aliases: ['合いびき', '合挽き', '合い挽き肉', 'あいびき', '合挽肉', 'ひき肉', 'ミンチ', '挽き肉'],
+    aliases: ['合いびき', '合挽き', '合い挽き肉', 'あいびき', '合挽肉'],
+    generic: ['ひき肉', 'ミンチ', '挽き肉', 'ひきにく'],
     pack: [300, '1パック（約300g）'], shelf: 1, allergens: ['beef', 'pork'], subs: ['ground_pork'],
   }),
   meat('beef_komagire', '牛こま切れ肉', 'beef', {
-    aliases: ['牛こま', '牛小間', '牛切り落とし', '牛の切り落とし', '牛肉', 'ぎゅう肉'],
+    aliases: ['牛こま', '牛小間', '牛切り落とし', '牛の切り落とし'],
+    generic: ['牛肉', 'ぎゅう肉', 'ぎゅうにく', 'ビーフ'],
     pack: [200, '1パック（約200g）'], shelf: 2, allergens: ['beef'], subs: ['beef_sliced', 'pork_komagire'],
   }),
   meat('beef_sliced', '牛薄切り肉', 'beef', {
@@ -190,9 +200,10 @@ const SEAFOOD: Ingredient[] = [
     aliases: ['イカ', '烏賊', 'するめいか', 'スルメイカ', 'いかの胴'],
     pack: [250, '1杯（約250g）'], shelf: 1, allergens: ['squid'], subs: ['shrimp'],
   }),
+  // 冷凍したあさりは、凍ったまま加熱する（冷蔵室で解凍すると口が開きにくい）。
   fish('clam', 'あさり', 'seafood', 'g', {
     aliases: ['アサリ', '浅蜊', 'あさりの砂抜き'],
-    pack: [200, '1パック（約200g）'], shelf: 1, season: [3, 4, 5],
+    pack: [200, '1パック（約200g）'], shelf: 1, season: [3, 4, 5], thaw: 'from_frozen',
   }),
   fish('octopus', 'ゆでだこ', 'seafood', 'g', {
     aliases: ['たこ', 'タコ', '蛸', 'ゆでダコ'],
@@ -351,9 +362,9 @@ const DRY: Ingredient[] = [
 ];
 
 const veg = (id: string, name: string, unit: Unit, s: Spec) => make(id, name, 'vegetable', 'produce', unit, s);
-// きのこは旬が秋。冷凍できる。
+// きのこは旬が秋。冷凍できる（凍ったまま加熱する）。
 const mushroom = (id: string, name: string, unit: Unit, s: Spec) =>
-  make(id, name, 'mushroom', 'produce', unit, { freeze: true, season: months(9, 11), ...s });
+  make(id, name, 'mushroom', 'produce', unit, { freeze: true, thaw: 'from_frozen', season: months(9, 11), ...s });
 
 // ---------------------------------------------------------------------------
 // 野菜・きのこ・果物
@@ -383,31 +394,31 @@ const PRODUCE: Ingredient[] = [
   veg('turnip', 'かぶ', 'piece', { aliases: ['蕪', 'カブ', 'かぶら'], pack: [3, '1束（3個）'], shelf: 5, season: [10, 11, 12] }),
   veg('spinach', 'ほうれん草', 'g', {
     aliases: ['ほうれんそう', 'ホウレンソウ', 'ほうれん'],
-    pack: [200, '1袋（約200g）'], shelf: 3, freeze: true, season: months(11, 2), subs: ['komatsuna'],
+    pack: [200, '1袋（約200g）'], shelf: 3, freeze: true, thaw: 'from_frozen', season: months(11, 2), subs: ['komatsuna'],
   }),
   veg('komatsuna', '小松菜', 'g', {
     aliases: ['こまつな', 'コマツナ'],
-    pack: [200, '1袋（約200g）'], shelf: 3, freeze: true, season: months(12, 2), subs: ['spinach', 'bok_choy'],
+    pack: [200, '1袋（約200g）'], shelf: 3, freeze: true, thaw: 'from_frozen', season: months(12, 2), subs: ['spinach', 'bok_choy'],
   }),
   veg('bok_choy', 'チンゲン菜', 'g', {
-    aliases: ['ちんげん菜', 'チンゲンサイ', '青梗菜'], pack: [200, '1袋（2株・約200g）'], shelf: 3, freeze: true, subs: ['komatsuna'],
+    aliases: ['ちんげん菜', 'チンゲンサイ', '青梗菜'], pack: [200, '1袋（2株・約200g）'], shelf: 3, freeze: true, thaw: 'from_frozen', subs: ['komatsuna'],
   }),
   veg('shungiku', '春菊', 'g', {
-    aliases: ['しゅんぎく', 'シュンギク', '菊菜'], pack: [150, '1袋（約150g）'], shelf: 3, freeze: true, season: months(11, 2),
+    aliases: ['しゅんぎく', 'シュンギク', '菊菜'], pack: [150, '1袋（約150g）'], shelf: 3, freeze: true, thaw: 'from_frozen', season: months(11, 2),
   }),
   veg('mizuna', '水菜', 'g', { aliases: ['みずな', 'ミズナ'], pack: [200, '1袋（約200g）'], shelf: 3, season: months(11, 2) }),
   veg('lettuce', 'レタス', 'g', { aliases: ['れたす', 'サラダ菜'], pack: [300, '1玉（約300g）'], shelf: 4 }),
-  veg('bean_sprouts', 'もやし', 'g', { aliases: ['モヤシ', '緑豆もやし'], pack: [200, '1袋（約200g）'], shelf: 2, freeze: true }),
+  veg('bean_sprouts', 'もやし', 'g', { aliases: ['モヤシ', '緑豆もやし'], pack: [200, '1袋（約200g）'], shelf: 2, freeze: true, thaw: 'from_frozen' }),
   veg('pea_shoots', '豆苗', 'g', { aliases: ['とうみょう', 'トウミョウ'], pack: [100, '1袋（約100g）'], shelf: 3 }),
   veg('green_onion', '長ねぎ', 'g', {
     aliases: ['ねぎ', 'ネギ', '白ねぎ', '長ネギ', '葱', '根深ねぎ'],
-    pack: [100, '1本（約100g）'], shelf: 7, freeze: true, season: months(11, 2), subs: ['scallion'],
+    pack: [100, '1本（約100g）'], shelf: 7, freeze: true, thaw: 'from_frozen', season: months(11, 2), subs: ['scallion'],
   }),
   veg('scallion', '小ねぎ', 'g', {
     aliases: ['青ねぎ', '万能ねぎ', '細ねぎ', '小ネギ', '九条ねぎ', '青ネギ'],
-    pack: [100, '1袋（約100g）'], shelf: 5, freeze: true, subs: ['green_onion'],
+    pack: [100, '1袋（約100g）'], shelf: 5, freeze: true, thaw: 'from_frozen', subs: ['green_onion'],
   }),
-  veg('chinese_chives', 'にら', 'g', { aliases: ['ニラ', '韮'], pack: [100, '1束（約100g）'], shelf: 3, freeze: true }),
+  veg('chinese_chives', 'にら', 'g', { aliases: ['ニラ', '韮'], pack: [100, '1束（約100g）'], shelf: 3, freeze: true, thaw: 'from_frozen' }),
   veg('cucumber', 'きゅうり', 'piece', { aliases: ['キュウリ', '胡瓜'], pack: [3, '1袋（3本）'], shelf: 5, season: months(6, 8) }),
   veg('tomato', 'トマト', 'piece', {
     aliases: ['とまと', '完熟トマト'], pack: [3, '1袋（3個）'], shelf: 5, season: months(6, 8), subs: ['cherry_tomato'],
@@ -422,23 +433,23 @@ const PRODUCE: Ingredient[] = [
   veg('paprika', 'パプリカ', 'piece', { aliases: ['赤パプリカ', '黄パプリカ'], pack: [1, '1個'], shelf: 7, subs: ['green_pepper'] }),
   veg('bitter_melon', 'ゴーヤ', 'piece', { aliases: ['にがうり', 'ゴーヤー', '苦瓜'], pack: [1, '1本'], shelf: 5, season: months(6, 8) }),
   veg('zucchini', 'ズッキーニ', 'piece', { aliases: ['ずっきーに'], pack: [1, '1本'], shelf: 5, season: months(6, 8) }),
-  veg('okra', 'オクラ', 'piece', { aliases: ['おくら'], pack: [8, '1袋（約8本）'], shelf: 4, freeze: true, season: months(6, 9) }),
+  veg('okra', 'オクラ', 'piece', { aliases: ['おくら'], pack: [8, '1袋（約8本）'], shelf: 4, freeze: true, thaw: 'from_frozen', season: months(6, 9) }),
   veg('green_beans', 'さやいんげん', 'g', {
-    aliases: ['いんげん', 'インゲン', 'さやインゲン'], pack: [100, '1袋（約100g）'], shelf: 4, freeze: true, season: months(6, 9),
+    aliases: ['いんげん', 'インゲン', 'さやインゲン'], pack: [100, '1袋（約100g）'], shelf: 4, freeze: true, thaw: 'from_frozen', season: months(6, 9),
   }),
   veg('snap_peas', 'スナップえんどう', 'g', { aliases: ['スナップエンドウ', 'スナップ'], pack: [100, '1袋（約100g）'], shelf: 4, season: [4, 5, 6] }),
   veg('asparagus', 'アスパラガス', 'g', { aliases: ['アスパラ', 'あすぱら'], pack: [100, '1束（約100g）'], shelf: 3, season: [4, 5, 6] }),
   veg('broccoli', 'ブロッコリー', 'g', {
-    aliases: ['ぶろっこりー'], pack: [250, '1株（約250g）'], shelf: 4, freeze: true, season: months(11, 3),
+    aliases: ['ぶろっこりー'], pack: [250, '1株（約250g）'], shelf: 4, freeze: true, thaw: 'from_frozen', season: months(11, 3),
   }),
   veg('pumpkin', 'かぼちゃ', 'g', {
-    aliases: ['カボチャ', '南瓜'], pack: [400, '1/4個（約400g）'], shelf: 5, freeze: true, season: months(7, 10),
+    aliases: ['カボチャ', '南瓜'], pack: [400, '1/4個（約400g）'], shelf: 5, freeze: true, thaw: 'from_frozen', season: months(7, 10),
   }),
   veg('corn', 'とうもろこし', 'piece', {
-    aliases: ['トウモロコシ', 'とうきび', '生のとうもろこし'], pack: [1, '1本'], shelf: 2, freeze: true, season: [6, 7, 8],
+    aliases: ['トウモロコシ', 'とうきび', '生のとうもろこし'], pack: [1, '1本'], shelf: 2, freeze: true, thaw: 'from_frozen', season: [6, 7, 8],
   }),
   veg('edamame', '枝豆', 'g', {
-    aliases: ['えだまめ', 'エダマメ'], pack: [200, '1袋（約200g）'], shelf: 2, freeze: true, season: [7, 8, 9], allergens: ['soy'],
+    aliases: ['えだまめ', 'エダマメ'], pack: [200, '1袋（約200g）'], shelf: 2, freeze: true, thaw: 'from_frozen', season: [7, 8, 9], allergens: ['soy'],
   }),
   veg('sweet_potato', 'さつまいも', 'g', {
     aliases: ['サツマイモ', 'さつま芋', '薩摩芋'], pack: [300, '1本（約300g）'], shelf: 14, season: months(9, 11),
@@ -467,7 +478,7 @@ const PRODUCE: Ingredient[] = [
   make('lemon', 'レモン', 'fruit', 'produce', 'piece', { aliases: ['れもん', 'レモン汁'], pack: [1, '1個'], shelf: 14 }),
 
   mushroom('shimeji', 'しめじ', 'g', {
-    aliases: ['ぶなしめじ', 'シメジ', 'きのこ'], pack: [100, '1パック（約100g）'], shelf: 4, subs: ['maitake', 'eringi'],
+    aliases: ['ぶなしめじ', 'シメジ'], generic: ['きのこ', 'キノコ'], pack: [100, '1パック（約100g）'], shelf: 4, subs: ['maitake', 'eringi'],
   }),
   mushroom('enoki', 'えのき', 'g', { aliases: ['えのきだけ', 'エノキ', 'えのき茸'], pack: [200, '1袋（約200g）'], shelf: 4, subs: ['shimeji'] }),
   mushroom('shiitake', '生しいたけ', 'piece', {
@@ -486,16 +497,16 @@ const STAPLES: Ingredient[] = [
     aliases: ['ごはん', 'ご飯', 'お米', '白米', 'こめ', 'ライス'], shelf: 60, pantry: true,
   }),
   make('udon', 'ゆでうどん', 'noodle', 'staple', 'piece', {
-    aliases: ['うどん', 'うどん玉', 'ゆで麺'], pack: [3, '1袋（3玉）'], shelf: 5, freeze: true, allergens: ['wheat'], subs: ['frozen_udon'],
+    aliases: ['うどん', 'うどん玉', 'ゆで麺'], pack: [3, '1袋（3玉）'], shelf: 5, freeze: true, thaw: 'from_frozen', allergens: ['wheat'], subs: ['frozen_udon'],
   }),
-  // 生の中華麺は卵を使う商品があり、スープの原材料も銘柄で違う。
+  // 生の中華麺は卵を使う商品があり、スープの原材料も銘柄で違う（豚・鶏のエキスを使う商品が多い）。
   make('chuka_men', '中華麺（生・スープ付き）', 'noodle', 'staple', 'piece', {
     aliases: ['中華麺', 'ラーメン', '生ラーメン', '中華そば', '冷やし中華の麺'],
-    pack: [3, '1袋（3人前）'], shelf: 5, freeze: true, allergens: ['wheat', 'soy', 'sesame'], uncertain: true,
+    pack: [3, '1袋（3人前）'], shelf: 5, freeze: true, thaw: 'from_frozen', allergens: ['wheat', 'egg', 'soy', 'sesame', 'pork', 'chicken'], uncertain: true,
   }),
   make('yakisoba_men', '焼きそば麺（ソース付き）', 'noodle', 'staple', 'piece', {
     aliases: ['焼きそば麺', '焼そば麺', 'やきそば麺', '蒸し麺', '蒸し中華麺'],
-    pack: [3, '1袋（3玉）'], shelf: 5, freeze: true, allergens: ['wheat', 'soy', 'apple'], uncertain: true,
+    pack: [3, '1袋（3玉）'], shelf: 5, freeze: true, thaw: 'from_frozen', allergens: ['wheat', 'soy', 'apple'], uncertain: true,
   }),
   make('pasta', 'スパゲッティ', 'noodle', 'staple', 'g', {
     aliases: ['パスタ', 'スパゲティ', 'スパゲッティー', 'スパゲティー'], pack: [500, '1袋（500g）'], shelf: 180, allergens: ['wheat'],
@@ -509,7 +520,7 @@ const STAPLES: Ingredient[] = [
   // 食パンは乳・大豆を使うことが多く、卵を使う商品もある。
   make('bread', '食パン', 'grain', 'staple', 'sheet', {
     aliases: ['パン', 'しょくぱん', 'トースト', '6枚切り'],
-    pack: [6, '1斤（6枚切り）'], shelf: 3, freeze: true, allergens: ['wheat', 'milk', 'soy'], uncertain: true,
+    pack: [6, '1斤（6枚切り）'], shelf: 3, freeze: true, thaw: 'from_frozen', allergens: ['wheat', 'milk', 'egg', 'soy'], uncertain: true,
   }),
   make('gyoza_skin', 'ぎょうざの皮', 'grain', 'staple', 'sheet', {
     aliases: ['餃子の皮', 'ギョーザの皮', 'ぎょうざのかわ'], pack: [24, '1袋（24枚）'], shelf: 5, freeze: true, allergens: ['wheat'],
@@ -590,7 +601,7 @@ const SEASONINGS: Ingredient[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// 冷凍食品・惣菜・レトルト（銘柄・店で原材料が違うので、すべて要確認）
+// 冷凍食品・惣菜・レトルト（銘柄・店で原材料が違うので、すべて要確認）。冷凍した物は凍ったまま温める。
 // ---------------------------------------------------------------------------
 
 const FROZEN_DELI: Ingredient[] = [
@@ -601,7 +612,7 @@ const FROZEN_DELI: Ingredient[] = [
   }),
   make('frozen_udon', '冷凍うどん', 'noodle', 'frozen', 'piece', {
     aliases: ['冷凍讃岐うどん', '冷凍のうどん'],
-    pack: [5, '1袋（5玉）'], shelf: 60, freeze: true, allergens: ['wheat'], uncertain: true, subs: ['udon'],
+    pack: [5, '1袋（5玉）'], shelf: 60, freeze: true, thaw: 'from_frozen', allergens: ['wheat'], uncertain: true, subs: ['udon'],
   }),
   make('frozen_karaage', '冷凍唐揚げ', 'processed', 'frozen', 'g', {
     aliases: ['冷凍からあげ', '冷凍のから揚げ', '冷凍から揚げ'],
@@ -609,11 +620,11 @@ const FROZEN_DELI: Ingredient[] = [
     subs: ['deli_karaage'],
   }),
   make('frozen_mixed_veg', '冷凍ミックスベジタブル', 'vegetable', 'frozen', 'g', {
-    aliases: ['ミックスベジタブル', 'ミックスベジ'], pack: [300, '1袋（約300g）'], shelf: 60, freeze: true,
+    aliases: ['ミックスベジタブル', 'ミックスベジ'], pack: [300, '1袋（約300g）'], shelf: 60, freeze: true, thaw: 'from_frozen',
   }),
   make('deli_karaage', '唐揚げ（惣菜）', 'processed', 'deli', 'g', {
     aliases: ['惣菜の唐揚げ', '惣菜のからあげ', 'お惣菜の唐揚げ'],
-    pack: [300, '1パック（約300g）'], shelf: 1, freeze: true, allergens: ['chicken', 'wheat', 'soy', 'egg'], uncertain: true,
+    pack: [300, '1パック（約300g）'], shelf: 1, freeze: true, thaw: 'from_frozen', allergens: ['chicken', 'wheat', 'soy', 'egg'], uncertain: true,
     subs: ['frozen_karaage'],
   }),
   make('deli_potato_salad', 'ポテトサラダ（惣菜）', 'processed', 'deli', 'g', {
@@ -622,7 +633,7 @@ const FROZEN_DELI: Ingredient[] = [
   }),
   make('deli_croquette', 'コロッケ（惣菜）', 'processed', 'deli', 'piece', {
     aliases: ['惣菜のコロッケ', 'コロッケ', 'お惣菜のコロッケ'],
-    pack: [4, '1パック（4個）'], shelf: 1, freeze: true, allergens: ['wheat', 'milk', 'egg', 'soy', 'beef', 'pork'], uncertain: true,
+    pack: [4, '1パック（4個）'], shelf: 1, freeze: true, thaw: 'from_frozen', allergens: ['wheat', 'milk', 'egg', 'soy', 'beef', 'pork'], uncertain: true,
   }),
   make('retort_curry', 'レトルトカレー', 'processed', 'dry', 'piece', {
     aliases: ['レトルトのカレー', 'カレーのレトルト'],

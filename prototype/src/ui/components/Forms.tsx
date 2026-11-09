@@ -1,7 +1,7 @@
 // 初回設定と「家族と設定」で共通の入力部品。
 import { useMemo, useState } from 'react';
-import type { AgeBand, AllergenId, Catalog, Dish, Exclusion, Household, Ingredient, Protein, Weekday } from '../../engine';
-import { AGE_BAND_LABEL, PROTEIN_LABEL, WEEKDAY_JA, checkDishSafety } from '../../engine';
+import type { AgeBand, AllergenId, Catalog, Dish, Exclusion, Household, Ingredient, Protein, TextExclusionTargets, Weekday } from '../../engine';
+import { AGE_BAND_LABEL, PROTEIN_LABEL, WEEKDAY_JA, allergensOfText, checkDishSafety, textExclusionTargets } from '../../engine';
 import type { MemberRole } from '../lib';
 import { ROLE_LABEL, ROLE_ORDER, WEEKDAYS_MON_FIRST, cls, normalizeForSearch } from '../lib';
 import { Icon } from './Icon';
@@ -135,6 +135,27 @@ export function memberLine(m: MemberDraft): string {
   return [AGE_BAND_LABEL[m.ageBand], m.role ? ROLE_LABEL[m.role] : null].filter(Boolean).join('・');
 }
 
+function shortList(names: string[], max = 5): string {
+  return names.length > max ? `${names.slice(0, max).join('・')} ほか${names.length - max}品` : names.join('・');
+}
+
+/** 自由入力の除外の語が、何に当たるか（登録する前に見せる）。 */
+function textTargetsNote(t: TextExclusionTargets, catalog: Catalog): string {
+  const allergens = t.allergenIds.map((id) => catalog.allergens.find((a) => a.id === id)?.name ?? id);
+  const ingredients = t.ingredientIds.map((id) => catalog.ingredientById.get(id)?.name ?? id);
+  const dishes = t.dishIds.map((id) => catalog.dishById.get(id)?.name ?? id);
+  // 「ほうれん草とパクチー」のように1語につないで書くと、どれにも当たらない。区切り方を添える。
+  const joined = t.unmatched.some((w) => w.length >= 4 && /[とや]/.test(w));
+  const hint = joined ? '（いくつか書くときは「、」で区切ってください）' : '';
+  if (allergens.length === 0 && ingredients.length === 0 && dishes.length === 0) return `当たる食材はありません${hint}。`;
+  const parts: string[] = [];
+  if (allergens.length > 0) parts.push(`アレルゲンとしても除外：${allergens.join('・')}`);
+  if (ingredients.length > 0) parts.push(`当たる食材：${shortList(ingredients)}`);
+  if (dishes.length > 0) parts.push(`名前で当たる料理：${shortList(dishes)}`);
+  if (t.unmatched.length > 0) parts.push(`「${t.unmatched.join('」「')}」に当たる食材はありません${hint}`);
+  return `${parts.join('。')}。`;
+}
+
 function searchIngredients(catalog: Catalog, query: string, exclude: Set<string>): Ingredient[] {
   const q = normalizeForSearch(query);
   if (!q) return [];
@@ -176,6 +197,13 @@ export function MemberEditor({
   const q = normalizeForSearch(query);
   const exact = q && catalog.ingredients.some((i) => [i.name, ...i.aliases].some((n) => normalizeForSearch(n) === q));
   const textTaken = value.exclusions.some((e) => e.type === 'text' && normalizeForSearch(e.text) === q);
+  // 「鶏肉」「甲殻類アレルギー」のようなアレルゲンの語なら、アレルゲンとしての除外を候補の先頭に出す（加工品・調味料の分も除ける）。
+  const allergenHits = useMemo(
+    () => (q ? allergensOfText(query).filter((id) => !value.exclusions.some((e) => e.type === 'allergen' && e.id === id)) : []),
+    [q, query, value.exclusions],
+  );
+  const showFree = !!q && !exact && !textTaken;
+  const freeTargets = useMemo(() => (showFree ? textExclusionTargets(query.trim(), catalog) : null), [showFree, query, catalog]);
 
   const set = (patch: Partial<MemberDraft>) => onChange({ ...value, ...patch });
   const toggleAllergen = (id: AllergenId) => {
@@ -295,6 +323,21 @@ export function MemberEditor({
           </div>
           {q ? (
             <div className="results" role="group" aria-label="食材の候補">
+              {allergenHits.length > 0 ? (
+                <button
+                  type="button"
+                  className="chip"
+                  onClick={() => {
+                    set({ exclusions: [...value.exclusions, ...allergenHits.map((id): Exclusion => ({ type: 'allergen', id }))] });
+                    if (allergenHits.some((id) => !mandatory.some((a) => a.id === id))) setShowMore(true);
+                    setQuery('');
+                  }}
+                >
+                  <Icon name="plus" size={15} />
+                  {allergenHits.map((id) => catalog.allergens.find((a) => a.id === id)?.name ?? id).join('・')}
+                  （アレルゲン）を除外
+                </button>
+              ) : null}
               {results.map((ing) => (
                 <button
                   key={ing.id}
@@ -309,7 +352,7 @@ export function MemberEditor({
                   {ing.name}
                 </button>
               ))}
-              {!exact && !textTaken ? (
+              {showFree ? (
                 <button
                   type="button"
                   className="chip chip--free"
@@ -323,6 +366,10 @@ export function MemberEditor({
               ) : null}
             </div>
           ) : null}
+          {allergenHits.length > 0 ? (
+            <p className="field-note">アレルゲンとして除外すると、加工品・調味料に入っている分も除きます。</p>
+          ) : null}
+          {freeTargets ? <p className="field-note">「{query.trim()}」：{textTargetsNote(freeTargets, catalog)}</p> : null}
         </div>
         {value.exclusions.some((e) => e.type !== 'allergen') ? (
           <ul className="removable">

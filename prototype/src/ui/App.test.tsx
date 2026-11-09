@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { AppState } from '../engine';
-import { AISLE_ORDER, createInitialState, householdNotices } from '../engine';
+import { AISLE_ORDER, advanceDay, applyAction, createInitialState, householdNotices } from '../engine';
 import { DEMO_ONBOARDING, defaultCatalog } from '../data';
 import { App, ROUTES } from './App';
 import { STORAGE_KEY } from './storage';
@@ -207,6 +207,28 @@ describe('デモの操作', () => {
   });
 });
 
+describe('有料版の反応', () => {
+  it('［ママ ◎］を押したあとも、まだ押していない［パパ ◎］が押せる', () => {
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(within(screen.getByRole('group', { name: 'プラン（デモ）' })).getByRole('button', { name: '有料' }));
+    fireEvent.click(screen.getByRole('button', { name: '翌日へ進む' }));
+    const ask = [...talkLog().querySelectorAll('[data-from="bot"]')].find((m) => /は作りましたか？/.test(m.textContent ?? '')) as HTMLElement;
+    fireEvent.click(within(ask).getByRole('button', { name: '作った' }));
+    fireEvent.click(within(talkLog()).getByRole('button', { name: 'ママ ◎' }));
+    expect(within(talkLog()).getByText(/ほかの人の分もどうぞ/)).toBeTruthy();
+    expect(within(talkLog()).queryByRole('button', { name: 'ママ ◎' })).toBeNull();
+    fireEvent.click(within(talkLog()).getByRole('button', { name: 'パパ ◎' }));
+    const record = saved().history.find((r) => r.date === MONDAY && r.status === 'cooked');
+    expect(record?.reactions).toEqual([
+      { memberId: 'member_1', reaction: 'great' },
+      { memberId: 'member_2', reaction: 'great' },
+    ]);
+    // まだ押していない人（はると・ゆい）のボタンは残る
+    expect(within(talkLog()).getByRole('button', { name: 'はると ◎' })).toBeTruthy();
+    expect(within(talkLog()).queryByRole('button', { name: 'パパ ◎' })).toBeNull();
+  });
+});
+
 describe('今週の献立', () => {
   it('差し替えの2案をその場で出し、選ぶと献立が変わる', () => {
     render(<App todayFn={todayFn} />);
@@ -238,6 +260,44 @@ describe('今週の献立', () => {
     const record = saved().history.find((r) => r.date === MONDAY && r.status === 'cooked');
     expect(record?.reactions).toEqual([{ memberId: 'household', reaction: 'great' }]);
     expect(within(monday()).getByRole('button', { name: /◎/ }).getAttribute('aria-pressed')).toBe('true');
+  });
+});
+
+describe('週の振り返り', () => {
+  /** 11/2(月) から始めて、11/9(月) まで進めた状態（先週の記録は onFirstDay で付ける）。 */
+  function lastWeekState(onFirstDay?: (s: AppState) => AppState): AppState {
+    let s = createInitialState(DEMO_ONBOARDING, defaultCatalog, '2026-11-02');
+    for (let i = 0; i < 7; i++) {
+      s = advanceDay(s, defaultCatalog).state;
+      if (i === 0 && onFirstDay) s = onFirstDay(s);
+    }
+    return s;
+  }
+
+  function lastWeekPanel(): HTMLElement {
+    fireEvent.click(within(menu()).getByRole('button', { name: '今週の献立' }));
+    return screen.getByRole('region', { name: '先週の振り返り' });
+  }
+
+  it('作った・作らなかったの記録がない週は「0日」と言わず、記録がないと出す', () => {
+    const state = lastWeekState();
+    expect(state.today).toBe(MONDAY);
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    render(<App todayFn={todayFn} />);
+    const panel = lastWeekPanel();
+    expect(panel.textContent).toContain('5日分（作った・作らなかったの記録はありません）');
+    expect(panel.textContent).not.toContain('0日');
+    expect(within(panel).queryByText('考えずに済んだ日')).toBeNull();
+  });
+
+  it('記録が一部だけなら「記録のあった〇日のうち」と、記録のない日数を出す', () => {
+    const state = lastWeekState((s) => applyAction(s, defaultCatalog, { type: 'cooked', date: '2026-11-02' }).state);
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    render(<App todayFn={todayFn} />);
+    const panel = lastWeekPanel();
+    expect(panel.textContent).toContain('記録のあった1日のうち1日');
+    expect(within(panel).getByText('記録なし')).toBeTruthy();
+    expect(panel.textContent).toContain('4日');
   });
 });
 
@@ -305,6 +365,58 @@ describe('家族と設定', () => {
     expect(s.household.settings.rakuPerWeek).toBe(0);
     expect(s.meals.filter((m) => m.kind === 'raku').length).toBe(0);
     expect(screen.getByRole('status').textContent).toContain('献立も作り直しました');
+  });
+
+  it('設定で作り直しても、自分で替えた日は残り、知らせでもそう言う', () => {
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(within(menu()).getByRole('button', { name: '今週の献立' }));
+    const sheet = document.querySelector('[data-sheet="week"]') as HTMLElement;
+    const day = saved().meals.find((m) => m.date > MONDAY && m.kind === 'normal')!.date;
+    const card = sheet.querySelector(`[data-date="${day}"]`) as HTMLElement;
+    fireEvent.click(within(card).getByRole('button', { name: '差し替え' }));
+    const options = within(card).getAllByRole('button').filter((b) => b.classList.contains('alt-option'));
+    fireEvent.click(options[0]);
+    const chosen = saved().meals.find((m) => m.date === day)!;
+    expect(chosen.changedBy).toBe('user');
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.click(within(menu()).getByRole('button', { name: '家族と設定' }));
+    fireEvent.click(within(screen.getByRole('group', { name: '新しい料理の数' })).getByRole('button', { name: '0品' }));
+    expect(saved().meals.find((m) => m.date === day)!.dishIds).toEqual(chosen.dishIds);
+    const toast = screen.getByRole('status').textContent ?? '';
+    expect(toast).toContain('献立も作り直しました');
+    expect(toast).toMatch(/自分で替えた日（.*\)）は、そのままです/);
+  });
+
+  it('除外の検索で「鶏肉」と入れると、アレルゲンとしての除外を先頭の候補に出す', () => {
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(within(menu()).getByRole('button', { name: '家族と設定' }));
+    fireEvent.click(screen.getAllByRole('button', { name: '直す' })[0]);
+    const search = screen.getByLabelText('食材で除外する');
+    fireEvent.change(search, { target: { value: '鶏肉' } });
+    const results = screen.getByRole('group', { name: '食材の候補' });
+    const first = within(results).getAllByRole('button')[0];
+    expect(first.textContent).toContain('鶏肉（アレルゲン）を除外');
+    expect(screen.getByText(/加工品・調味料に入っている分も除きます/)).toBeTruthy();
+    fireEvent.click(first);
+    fireEvent.click(screen.getByRole('button', { name: '保存する' }));
+    expect(saved().household.members[0].exclusions).toContainEqual({ type: 'allergen', id: 'chicken' });
+  });
+
+  it('マスタにない語を除外に入れるときは、当たる食材があるかを見せる', () => {
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(within(menu()).getByRole('button', { name: '家族と設定' }));
+    fireEvent.click(screen.getAllByRole('button', { name: '直す' })[0]);
+    const search = screen.getByLabelText('食材で除外する');
+    fireEvent.change(search, { target: { value: 'パクチー' } });
+    expect(screen.getByText('「パクチー」：当たる食材はありません。')).toBeTruthy();
+    fireEvent.change(search, { target: { value: 'きのこ' } });
+    expect(screen.getByText(/「きのこ」：当たる食材：.*しいたけ/)).toBeTruthy();
+    // 1語につないで書くと当たらないので、区切り方を添える
+    fireEvent.change(search, { target: { value: 'ほうれん草とパクチー' } });
+    expect(screen.getByText(/「ほうれん草とパクチー」：当たる食材はありません（いくつか書くときは「、」で区切ってください）。/)).toBeTruthy();
+    fireEvent.change(search, { target: { value: 'ほうれん草、パクチー' } });
+    expect(screen.getByText(/当たる食材：ほうれん草。名前で当たる料理：ほうれん草のおひたし。「パクチー」に当たる食材はありません。/)).toBeTruthy();
   });
 
   it('読み込みは、だめならその場でエラーを出し、リセットは2段階で確かめる', () => {

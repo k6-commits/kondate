@@ -54,12 +54,12 @@ describe('今日は無理', () => {
     expect(r.state.meals.filter((m) => m.kind === 'raku')).toHaveLength(1);
   });
 
-  it('短く、責めない返事。傷みやすい食材の注意とボタンを付ける', () => {
+  it('短く、責めない返事とボタン。まだ買っていない食材には「今夜冷凍」と言わない', () => {
     expect(r.replies).toHaveLength(1);
     const reply = r.replies[0];
     expect(reply.text).toContain('ラク');
     expect(reply.text).toContain('に回します');
-    expect(reply.text).toContain('明日までに使えなければ今夜冷凍してください');
+    expect(reply.text).not.toContain('冷凍');
     expect(reply.card).toEqual({ kind: 'meal', date: MONDAY });
     expect(reply.actions?.map((a) => a.action.type)).toContain('request_alternatives');
     expectShortReplies(r.replies);
@@ -160,7 +160,8 @@ describe('欠席（@きめとく 水曜は夫が飲み会）', () => {
 
   it('誰か分からなければ聞き返す', () => {
     const res = handleUserText(state, catalog, '水曜はおじいちゃんがいない');
-    expect(res.replies[0].text).toMatch(/分かりませんでした|読み取れませんでした/);
+    expect(res.replies[0].text).toMatch(/分かりませんでした|読み取れませんでした|誰がいないか/);
+    expect(meal(res.state, '2026-11-11').absentMemberIds).toEqual([]);
   });
 });
 
@@ -291,9 +292,20 @@ describe('表示とことば', () => {
     expect(shop.replies.map((m) => m.card)).toContainEqual({ kind: 'shopping', date: '2026-11-11' });
   });
 
-  it('わからない書き込みには、使える書き方の例を3つ返す', () => {
-    const r = handleUserText(state, catalog, 'ありがとう');
-    expect(r.replies[0].text.split('\n').filter((l) => l.startsWith('・'))).toHaveLength(3);
+  it('わからない書き込みには、使える書き方の例を3つ返す（見るだけの例を1つ入れる）', () => {
+    const r = handleUserText(state, catalog, 'むにゃむにゃ');
+    const examples = r.replies[0].text.split('\n').filter((l) => l.startsWith('・'));
+    expect(examples).toHaveLength(3);
+    expect(examples).toContain('・今日のごはん');
+  });
+
+  it('あいさつ・お礼には短く返す（「読み取れませんでした」と言わない）', () => {
+    for (const t of ['ありがとう', '了解', 'おつかれさま']) {
+      const r = handleUserText(state, catalog, t);
+      expect(r.replies, t).toHaveLength(1);
+      expect(r.replies[0].text, t).not.toContain('読み取れ');
+      expect(r.state.meals, t).toEqual(state.meals);
+    }
   });
 
   it('複数の命令をまとめて処理する', () => {
@@ -329,7 +341,10 @@ describe('表示とことば', () => {
     const alt = renderCardText(state, catalog, { kind: 'alternatives', date: MONDAY, options: alternativesFor(state, catalog, MONDAY) });
     expect(alt.split('\n')).toHaveLength(3);
     expect(renderCardText(state, catalog, { kind: 'notice', level: 'info', lines: ['a', 'b'] })).toBe('・a\n・b');
-    expect(renderCardText(state, catalog, { kind: 'summary', weekStart: MONDAY })).toContain('5日のうち0日');
+    // 記録のない日は「0日」と数えない（PRD-1）
+    const summary = renderCardText(state, catalog, { kind: 'summary', weekStart: MONDAY });
+    expect(summary).toContain('5日分の献立でした');
+    expect(summary).not.toContain('0日、考えずに');
   });
 });
 

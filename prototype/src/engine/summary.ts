@@ -47,6 +47,9 @@ export function weeklySummary(state: AppState, catalog: Catalog, weekStart: ISOD
     .map((i) => i.ingredientId)
     .sort();
 
+  // 過ぎた献立日のうち、作った・作らなかったの記録がない日（「分からない」日。0日とは言わない）。
+  const unconfirmedDays = [...plannedDates].filter((d) => d < state.today && !cookedDates.has(d) && !skipped.has(d)).length;
+
   return {
     weekStart,
     plannedDays: plannedDates.size,
@@ -54,13 +57,32 @@ export function weeklySummary(state: AppState, catalog: Catalog, weekStart: ISOD
     skippedOrImpossible: skipped.size,
     topDishIds,
     usedUpIngredientIds,
+    unconfirmedDays,
   };
 }
 
-/** 振り返りの一文。label は「今週」「先週」など。 */
+/** 記録（作った・作らなかった）のある献立日の数。記録のない過ぎた日と、まだ来ていない日は数えない。 */
+function recordedDays(state: AppState, summary: WeeklySummary): number {
+  const end = addDays(summary.weekStart, 6);
+  const upcoming = new Set(
+    state.meals
+      .filter((m) => m.date >= summary.weekStart && m.date <= end && m.dishIds.length > 0 && m.date >= state.today && m.status !== 'cooked' && m.status !== 'skipped')
+      .map((m) => m.date),
+  ).size;
+  return Math.max(0, summary.plannedDays - (summary.unconfirmedDays ?? 0) - upcoming);
+}
+
+/**
+ * 振り返りの一文。label は「今週」「先週」など。
+ * 記録のない日は「分からない」として扱う：記録が1日もなければ数の文を出さない。一部だけなら「記録のあった〇日のうち」と言う。
+ */
 export function summaryText(state: AppState, catalog: Catalog, summary: WeeklySummary, label: string): string {
   if (summary.plannedDays === 0) return '';
-  const parts = [`${label}は${summary.plannedDays}日のうち${summary.decidedWithoutThinking}日、考えずに済みました。`];
+  const recorded = recordedDays(state, summary);
+  const parts: string[] = [];
+  if (recorded <= 0) parts.push(`${label}は${summary.plannedDays}日分の献立でした。`);
+  else if (recorded < summary.plannedDays) parts.push(`${label}は記録のあった${recorded}日のうち${summary.decidedWithoutThinking}日、考えずに済みました。`);
+  else parts.push(`${label}は${summary.plannedDays}日のうち${summary.decidedWithoutThinking}日、考えずに済みました。`);
   if (summary.topDishIds.length > 0) parts.push(`いちばん人気は${dishName(state, catalog, summary.topDishIds[0])}でした。`);
   return parts.join('');
 }
@@ -132,8 +154,13 @@ export function renderCardText(state: AppState, catalog: Catalog, card: Card): s
         lines.push('この週の記録はありません。');
         return lines.join('\n');
       }
-      lines.push(`${s.plannedDays}日のうち${s.decidedWithoutThinking}日、考えずに済みました。`);
+      const unknown = s.unconfirmedDays ?? 0;
+      const recorded = recordedDays(state, s);
+      if (recorded <= 0) lines.push(`${s.plannedDays}日分の献立でした（作った・作らなかったの記録はありません）。`);
+      else if (recorded < s.plannedDays) lines.push(`記録のあった${recorded}日のうち${s.decidedWithoutThinking}日、考えずに済みました。`);
+      else lines.push(`${s.plannedDays}日のうち${s.decidedWithoutThinking}日、考えずに済みました。`);
       if (s.skippedOrImpossible > 0) lines.push(`作れなかった日：${s.skippedOrImpossible}日`);
+      if (unknown > 0 && recorded > 0) lines.push(`記録なし：${unknown}日`);
       if (s.topDishIds.length > 0) {
         lines.push(`人気：${s.topDishIds.slice(0, 3).map((id) => dishName(state, catalog, id)).join('・')}`);
       }

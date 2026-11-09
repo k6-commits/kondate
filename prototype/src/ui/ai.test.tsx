@@ -6,7 +6,17 @@ import { AiReader, buildAiInstruction, dateTable, maskNames, toParsedCommands } 
 import { App } from './App';
 
 const MONDAY = '2026-11-09';
-const NULLS = { date: null, memberRef: null, ingredientId: null, dishId: null, protein: null, genre: null };
+const NULLS = {
+  date: null,
+  memberRef: null,
+  ingredientId: null,
+  dishId: null,
+  protein: null,
+  genre: null,
+  cancel: null,
+  question: null,
+  frozen: null,
+};
 
 function demo() {
   return createInitialState(DEMO_ONBOARDING, defaultCatalog, MONDAY);
@@ -98,6 +108,41 @@ describe('送る前の下ごしらえ', () => {
     ]);
     expect(toParsedCommands(null)).toEqual([]);
     expect(toParsedCommands('{"commands":[]}')).toEqual([]);
+  });
+
+  it('欠席の取り消し・在庫の質問・冷凍・料理で指した別の案・食材を名指ししたリクエストも渡す', () => {
+    const cmds = toParsedCommands({
+      commands: [
+        { type: 'absence', ...NULLS, date: '2026-11-12', memberRef: 'member_3', cancel: true },
+        { type: 'have', ...NULLS, ingredientId: 'tofu_firm', question: true },
+        { type: 'out_of_stock', ...NULLS, ingredientId: 'egg', question: true },
+        { type: 'have', ...NULLS, ingredientId: 'chicken_thigh', frozen: true },
+        { type: 'sale', ...NULLS, ingredientId: 'egg', question: true },
+        { type: 'want_alternatives', ...NULLS, dishId: 'keema_curry' },
+        { type: 'request', ...NULLS, date: '2026-11-10', ingredientId: 'mackerel' },
+        { type: 'absence', ...NULLS, date: '2026-11-12', memberRef: 'member_3', cancel: 'yes' }, // true のときだけ
+      ],
+    });
+    expect(cmds).toEqual([
+      { type: 'absence', date: '2026-11-12', memberRef: 'member_3', cancel: true },
+      { type: 'have', ingredientId: 'tofu_firm', question: true },
+      { type: 'out_of_stock', ingredientId: 'egg', question: true },
+      { type: 'have', ingredientId: 'chicken_thigh', frozen: true },
+      { type: 'sale', ingredientId: 'egg' },
+      { type: 'want_alternatives', dishId: 'keema_curry' },
+      { type: 'request', date: '2026-11-10', ingredientId: 'mackerel' },
+      { type: 'absence', date: '2026-11-12', memberRef: 'member_3' },
+    ]);
+  });
+
+  it('指示に、取り消し・質問・冷凍の項目と、過ぎたことでは献立を変えない決まりが入る', () => {
+    const s = demo();
+    const text = buildAiInstruction('豆腐あったっけ？', s, defaultCatalog);
+    expect(text).toContain('"cancel":null,"question":null,"frozen":null');
+    expect(text).toContain('question を true');
+    expect(text).toContain('cancel を true');
+    expect(text).toContain('frozen を true');
+    expect(text).toContain('today_impossible・want_alternatives・absence を出さない');
   });
 });
 

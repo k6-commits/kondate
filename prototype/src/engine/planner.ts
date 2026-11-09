@@ -4,6 +4,7 @@ import type {
   AppState,
   Catalog,
   Dish,
+  DishIngredient,
   DishRole,
   Genre,
   Household,
@@ -15,6 +16,7 @@ import type {
   PlannedMeal,
   Reaction,
   SafetyResult,
+  Unit,
 } from './types';
 import { addDays, diffDays, formatJa, monthOf, weekStartOf, weekdayOf } from './dates';
 import { createRng, seedFrom } from './rng';
@@ -33,7 +35,7 @@ import {
   shoppingDateFor,
 } from './context';
 import { NOTICE_FOOD_SAFETY, checkDishSafetyFor, isAllowed, uncertainWarning, usesHoney } from './safety';
-import { uniq } from './util';
+import { normalizeJa, uniq } from './util';
 
 export interface Factor {
   text: string;
@@ -164,7 +166,7 @@ export function safetyFor(env: PlanEnv, dish: Dish, eaters: Member[]): SafetyRes
   return r;
 }
 
-function inSeason(dish: Dish, date: ISODate): boolean {
+export function inSeason(dish: Dish, date: ISODate): boolean {
   return !dish.seasonMonths || dish.seasonMonths.length === 0 || dish.seasonMonths.includes(monthOf(date));
 }
 
@@ -192,6 +194,41 @@ function ingredientObjs(env: PlanEnv, dish: Dish): Ingredient[] {
   return ingredientsOf(env.household, dish)
     .map((di) => env.catalog.ingredientById.get(di.ingredientId))
     .filter((i): i is Ingredient => !!i);
+}
+
+/**
+ * 1人あたりの量の目安。reason：理由に書いてよい量（1人3gの薬味は理由にしない）。
+ * side：副菜・汁物の主な材料。main：主菜の主な材料（付け合わせのキャベツ50gなどは含めない）。
+ */
+const AMOUNT_AT_LEAST: Record<'reason' | 'side' | 'main', Partial<Record<Unit, number>>> = {
+  reason: { g: 20, ml: 20, piece: 0.1, sheet: 0.25, block: 0.1, pack: 0.25, bag: 0.25 },
+  side: { g: 40, ml: 40, piece: 0.25, sheet: 0.25, block: 0.1, pack: 0.25, bag: 0.25 },
+  main: { g: 70, ml: 70, piece: 0.5, sheet: 0.5, block: 0.3, pack: 0.5, bag: 0.5 },
+};
+
+/**
+ * その料理で、1人あたりの量が目安以上の食材（調味料・常備品は除く）。
+ * 主な材料（side・main）は、料理名に名前が出ている食材も含める（「鶏むねとブロッコリーの塩炒め」のブロッコリー）。
+ */
+function ingredientsAtLeast(env: PlanEnv, dish: Dish, level: keyof typeof AMOUNT_AT_LEAST): Map<string, DishIngredient> {
+  const out = new Map<string, DishIngredient>();
+  const dishName = normalizeJa(dish.name);
+  for (const di of ingredientsOf(env.household, dish)) {
+    const ing = env.catalog.ingredientById.get(di.ingredientId);
+    if (!ing || ing.pantry) continue;
+    const min = AMOUNT_AT_LEAST[level][ing.unit];
+    const named =
+      level !== 'reason' &&
+      [ing.name, ...ing.aliases].map(normalizeJa).some((n) => (n.length >= 2 || /[\u4e00-\u9fff]/.test(n)) && dishName.includes(n));
+    if ((min !== undefined && di.amount >= min) || named) out.set(ing.id, di);
+  }
+  return out;
+}
+
+/** 買う日から使う日までの日数。惣菜はその日に買う（帰りに買う）ので 0。 */
+function shopGap(env: PlanEnv, ing: Ingredient, date: ISODate): number {
+  if (ing.aisle === 'deli') return 0;
+  return diffDays(date, shoppingDateFor(env.settings, env.today, date));
 }
 
 type StockState = 'perishable' | 'fresh' | 'frozen';
@@ -239,13 +276,11 @@ function skippedRecently(env: PlanEnv, dishId: string, date: ISODate): ISODate |
 
 /** 買い物日から離れすぎて持たない食材。 */
 function freshnessRisk(env: PlanEnv, dish: Dish, date: ISODate): { penalty: number; freeze: Ingredient[]; spoil: Ingredient[] } {
-  const shop = shoppingDateFor(env.settings, env.today, date);
-  const gap = diffDays(date, shop);
   const freeze: Ingredient[] = [];
   const spoil: Ingredient[] = [];
   for (const ing of ingredientObjs(env, dish)) {
     if (ing.pantry || stockState(env, ing, date)) continue;
-    if (gap > ing.shelfLifeDays) (ing.freezable ? freeze : spoil).push(ing);
+    if (shopGap(env, ing, date) > ing.shelfLifeDays) (ing.freezable ? freeze : spoil).push(ing);
   }
   return { penalty: spoil.length > 0 ? -4 : freeze.length > 0 ? -1 : 0, freeze, spoil };
 }
@@ -260,7 +295,8 @@ export function scoreMain(env: PlanEnv, slot: Slot, dish: Dish): Scored {
   let score = 0;
   if (isFavorite(env.household, dish.id)) {
     score += 3;
-    factors.push({ text: 'うちの定番', priority: 1 });
+    // 定番であることは、旬（3）や使い回し（2）より先に伝える。
+    factors.push({ text: 'うちの定番', priority: 3.5 });
   }
   const r = reactionInfo(env, dish.id, slot.eaters, date);
   score += r.score;
@@ -288,10 +324,13 @@ export function scoreMain(env: PlanEnv, slot: Slot, dish: Dish): Scored {
   }
   const ings = ingredientObjs(env, dish);
   const month = monthOf(date);
+  // 理由に書くのは、1人あたりの量がある程度ある食材だけ（薬味の3gを「旬の」「使い切る」の理由にしない）。
+  const enough = ingredientsAtLeast(env, dish, 'reason');
   const seasonal = ings.find((i) => !i.pantry && i.seasonMonths?.includes(month));
   if (seasonal) {
     score += 1;
-    factors.push({ text: `旬の${seasonal.name}`, priority: 3 });
+    const named = ings.find((i) => !i.pantry && i.seasonMonths?.includes(month) && enough.has(i.id));
+    if (named) factors.push({ text: `旬の${named.name}`, priority: 3 });
   }
   let usedUp: Ingredient | undefined;
   let frozen: Ingredient | undefined;
@@ -303,10 +342,10 @@ export function scoreMain(env: PlanEnv, slot: Slot, dish: Dish): Scored {
   }
   if (usedUp) {
     score += 2;
-    factors.push({ text: `${usedUp.name}を使い切るため`, priority: 6 });
+    if (enough.has(usedUp.id)) factors.push({ text: `${usedUp.name}を使い切るため`, priority: 6 });
   } else if (frozen) {
     score += 1;
-    factors.push({ text: `冷凍の${frozen.name}を使うため`, priority: 4 });
+    if (enough.has(frozen.id)) factors.push({ text: `冷凍の${frozen.name}を使うため`, priority: 4 });
   }
   const max = env.settings.maxMinutes[weekdayOf(date)];
   if (max !== undefined) {
@@ -375,10 +414,19 @@ function scoreSide(env: PlanEnv, slot: Slot, side: Dish, main: Dish, mainIngIds:
   if (side.genre === main.genre) score += 2;
   else if (side.genre === 'other' || main.genre === 'other') score += 0.5;
   const ings = ingredientObjs(env, side).filter((i) => !i.pantry);
-  const shared = ings.filter((i) => mainIngIds.has(i.id));
+  // 主菜の主な材料を、副菜・汁物の主な材料にもう一度使う組み合わせ（肉じゃが＋じゃがいもの味噌汁、かに玉＋たまごスープ）は避ける。
+  // 使い回しの加点は、片方では少量（付け合わせ・パックの残り）のときだけ。
+  const mainMain = ingredientsAtLeast(env, main, 'main');
+  const sideMain = ingredientsAtLeast(env, side, 'side');
+  const family = (id: string) => [id, ...(env.catalog.ingredientById.get(id)?.substitutes ?? [])];
+  const doubled = [...sideMain.keys()].filter((id) => family(id).some((x) => mainMain.has(x)));
+  const shared = ings.filter((i) => mainIngIds.has(i.id) && !doubled.includes(i.id));
+  score -= 4 * Math.min(2, doubled.length);
   if (shared.length > 0) {
     score += 1.5 * Math.min(2, shared.length);
-    factors.push({ text: `${shared[0].name}を副菜でも使い回し`, priority: 2 });
+    const enough = ingredientsAtLeast(env, side, 'reason');
+    const named = shared.find((i) => enough.has(i.id));
+    if (named) factors.push({ text: `${named.name}を${side.role === 'soup' ? '汁物' : '副菜'}でも使い回し`, priority: 2 });
   }
   const month = monthOf(slot.date);
   for (const i of ings) {
@@ -393,7 +441,7 @@ function scoreSide(env: PlanEnv, slot: Slot, side: Dish, main: Dish, mainIngIds:
   const seasonal = ings.find((i) => i.seasonMonths?.includes(month));
   if (seasonal) {
     score += 1;
-    factors.push({ text: `旬の${seasonal.name}`, priority: 3 });
+    if (ingredientsAtLeast(env, side, 'reason').has(seasonal.id)) factors.push({ text: `旬の${seasonal.name}`, priority: 3 });
   }
   const gap = nearestGap(env, side.id, slot.date);
   if (gap !== null) score -= gap <= 2 ? 3 : gap <= 6 ? 1.5 : 0;
@@ -405,7 +453,8 @@ function scoreSide(env: PlanEnv, slot: Slot, side: Dish, main: Dish, mainIngIds:
   const max = env.settings.maxMinutes[weekdayOf(slot.date)];
   if (side.minutes > 20) score -= 1;
   if (max !== undefined && max <= 20 && side.minutes > 10) score -= 1.5;
-  if (side.protein !== 'none' && side.protein === main.protein) score -= 2.5; // 豚の主菜に豚汁、などを避ける
+  // 豚の主菜に豚汁、卵の主菜にたまごスープ、などを避ける（使い回しとジャンルの加点より強く）。
+  if (side.protein !== 'none' && side.protein === main.protein) score -= 6;
   score += env.rng() * 0.3;
   return { dish: side, score, factors };
 }
@@ -468,8 +517,11 @@ export function pickSides(
 ): { sides: Dish[]; factors: Factor[] } {
   const policy = env.settings.sidePolicy;
   if (policy === 'main_only') return { sides: [], factors: [] };
-  if (isRaku && main.tags.includes('complete')) return { sides: [], factors: [] };
-  const groups: DishRole[][] = !isRaku && policy === 'side_and_soup' ? [['side'], ['soup']] : [['side', 'soup']];
+  // 'complete'（納豆ごはんと味噌汁など、それだけで1食）は何も足さない。'soupy'（汁のある麺・シチュー・鍋）には汁物を足さない。
+  if (main.tags.includes('complete')) return { sides: [], factors: [] };
+  const soupy = main.tags.includes('soupy');
+  const base: DishRole[][] = !isRaku && policy === 'side_and_soup' ? [['side'], ['soup']] : [['side', 'soup']];
+  const groups = base.map((g) => (soupy ? g.filter((r) => r !== 'soup') : g)).filter((g) => g.length > 0);
   const mainIngIds = new Set(ingredientObjs(env, main).filter((i) => !i.pantry).map((i) => i.id));
   const sides: Dish[] = [];
   const factors: Factor[] = [];
@@ -478,8 +530,12 @@ export function pickSides(
       (d) => roles.includes(d.role) && !sides.includes(d) && !exclude.includes(d.id) && allowedOn(env, d, slot),
     );
     if (isRaku) {
-      const quick = pool.filter((d) => d.minutes <= 10);
-      if (quick.length > 0) pool = quick;
+      // ラク日の副菜は、10分以内で、買ってから冷凍・解凍しなくてよい物だけ（なければ付けない）。
+      pool = pool.filter((d) => {
+        if (d.minutes > 10) return false;
+        const risk = freshnessRisk(env, d, slot.date);
+        return risk.freeze.length === 0 && risk.spoil.length === 0;
+      });
     }
     if (pool.length === 0) continue;
     const best = pool.map((d) => scoreSide(env, slot, d, main, mainIngIds)).sort((a, b) => b.score - a.score)[0];
@@ -540,7 +596,6 @@ export function mealExtras(env: PlanEnv, date: ISODate, dishes: Dish[], eaters: 
     if (d.spicy && hasKids(eaters)) warnings.push(`${d.name}は辛い料理です。子どもの分は辛みを入れる前に取り分けてください`);
   }
   const shop = shoppingDateFor(env.settings, env.today, date);
-  const gap = diffDays(date, shop);
   let foodSafety = false;
   const seen = new Set<string>();
   for (const d of dishes) {
@@ -549,8 +604,10 @@ export function mealExtras(env: PlanEnv, date: ISODate, dishes: Dish[], eaters: 
       seen.add(ing.id);
       const inv = env.inventory.get(ing.id);
       const st = stockState(env, ing, date);
+      // 貝・きのこ・冷凍野菜・惣菜などは、凍ったまま加熱する（冷蔵室で解凍しない）。
+      const thaw = ing.thaw === 'from_frozen' ? '凍ったまま加熱してください' : '前日の夜に冷蔵室へ移して解凍';
       if (st === 'frozen') {
-        notes.push(`冷凍の${ing.name}は、前日の夜に冷蔵室へ移して解凍`);
+        notes.push(`冷凍の${ing.name}は、${thaw}`);
         foodSafety = true;
         continue;
       }
@@ -562,8 +619,8 @@ export function mealExtras(env: PlanEnv, date: ISODate, dishes: Dish[], eaters: 
         continue;
       }
       if (st === 'fresh') continue;
-      if (date >= env.today && gap > ing.shelfLifeDays) {
-        if (ing.freezable) notes.push(`${ing.name}は${formatJa(shop)}に買ったら冷凍。前日の夜に冷蔵室へ移して解凍`);
+      if (date >= env.today && shopGap(env, ing, date) > ing.shelfLifeDays) {
+        if (ing.freezable) notes.push(`${ing.name}は${formatJa(shop)}に買ったら冷凍。${thaw}`);
         else notes.push(`${ing.name}は${formatJa(date)}まで持たないかもしれません。消費期限を確かめてください`);
         foodSafety = true;
       }
@@ -695,11 +752,19 @@ function chooseNewDate(env: PlanEnv, slots: Slot[], fishDate: ISODate | null, co
 /**
  * weekStart の週の献立を作る（fromDate より前の日は作らない）。salt は「作り直す」で別の結果にしたいときに使う。
  */
-export function planWeek(state: AppState, catalog: Catalog, weekStart: ISODate, fromDate?: ISODate, salt = ''): PlannedMeal[] {
+export function planWeek(
+  state: AppState,
+  catalog: Catalog,
+  weekStart: ISODate,
+  fromDate?: ISODate,
+  salt = '',
+  keepDates: Set<ISODate> = new Set(),
+): PlannedMeal[] {
   const settings = state.household.settings;
   const from = fromDate && fromDate > weekStart ? fromDate : weekStart;
   const weekDates = dinnerDatesOfWeek(settings, weekStart);
-  const dates = weekDates.filter((d) => d >= from);
+  // keepDates の日（自分で替えた日など）は作り直さず、決まった献立として扱う。
+  const dates = weekDates.filter((d) => d >= from && !keepDates.has(d));
   if (dates.length === 0) return [];
   const dateSet = new Set(dates);
   const env = makeEnv(state, catalog, dateSet, seedFrom(state.household.id + weekStart + salt));

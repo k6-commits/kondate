@@ -47,6 +47,17 @@ export function demoState(catalog: Catalog, today: ISODate): AppState {
   return createInitialState(DEMO_ONBOARDING, catalog, weekStartOf(today));
 }
 
+/**
+ * 作り直しのあとも残った、自分で替えた日・特売で替えた日（エンジンの regenerate_week は、まだ安全・旬なら残す）。
+ * 知らせの文を、トークの返事「自分で替えた日（…）は、そのままです」とそろえるために使う。
+ */
+function keptChangedDays(before: AppState, after: AppState): ISODate[] {
+  return before.meals
+    .filter((m) => m.date >= before.today && m.status === 'planned' && (m.changedBy === 'user' || m.changedBy === 'sale'))
+    .filter((m) => after.meals.some((n) => n.date === m.date && n.changedBy === m.changedBy && n.dishIds.join('|') === m.dishIds.join('|')))
+    .map((m) => m.date);
+}
+
 /** その週に、作り直せる献立の日があるか（エンジンの regenerate_week と同じ考え方）。 */
 function hasDaysToPlan(s: AppState, weekStart: ISODate): boolean {
   const todayMeal = s.meals.find((m) => m.date === s.today);
@@ -255,7 +266,9 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
     }
     recordSenders(prev, s);
     commit(s);
-    showToast(regenerated ? `${change.toast}献立も作り直しました。` : change.toast);
+    const kept = regenerated ? keptChangedDays(prev, s) : [];
+    const keptText = kept.length > 0 ? `自分で替えた日（${kept.map(formatJa).join('・')}）は、そのままです。` : '';
+    showToast(regenerated ? `${change.toast}献立も作り直しました。${keptText}` : change.toast);
   };
 
   const startWith = (input: OnboardingInput, today: ISODate, message: string) => {

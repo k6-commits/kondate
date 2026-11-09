@@ -5,6 +5,8 @@ import type { Dish, DishRole, Genre, Protein } from '../engine/types';
 // - アレルゲンの判定に使うので、主菜には調味料も入れる。
 // - seasonMonths を付けた料理は、その月だけ提案される（旬の料理・季節の麺など）。
 // - 作り方は持たない（出典の URL も付けない）。
+// - tags の 'complete'：それだけで1食になる（汁物も入っている）ので、副菜・汁物を足さない（納豆ごはんと味噌汁）。
+// - tags の 'soupy'：汁気が多い（シチュー・ポトフ・鍋・汁のある麺）ので、汁物は足さない（副菜は足してよい）。
 
 type Amounts = [ingredientId: string, amount: number][];
 
@@ -91,13 +93,13 @@ const MAIN_CHICKEN: Dish[] = [
     ['煮込み', 'トマト']),
   main('drumette_pot_au_feu', '手羽元のポトフ', 'chicken', 'yo', 40,
     [['chicken_drumette', 150], ['potato', 0.5], ['carrot', 0.25], ['cabbage', 80], ['onion', 0.25], ['salt', 0.3], ['pepper', 0.1]],
-    ['煮込み', 'スープ仕立て', '鍋ひとつ']),
+    ['煮込み', 'スープ仕立て', '鍋ひとつ', 'soupy']),
   main('chicken_miso_yaki', '鶏ももの味噌漬け焼き', 'chicken', 'wa', 20,
     [['chicken_thigh', 120], ['miso', 0.75], ['mirin', 0.5], ['sugar', 0.25], ['salad_oil', 0.5]],
     ['味噌', '漬けて焼くだけ']),
   main('cream_stew', 'クリームシチュー', 'chicken', 'yo', 35,
     [['chicken_thigh', 80], ['potato', 0.5], ['carrot', 0.25], ['onion', 0.5], ['broccoli', 30], ['stew_roux', 20], ['milk', 100], ['salad_oil', 0.5]],
-    ['煮込み', '子どもに人気', '冬']),
+    ['煮込み', '子どもに人気', '冬', 'soupy']),
 ];
 
 // ---------------------------------------------------------------------------
@@ -137,7 +139,7 @@ const MAIN_PORK: Dish[] = [
     ['甘酢', '子どもに人気']),
   main('hakusai_mille_feuille', '豚バラと白菜のミルフィーユ鍋', 'pork', 'wa', 25,
     [['pork_belly', 100], ['chinese_cabbage', 150], ['dashi', 150], ['sake', 1], ['salt', 0.25], ['ponzu', 1]],
-    ['鍋', '冬'], { season: months(11, 2) }),
+    ['鍋', '冬', 'soupy'], { season: months(11, 2) }),
   main('goya_champuru', 'ゴーヤチャンプルー', 'pork', 'wa', 20,
     [['bitter_melon', 0.3], ['pork_belly', 60], ['tofu_firm', 0.25], ['egg', 0.5], ['soy_sauce', 0.5], ['katsuobushi', 1], ['salt', 0.2], ['salad_oil', 0.5]],
     ['夏', '沖縄'], { season: months(6, 9), kid: false }),
@@ -425,14 +427,14 @@ const RAKU: Dish[] = [
   raku('frozen_gyoza_yaki', '冷凍ぎょうざ', 'ground', 'chu', 10,
     [['frozen_gyoza', 6], ['salad_oil', 0.25], ['soy_sauce', 0.25], ['vinegar', 0.25]], ['冷凍食品', '焼くだけ']),
   raku('tamago_udon', '卵とじうどん（冷凍うどん）', 'egg', 'wa', 10,
-    [['frozen_udon', 1], ['egg', 1], ['green_onion', 10], ['mentsuyu', 2], ['katakuriko', 0.25]], ['冷凍食品', '10分']),
+    [['frozen_udon', 1], ['egg', 1], ['green_onion', 10], ['mentsuyu', 2], ['katakuriko', 0.25]], ['冷凍食品', '10分', 'soupy']),
   raku('deli_karaage_plate', '惣菜の唐揚げ', 'chicken', 'wa', 5,
     [['deli_karaage', 100], ['cabbage', 40]], ['惣菜', '買うだけ']),
   raku('retort_curry_rice', 'レトルトカレー', 'none', 'yo', 5,
     [['retort_curry', 1], ['rice', 100]], ['レトルト', '5分']),
   raku('natto_gohan_miso', '納豆ごはんと味噌汁', 'tofu', 'wa', 10,
     [['natto', 1], ['rice', 100], ['scallion', 3], ['tofu_silken', 0.15], ['dried_wakame', 1], ['dashi', 150], ['miso', 0.75]],
-    ['10分', '火をほとんど使わない']),
+    ['10分', '火をほとんど使わない', 'complete']),
   raku('hiyashi_chuka', '冷やし中華', 'egg', 'chu', 15,
     [['chuka_men', 1], ['ham', 1], ['cucumber', 0.3], ['egg', 0.5], ['tomato', 0.25], ['salad_oil', 0.1]],
     ['夏', '麺'], { season: months(6, 9) }),
@@ -452,7 +454,7 @@ const RAKU: Dish[] = [
   raku('shirasu_don', 'しらす丼', 'fish', 'wa', 5,
     [['shirasu', 30], ['rice', 100], ['scallion', 3], ['nori', 0.25], ['sesame', 0.2], ['soy_sauce', 0.25]], ['火を使わない', '5分']),
   raku('kitsune_soba', 'きつねそば', 'tofu', 'wa', 15,
-    [['soba', 90], ['abura_age', 0.5], ['green_onion', 10], ['mentsuyu', 2.5], ['sugar', 0.25]], ['麺', '温かい']),
+    [['soba', 90], ['abura_age', 0.5], ['green_onion', 10], ['mentsuyu', 2.5], ['sugar', 0.25]], ['麺', '温かい', 'soupy']),
 ];
 
 /** 標準料理マスタ（主菜 → 副菜 → 汁物 → ラク日用）。 */

@@ -34,8 +34,13 @@ export { generateWeekMeals, alternativesFor } from './planner';
 /**
  * checkDishSafety(dish, household, catalog): SafetyResult — 世帯の除外条件に照らした料理の判定。
  * householdNotices(household): Notice[] — 世帯に出す注意（免責、乳児のはちみつ、窒息、重いアレルギーは対象外 など）。
+ * textExclusionTargets(text, catalog): TextExclusionTargets — 自由入力の除外の語が、どのアレルゲン・食材・料理に当たるか
+ *   （登録のときに「当たる食材：…」「当たる食材はありません」を見せるため）。
+ * allergensOfText(text): AllergenId[] — 自由入力の語がアレルゲンの名前なら、その id（「甲殻類アレルギー」→ えび・かに）。
  */
-export { checkDishSafety, householdNotices } from './safety';
+export { checkDishSafety, householdNotices, textExclusionTargets } from './safety';
+export type { TextExclusionTargets } from './safety';
+export { allergensOfText } from './context';
 
 /** 料理を引く（世帯の自由入力の定番も含む）。 */
 export function findDish(state: AppState, catalog: Catalog, dishId: string): Dish | undefined {

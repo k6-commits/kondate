@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { describe, expect, it, vi } from 'vitest';
 import { DEMO_ONBOARDING, defaultCatalog } from '../src/data/index';
-import { createInitialState, type Member } from '../src/engine/index';
+import { createInitialState, handleUserText, type Member } from '../src/engine/index';
 import { interpretWithLlm, minimalState } from './interpret';
 import {
   COMMAND_TYPES,
@@ -27,7 +27,18 @@ const TODAY = '2026-11-09'; // 月曜
 const members: Member[] = createInitialState(DEMO_ONBOARDING, catalog, TODAY).household.members; // ママ・パパ・はると・ゆい
 
 function cmd(partial: Partial<LlmCommand> & { type: string }): LlmCommand {
-  return { date: null, memberRef: null, ingredientId: null, dishId: null, protein: null, genre: null, ...partial };
+  return {
+    date: null,
+    memberRef: null,
+    ingredientId: null,
+    dishId: null,
+    protein: null,
+    genre: null,
+    cancel: null,
+    question: null,
+    frozen: null,
+    ...partial,
+  };
 }
 
 /** messages.parse のモック。渡されたパラメータを記録する。 */
@@ -144,7 +155,7 @@ describe('プロンプト', () => {
       properties: { commands: { items: { required: string[]; additionalProperties: boolean } } };
     };
     expect(schema.properties.commands.items.required.sort()).toEqual(
-      ['date', 'dishId', 'genre', 'ingredientId', 'memberRef', 'protein', 'type'].sort(),
+      ['cancel', 'date', 'dishId', 'frozen', 'genre', 'ingredientId', 'memberRef', 'protein', 'question', 'type'].sort(),
     );
     expect(schema.properties.commands.items.additionalProperties).toBe(false);
     expect(JSON.stringify(schema)).not.toContain('$ref'); // 平らな形のまま
@@ -175,6 +186,43 @@ describe('出力 → ParsedCommand', () => {
     });
     expect(toParsedCommand(cmd({ type: 'unknown' }))).toBeNull();
     expect(toParsedCommand(cmd({ type: 'delete_everything' }))).toBeNull();
+  });
+
+  it('欠席の取り消し・在庫の質問・冷凍・料理で指した別の案・食材を名指ししたリクエストも渡す', () => {
+    expect(toParsedCommand(cmd({ type: 'absence', date: '2026-11-12', memberRef: 'member_3', cancel: true }))).toEqual({
+      type: 'absence',
+      date: '2026-11-12',
+      memberRef: 'member_3',
+      cancel: true,
+    });
+    expect(toParsedCommand(cmd({ type: 'absence', date: '2026-11-12', memberRef: 'member_3', cancel: false }))).toEqual({
+      type: 'absence',
+      date: '2026-11-12',
+      memberRef: 'member_3',
+    });
+    expect(toParsedCommand(cmd({ type: 'have', ingredientId: 'tofu_firm', question: true }))).toEqual({
+      type: 'have',
+      ingredientId: 'tofu_firm',
+      question: true,
+    });
+    expect(toParsedCommand(cmd({ type: 'out_of_stock', ingredientId: 'egg', question: true }))).toEqual({
+      type: 'out_of_stock',
+      ingredientId: 'egg',
+      question: true,
+    });
+    expect(toParsedCommand(cmd({ type: 'have', ingredientId: 'chicken_thigh', frozen: true }))).toEqual({
+      type: 'have',
+      ingredientId: 'chicken_thigh',
+      frozen: true,
+    });
+    // sale には question・frozen を付けない
+    expect(toParsedCommand(cmd({ type: 'sale', ingredientId: 'egg', question: true, frozen: true }))).toEqual({ type: 'sale', ingredientId: 'egg' });
+    expect(toParsedCommand(cmd({ type: 'want_alternatives', dishId: 'keema_curry' }))).toEqual({ type: 'want_alternatives', dishId: 'keema_curry' });
+    expect(toParsedCommand(cmd({ type: 'request', date: '2026-11-10', ingredientId: 'mackerel' }))).toEqual({
+      type: 'request',
+      date: '2026-11-10',
+      ingredientId: 'mackerel',
+    });
   });
 });
 
@@ -320,5 +368,28 @@ describe('検証（validateCommands）とルールへの戻り', () => {
     const llm = fake([cmd({ type: 'help' })]);
     expect(await interpretWithLlm(llm, catalog, state, 'あ'.repeat(501))).toBeNull();
     expect(llm.interpret).not.toHaveBeenCalled();
+  });
+
+  it('在庫の質問（question）は、検証のあとも残り、エンジンは在庫を変えずに答える', async () => {
+    const demoState = createInitialState(DEMO_ONBOARDING, catalog, TODAY);
+    const parsed = await interpretWithLlm(
+      fake([cmd({ type: 'have', ingredientId: 'tofu_firm', question: true })]),
+      catalog,
+      demoState,
+      '豆腐あったっけ？',
+    );
+    expect(parsed).toEqual([{ type: 'have', ingredientId: 'tofu_firm', question: true }]);
+    const r = handleUserText(demoState, catalog, '@きめとく 豆腐あったっけ？', parsed ?? undefined);
+    expect(r.state.inventory).toEqual(demoState.inventory);
+    expect(r.replies.map((m) => m.text).join('\n')).toContain('在庫に登録がありません');
+  });
+
+  it('SYSTEM に、取り消し・質問・冷凍の項目と、過ぎたことでは献立を変えない決まりが入る', () => {
+    const system = buildSystemPrompt(catalog);
+    expect(system).toContain('type, date, memberRef, ingredientId, dishId, protein, genre, cancel, question, frozen');
+    expect(system).toContain('cancel＝true');
+    expect(system).toContain('question＝true');
+    expect(system).toContain('frozen＝true');
+    expect(system).toContain('today_impossible・want_alternatives・absence を出しません');
   });
 });

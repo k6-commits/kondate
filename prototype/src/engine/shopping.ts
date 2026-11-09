@@ -72,6 +72,9 @@ export function buildShoppingLists(state: AppState, catalog: Catalog): ShoppingL
   const uses = new Map<string, Use[]>();
   const pantry = new Map<ISODate, Set<string>>();
   const shopDates = new Set<ISODate>();
+  // 「切れた」と言われた常備品（在庫が none）は、最初に使う日の買い物リストに「買い足し」として載せる。
+  const refills = new Map<string, { shopDate: ISODate; dates: ISODate[] }>();
+  const outOfStock = (ingId: string) => state.inventory.some((i) => i.ingredientId === ingId && i.level === 'none');
   const meals = state.meals
     .filter((m) => m.date >= today && m.status === 'planned' && m.servings > 0)
     .sort((a, b) => (a.date < b.date ? -1 : 1));
@@ -87,7 +90,15 @@ export function buildShoppingLists(state: AppState, catalog: Catalog): ShoppingL
         const ing = catalog.ingredientById.get(di.ingredientId);
         if (!ing || di.amount <= 0) continue;
         if (ing.pantry) {
-          pantryNames.push(ing.name);
+          const r = refills.get(ing.id);
+          if (covered.has(`${ing.id}|${meal.date}`)) continue; // 前のリストで買い足し済み（または載っている）
+          if (r) {
+            if (!r.dates.includes(meal.date)) r.dates.push(meal.date);
+          } else if (outOfStock(ing.id) || prevChecked.has(`${shopDate}|${ing.id}`)) {
+            refills.set(ing.id, { shopDate, dates: [meal.date] });
+          } else {
+            pantryNames.push(ing.name);
+          }
           continue;
         }
         if (covered.has(`${ing.id}|${meal.date}`)) {
@@ -95,8 +106,10 @@ export function buildShoppingLists(state: AppState, catalog: Catalog): ShoppingL
           continue;
         }
         fresh += 1;
+        // 惣菜は日持ちしないので、その日の分は当日に買う（帰りに買う）。数日前に買って冷凍・解凍させない。
+        const buyOn = ing.aisle === 'deli' ? meal.date : shopDate;
         const list = uses.get(ing.id) ?? [];
-        list.push({ date: meal.date, shopDate, amount: di.amount * meal.servings });
+        list.push({ date: meal.date, shopDate: buyOn, amount: di.amount * meal.servings });
         uses.set(ing.id, list);
       }
     }
@@ -167,6 +180,26 @@ export function buildShoppingLists(state: AppState, catalog: Catalog): ShoppingL
       itemsByDate.set(shopDate, [...(itemsByDate.get(shopDate) ?? []), item]);
       shopDates.add(shopDate);
     }
+  }
+
+  for (const [ingId, r] of refills) {
+    const ing = catalog.ingredientById.get(ingId);
+    if (!ing) continue;
+    const item: ShoppingItem = {
+      ingredientId: ing.id,
+      name: ing.name,
+      aisle: ing.aisle,
+      amount: 1,
+      unit: ing.unit,
+      packs: null,
+      label: `${ing.name} 買い足し`,
+      forDates: [...r.dates].sort(),
+      checked: prevChecked.has(`${r.shopDate}|${ing.id}`),
+      notes: [],
+      uncertain: ing.uncertain && markUncertain,
+    };
+    itemsByDate.set(r.shopDate, [...(itemsByDate.get(r.shopDate) ?? []), item]);
+    shopDates.add(r.shopDate);
   }
 
   const fresh: ShoppingList[] = [...shopDates].sort().map((date) => ({

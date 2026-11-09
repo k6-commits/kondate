@@ -118,10 +118,15 @@ export function ensureUpcomingWeek(s: AppState, catalog: Catalog, now = false): 
   return next;
 }
 
-/** 今週の献立がまったくない（読み込んだ状態など）ときは、今日以降の分を作る。 */
+/**
+ * 今週の献立がまだない（読み込んだ状態、献立の曜日が週の後半だけ など）ときは、今週の作る日（最初の買い物日の前日）を
+ * 過ぎていれば、今日以降の分を作る。作った週の月曜を返す（有料版は配信する）。
+ */
 function ensureCurrentWeek(s: AppState, catalog: Catalog): ISODate | null {
   const ws = weekStartOf(s.today);
   if (s.meals.some((m) => weekStartOf(m.date) === ws)) return null;
+  const planDate = planDateForWeek(s, ws);
+  if (!planDate || s.today < planDate) return null;
   const meals = planWeek(s, catalog, ws, s.today);
   if (meals.length === 0) return null;
   s.meals = sortMeals([...s.meals, ...meals]);
@@ -167,15 +172,22 @@ export function lowerStockForMeal(s: AppState, catalog: Catalog, meal: PlannedMe
   }
 }
 
-/** その献立日に、冷凍室から出す必要がある食材の名前。 */
+/** その献立日に、冷凍室から冷蔵室へ移す（前日の夜に解凍する）食材の名前。凍ったまま加熱する物（あさり・きのこなど）は除く。 */
 export function frozenIngredientNames(s: AppState, catalog: Catalog, meal: PlannedMeal): string[] {
-  const names: string[] = [];
+  return thawPlan(s, catalog, meal).flatMap((x) => x.names).filter((n, i, a) => a.indexOf(n) === i);
+}
+
+/** 料理ごとの、前日の夜に解凍する食材（解凍の連絡で「明日の〇〇用に」と、その食材を使う料理の名前を言うため）。 */
+export function thawPlan(s: AppState, catalog: Catalog, meal: PlannedMeal): { dish: Dish; names: string[] }[] {
+  const out: { dish: Dish; names: string[] }[] = [];
+  const seen = new Set<string>();
   for (const dishId of meal.dishIds) {
     const dish = findDishIn(s.household, catalog, dishId);
     if (!dish) continue;
+    const names: string[] = [];
     for (const di of ingredientsOf(s.household, dish)) {
       const ing = catalog.ingredientById.get(di.ingredientId);
-      if (!ing || ing.pantry || names.includes(ing.name)) continue;
+      if (!ing || ing.pantry || ing.thaw === 'from_frozen' || seen.has(ing.id)) continue;
       const inv = s.inventory.find((i) => i.ingredientId === ing.id);
       const frozenStock = !!inv && inv.level !== 'none' && inv.frozen;
       const toldToFreeze = s.shopping.some((l) =>
@@ -186,10 +198,14 @@ export function frozenIngredientNames(s: AppState, catalog: Catalog, meal: Plann
             it.notes.some((n) => n === FREEZE_NOTE || (n.startsWith(FREEZE_NOTE) && n.includes(formatJa(meal.date)))),
         ),
       );
-      if (frozenStock || toldToFreeze) names.push(ing.name);
+      if (frozenStock || toldToFreeze) {
+        names.push(ing.name);
+        seen.add(ing.id);
+      }
     }
+    if (names.length > 0) out.push({ dish, names });
   }
-  return names;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +255,10 @@ export function createInitialState(input: OnboardingInput, catalog: Catalog, tod
       lines: notices.map((n) => n.text),
     },
   });
-  if (shownWeek) addWeekMessage(s, catalog, shownWeek, { push: household.settings.plan === 'paid' ? true : undefined });
+  const push = household.settings.plan === 'paid' ? true : undefined;
+  if (shownWeek) addWeekMessage(s, catalog, shownWeek, { push });
+  // 今週と来週を一度に作った（来週の作る日を過ぎてから始めた）ときは、来週の分も知らせる。
+  if (upcoming && shownWeek !== upcoming) addWeekMessage(s, catalog, upcoming, { push });
   return s;
 }
 
@@ -261,7 +280,7 @@ export function advanceDay(state: AppState, catalog: Catalog): StepResult {
   const askAbout = ym && ym.status === 'planned' && ym.dishIds.length > 0 ? ym : undefined;
   if (askAbout) askAbout.status = 'unconfirmed';
 
-  ensureCurrentWeek(s, catalog);
+  const current = ensureCurrentWeek(s, catalog);
   const generated = ensureUpcomingWeek(s, catalog);
   s.shopping = buildShoppingLists(s, catalog);
 
@@ -276,20 +295,27 @@ export function advanceDay(state: AppState, catalog: Catalog): StepResult {
   }
 
   if (paid) {
-    if (generated) {
-      addWeekMessage(s, catalog, generated, { push: true, summary: lastWeekSummaryText(s, catalog) || undefined });
+    // 作った週を配信する（今週の分が週の中で作られる設定でも、来週の分でも）。振り返りは最初の1通にだけ添える。
+    let summary = lastWeekSummaryText(s, catalog) || undefined;
+    for (const ws of [current, generated]) {
+      if (!ws) continue;
+      addWeekMessage(s, catalog, ws, { push: true, summary });
+      summary = undefined;
     }
     const todayMeal = mealOn(s, s.today);
     if (todayMeal && todayMeal.status === 'planned') addMealMessage(s, catalog, s.today, { push: true });
     const tomorrow = mealOn(s, addDays(s.today, 1));
     if (tomorrow && tomorrow.status === 'planned') {
-      const names = frozenIngredientNames(s, catalog, tomorrow);
-      if (names.length > 0) {
-        addBotMessage(
-          s,
-          `明日の${mealTitle(s, catalog, tomorrow)}用に、${names.join('と')}を冷凍室から冷蔵室へ移しておいてください。`,
-          { card: { kind: 'meal', date: tomorrow.date }, push: true, hour: 20 },
-        );
+      const plan = thawPlan(s, catalog, tomorrow);
+      if (plan.length > 0) {
+        // その食材を使う料理の名前で言う（「明日のしらす丼用に、あさりを」のように、主菜の名前にしない）。
+        const dishes = plan.slice(0, 2).map((x) => x.dish.name).join('と');
+        const names = [...new Set(plan.flatMap((x) => x.names))];
+        addBotMessage(s, `明日の${dishes}用に、${names.join('と')}を冷凍室から冷蔵室へ移しておいてください。`, {
+          card: { kind: 'meal', date: tomorrow.date },
+          push: true,
+          hour: 20,
+        });
       }
     }
   }

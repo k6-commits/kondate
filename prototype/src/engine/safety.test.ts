@@ -1,5 +1,5 @@
-import type { Dish, Household, Member } from './index';
-import { checkDishSafety, householdNotices } from './index';
+import type { AllergenId, Dish, Household, Member } from './index';
+import { allergensOfText, checkDishSafety, householdNotices, textExclusionTargets } from './index';
 import { catalog } from './__fixtures__/catalog';
 
 function member(over: Partial<Member> = {}): Member {
@@ -139,5 +139,118 @@ describe('householdNotices', () => {
     const texts = householdNotices(household([member(), small])).map((n) => n.text);
     expect(texts.some((t) => t.includes('のどに詰まりやすい'))).toBe(true);
     expect(texts.some((t) => t.includes('はちみつ'))).toBe(false);
+  });
+});
+
+describe('自由入力の除外（text）の書き方', () => {
+  // 全アレルゲンについて、ひらがな・カタカナ・漢字の書き方と、「〇〇アレルギー」「〇〇のアレルギー」「〇〇類」「〇〇類アレルギー」。
+  const TABLE: [AllergenId, string[]][] = [
+    ['shrimp', ['えび', 'エビ', '海老']],
+    ['crab', ['かに', 'カニ', '蟹']],
+    ['walnut', ['くるみ', 'クルミ', '胡桃']],
+    ['wheat', ['小麦', 'こむぎ', 'コムギ']],
+    ['buckwheat', ['そば', 'ソバ', '蕎麦']],
+    ['egg', ['卵', 'たまご', 'タマゴ', '玉子', '鶏卵', '卵白', '卵黄']],
+    ['milk', ['乳', '牛乳', 'ミルク', '乳製品']],
+    ['peanut', ['落花生', 'らっかせい', 'ピーナッツ', 'ピーナツ']],
+    ['cashew', ['カシューナッツ']],
+    ['almond', ['アーモンド']],
+    ['abalone', ['あわび', 'アワビ', '鮑']],
+    ['squid', ['いか', 'イカ', '烏賊']],
+    ['salmon_roe', ['いくら', 'イクラ']],
+    ['orange', ['オレンジ']],
+    ['kiwi', ['キウイフルーツ', 'キウイ']],
+    ['beef', ['牛肉', 'ぎゅうにく', 'ぎゅう肉', 'ビーフ']],
+    ['sesame', ['ごま', 'ゴマ', '胡麻']],
+    ['salmon', ['さけ', 'サケ', '鮭', 'しゃけ', 'サーモン']],
+    ['mackerel', ['さば', 'サバ', '鯖']],
+    ['soy', ['大豆', 'だいず', 'ダイズ']],
+    ['chicken', ['鶏肉', 'とりにく', 'とり肉', 'チキン', '鳥肉']],
+    ['banana', ['バナナ', 'ばなな']],
+    ['pork', ['豚肉', 'ぶたにく', 'ぶた肉', 'ポーク']],
+    ['macadamia', ['マカダミアナッツ', 'マカデミアナッツ']],
+    ['peach', ['もも', 'モモ', '桃']],
+    ['yam', ['やまいも', 'ヤマイモ', '山芋', '長芋']],
+    ['apple', ['りんご', 'リンゴ', '林檎']],
+    ['gelatin', ['ゼラチン']],
+  ];
+  const forms = (w: string) => [w, `${w}アレルギー`, `${w}のアレルギー`, `${w}類`, `${w}類アレルギー`, `${w}類のアレルギー`];
+
+  it.each(TABLE)('%s：すべての書き方でアレルゲンとして扱う', (id, words) => {
+    for (const w of words) for (const f of forms(w)) expect(allergensOfText(f), f).toEqual([id]);
+  });
+
+  it('まとめた呼び方（甲殻類・ナッツ・肉・魚）', () => {
+    for (const f of ['甲殻類', '甲殻類アレルギー', '甲殻類のアレルギー', 'えび・かに', 'えび、かにアレルギー']) {
+      expect(allergensOfText(f), f).toEqual(['shrimp', 'crab']);
+    }
+    expect(allergensOfText('ナッツ類アレルギー')).toEqual(expect.arrayContaining(['walnut', 'cashew', 'almond', 'macadamia', 'peanut']));
+    expect(allergensOfText('肉')).toEqual(['chicken', 'pork', 'beef']);
+    expect(allergensOfText('魚')).toEqual(expect.arrayContaining(['salmon', 'mackerel']));
+    expect(allergensOfText('卵、ピーマン')).toEqual(['egg']);
+  });
+
+  it('部分一致はしない（「鶏もも」「ひき肉」「しいたけ」はアレルゲンにしない）', () => {
+    for (const f of ['鶏もも', 'ひき肉', '合いびき肉', 'しいたけ', 'ピーマン', 'パクチー']) expect(allergensOfText(f), f).toEqual([]);
+  });
+
+  const eggKid = member({ id: 'member_2', nickname: 'たろう', ageBand: 'child', exclusions: [] });
+  const judge = (text: string, dishId: string) =>
+    checkDishSafety(dish(dishId), household([member(), { ...eggKid, exclusions: [{ type: 'text', text }] }]), catalog).status;
+
+  it('「甲殻類アレルギー」「卵白」は、アレルゲンの除外と同じ結果（派生原材料・要確認も）', () => {
+    expect(judge('甲殻類アレルギー', 'ebi_chili')).toBe('excluded');
+    expect(judge('卵白', 'potato_salad')).toBe('excluded'); // マヨネーズの卵
+    expect(judge('卵黄', 'hamburg')).toBe('excluded');
+    expect(judge('卵白', 'raku_gyoza')).toBe('uncertain'); // 要確認の加工品
+    expect(judge('とり肉', 'karaage')).toBe('excluded');
+    expect(judge('チキン', 'chicken_honey')).toBe('excluded'); // 鶏むね肉
+    expect(judge('ポーク', 'pork_shabu_salad')).toBe('excluded'); // 豚バラ肉
+    expect(judge('ビーフ', 'hamburg')).toBe('excluded'); // 合いびき肉
+  });
+
+  it('分類の語（魚・肉・きのこ）は、その種類の食材にも当てる', () => {
+    for (const id of ['salmon_foil', 'saba_miso', 'buri_teri', 'sanma_shioyaki']) expect(judge('魚', id), id).toBe('excluded');
+    expect(judge('魚', 'teriyaki_chicken')).toBe('ok');
+    for (const id of ['salmon_foil', 'chicken_cream']) expect(judge('きのこ', id), id).toBe('excluded'); // しめじ
+    expect(judge('きのこ', 'teriyaki_chicken')).toBe('ok');
+    expect(judge('肉', 'teriyaki_chicken')).toBe('excluded');
+    expect(judge('肉', 'tomato_egg')).toBe('ok');
+  });
+
+  it('1つの欄に並べた語は、それぞれで判定する（「しめじ、たまねぎ」「しめじ・たまねぎ」）', () => {
+    for (const text of ['しめじ、たまねぎ', 'しめじ・たまねぎ', 'しめじ たまねぎ', 'しめじ／たまねぎ']) {
+      expect(judge(text, 'salmon_foil'), text).toBe('excluded');
+      expect(judge(text, 'gyudon'), text).toBe('excluded'); // 玉ねぎだけ
+      expect(judge(text, 'teriyaki_chicken'), text).toBe('ok');
+    }
+    expect(judge('しめじが苦手', 'salmon_foil')).toBe('excluded');
+  });
+
+  it('材料のわからない自由入力の定番は、料理名の1文字のアレルゲン名（鮭・豚・蟹）でも除外する', () => {
+    const custom = (id: string, name: string): Dish => ({
+      id, name, role: 'main', protein: 'none', genre: 'wa', minutes: 30, ingredients: [], kidFriendly: true, spicy: false, tags: [], custom: true,
+    });
+    const cases: [string, AllergenId][] = [['鮭のムニエル', 'salmon'], ['鯖の竜田揚げ', 'mackerel'], ['豚の角煮', 'pork'], ['牛すじ煮込み', 'beef'], ['鶏ハム', 'chicken'], ['蟹クリームコロッケ', 'crab']];
+    for (const [name, id] of cases) {
+      const d = custom('custom_1', name);
+      const h = household([member({ exclusions: [{ type: 'allergen', id }] })], { customDishes: [d] });
+      expect(checkDishSafety(d, h, catalog).status, name).toBe('excluded');
+    }
+    // 分類の語も、料理名に食材の名前があれば当てる
+    const aji = custom('custom_2', '鮭の南蛮漬け');
+    expect(checkDishSafety(aji, household([member({ exclusions: [{ type: 'text', text: '魚' }] })], { customDishes: [aji] }), catalog).status).toBe('excluded');
+  });
+
+  it('textExclusionTargets：当たる食材・アレルゲンと、どれにも当たらない語', () => {
+    const r = textExclusionTargets('しめじ、パクチー', catalog);
+    expect(r.ingredientIds).toContain('shimeji');
+    expect(r.unmatched).toEqual(['パクチー']);
+    const egg = textExclusionTargets('卵白', catalog);
+    expect(egg.allergenIds).toEqual(['egg']);
+    expect(egg.unmatched).toEqual([]);
+    const fish = textExclusionTargets('魚', catalog);
+    expect(fish.ingredientIds).toEqual(expect.arrayContaining(['salmon', 'saba', 'buri', 'sanma']));
+    expect(fish.ingredientIds).not.toContain('shrimp');
   });
 });

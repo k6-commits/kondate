@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEMO_ONBOARDING, defaultCatalog } from '../src/data/index';
-import { createInitialState, renderCardText, type ActionButton, type ChatMessage } from '../src/engine/index';
+import { applyAction, createInitialState, renderCardText, type ActionButton, type ChatMessage } from '../src/engine/index';
 import {
   LINE_LIMITS,
   createLineClient,
@@ -171,6 +171,17 @@ describe('toLineMessages', () => {
     expect(items[3].action.displayText).toBe('11/8(日) 作らなかった');
     // 重ならなければ、日付は付けない
     expect(quickReplyItems([yesterday]).map((i) => i.action.label)).toEqual(['作った', '作らなかった']);
+  });
+
+  it('一人ずつの反応（有料版）：押したあとの返事のクイックリプライに、まだ押していない人のボタンが残る', () => {
+    let s = createInitialState({ ...DEMO_ONBOARDING, plan: 'paid' }, catalog, TODAY);
+    s = applyAction(s, catalog, { type: 'cooked', date: TODAY }).state;
+    const r = applyAction(s, catalog, { type: 'react', date: TODAY, memberId: 'member_1', reaction: 'great' });
+    const labels = toLineMessages(r.state, catalog, r.replies).at(-1)!.quickReply!.items.map((i) => i.action.label);
+    expect(labels).toContain('パパ ◎');
+    expect(labels).toContain('ゆい △');
+    expect(labels).not.toContain('ママ ◎');
+    expect(labels.length).toBeLessThanOrEqual(LINE_LIMITS.quickReplyItems);
   });
 });
 

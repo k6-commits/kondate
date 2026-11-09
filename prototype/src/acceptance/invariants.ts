@@ -13,6 +13,15 @@ export function norm(text: string): string {
     .toLowerCase();
 }
 
+/** 自由入力の除外を語に分ける（「ピーマン、しいたけ」→ ぴーまん・しいたけ）。 */
+export function textWords(text: string): string[] {
+  return text
+    .normalize('NFKC')
+    .split(/[・、,，/／()（）\s]+/)
+    .map(norm)
+    .filter((w) => w.length > 0);
+}
+
 export function mealOn(s: AppState, date: ISODate): PlannedMeal | undefined {
   return s.meals.find((m) => m.date === date);
 }
@@ -78,7 +87,7 @@ export function safetyViolations(s: AppState, catalog: Catalog, meals: PlannedMe
             out.push(`${label(s, catalog, meal)}: ${dish.name} の ${ing.name} に ${ex.id}`);
           } else if (ex.type === 'ingredient' && ing.id === ex.id) {
             out.push(`${label(s, catalog, meal)}: ${dish.name} に除外の食材 ${ing.name}`);
-          } else if (ex.type === 'text' && names.some((n) => n.includes(norm(ex.text)))) {
+          } else if (ex.type === 'text' && textWords(ex.text).some((w) => names.some((n) => n.includes(w)))) {
             out.push(`${label(s, catalog, meal)}: ${dish.name} の ${ing.name} が「${ex.text}」に当たる`);
           }
         }
@@ -173,7 +182,9 @@ export function shoppingViolations(s: AppState, catalog: Catalog): string[] {
         out.push(`${where}: 食材マスタにない`);
         continue;
       }
-      if (ing.pantry) out.push(`${where}: 常備品が items に載っている`);
+      // 常備品は、「切れた」と言われた（在庫が none）ときだけ「買い足し」として載る。
+      const refill = s.inventory.some((i) => i.ingredientId === ing.id && i.level === 'none') || item.checked;
+      if (ing.pantry && !refill) out.push(`${where}: 常備品が items に載っている`);
       if (item.aisle !== ing.aisle) out.push(`${where}: 売り場がマスタと違う`);
       if (item.forDates.length === 0) out.push(`${where}: どの日に使うかがない`);
       if (item.forDates.some((d) => d < list.date)) out.push(`${where}: 買い物の日より前の献立に使う`);
