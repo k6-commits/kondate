@@ -3,3 +3,4 @@ dist/
 dist-single/
 .data/
 *.log
+dist-artifact/
