@@ -103,12 +103,15 @@ export function planDateForWeek(state: AppState, weekStart: ISODate): ISODate | 
   return addDays(shop, -1);
 }
 
-/** 必要なら来週の献立を作る（state を書き換える）。作った週の月曜を返す。 */
-export function ensureUpcomingWeek(s: AppState, catalog: Catalog): ISODate | null {
+/**
+ * 必要なら来週の献立を作る（state を書き換える）。作った週の月曜を返す。
+ * now を付けると、作る日（最初の買い物日の前日）を待たずに作る（初回で今週の献立日が残っていないとき）。
+ */
+export function ensureUpcomingWeek(s: AppState, catalog: Catalog, now = false): ISODate | null {
   const next = addDays(weekStartOf(s.today), 7);
   if (s.meals.some((m) => weekStartOf(m.date) === next)) return null;
   const planDate = planDateForWeek(s, next);
-  if (!planDate || s.today < planDate) return null;
+  if (!planDate || (!now && s.today < planDate)) return null;
   const meals = planWeek(s, catalog, next);
   if (meals.length === 0) return null;
   s.meals = sortMeals([...s.meals, ...meals]);
@@ -210,7 +213,8 @@ export function createInitialState(input: OnboardingInput, catalog: Catalog, tod
   };
   const ws = weekStartOf(today);
   s.meals = sortMeals(planWeek(s, catalog, ws, today));
-  const upcoming = ensureUpcomingWeek(s, catalog);
+  // 今週の献立日が残っていない（土曜に始めた など）ときは、すぐに来週の献立を作る（「すぐに献立が出る」体験のため）。
+  const upcoming = ensureUpcomingWeek(s, catalog, s.meals.length === 0);
   s.shopping = buildShoppingLists(s, catalog);
 
   const thisWeek = s.meals.filter((m) => weekStartOf(m.date) === ws);

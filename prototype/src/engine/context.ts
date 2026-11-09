@@ -5,6 +5,7 @@ import type {
   Catalog,
   Dish,
   DishIngredient,
+  Exclusion,
   Household,
   HouseholdSettings,
   ISODate,
@@ -15,6 +16,7 @@ import type {
 } from './types';
 import { SERVING_WEIGHT } from './types';
 import { addDays, weekdayOf } from './dates';
+import { normalizeJa } from './util';
 
 /** 料理を引く（マスタ → 世帯の自由入力の定番）。 */
 export function findDishIn(household: Household, catalog: Catalog, id: string): Dish | undefined {
@@ -49,8 +51,92 @@ export function hasKids(members: Member[]): boolean {
   return members.some((m) => m.ageBand === 'child' || m.ageBand === 'preschool');
 }
 
+/**
+ * アレルゲンの呼び方（表示名と、よくある書き方）。自由入力の除外（text）がこれと一致したら、
+ * アレルゲンの除外としても扱う（「鶏肉」と書いたのに鶏むね肉や鶏ガラスープの素が出る、を防ぐ）。
+ */
+const ALLERGEN_WORDS: Record<AllergenId, string[]> = {
+  shrimp: ['えび', '海老', '蝦'],
+  crab: ['かに', '蟹'],
+  walnut: ['くるみ', '胡桃'],
+  wheat: ['小麦', 'こむぎ'],
+  buckwheat: ['そば', '蕎麦'],
+  egg: ['卵', 'たまご', '玉子', '鶏卵'],
+  milk: ['乳', '牛乳', '乳製品', 'ミルク'],
+  peanut: ['落花生', 'らっかせい', 'ピーナッツ', 'ピーナツ'],
+  cashew: ['カシューナッツ'],
+  almond: ['アーモンド'],
+  abalone: ['あわび', '鮑'],
+  squid: ['いか', '烏賊'],
+  salmon_roe: ['いくら'],
+  orange: ['オレンジ'],
+  kiwi: ['キウイフルーツ', 'キウイ', 'キーウィ'],
+  beef: ['牛肉', 'ぎゅうにく', '牛'],
+  sesame: ['ごま', '胡麻'],
+  salmon: ['さけ', '鮭', 'しゃけ', 'サーモン'],
+  mackerel: ['さば', '鯖'],
+  soy: ['大豆', 'だいず'],
+  chicken: ['鶏肉', 'とりにく', '鳥肉', '鶏'],
+  banana: ['バナナ'],
+  pork: ['豚肉', 'ぶたにく', '豚'],
+  macadamia: ['マカダミアナッツ', 'マカデミアナッツ'],
+  peach: ['もも', '桃'],
+  yam: ['やまいも', '山芋', '長芋', 'ながいも'],
+  apple: ['りんご', '林檎'],
+  gelatin: ['ゼラチン'],
+};
+
+/** まとめた呼び方（「甲殻類」「ナッツ」）。 */
+const ALLERGEN_GROUPS: [string, AllergenId[]][] = [
+  ['甲殻類', ['shrimp', 'crab']],
+  ['えびかに', ['shrimp', 'crab']],
+  ['ナッツ', ['walnut', 'cashew', 'almond', 'macadamia', 'peanut']],
+  ['木の実', ['walnut', 'cashew', 'almond', 'macadamia']],
+];
+
+let allergenByWord: Map<string, AllergenId[]> | undefined;
+
+function allergenWordMap(): Map<string, AllergenId[]> {
+  if (allergenByWord) return allergenByWord;
+  const map = new Map<string, AllergenId[]>();
+  for (const [id, words] of Object.entries(ALLERGEN_WORDS) as [AllergenId, string[]][]) {
+    for (const w of [ALLERGEN_NAME[id], ...words]) map.set(normalizeJa(w), [id]);
+  }
+  for (const [w, ids] of ALLERGEN_GROUPS) map.set(normalizeJa(w), ids);
+  allergenByWord = map;
+  return map;
+}
+
+/**
+ * 自由入力の語がアレルゲンの名前なら、その id（「えび・かに」のように並べてあれば、それぞれ）。
+ * 「卵アレルギー」「乳製品全般」のような書き方も受け付ける。部分一致はしない（「鶏もも」は鶏肉の除外にしない）。
+ */
+export function allergensOfText(text: string): AllergenId[] {
+  const map = allergenWordMap();
+  const out: AllergenId[] = [];
+  for (const part of text.normalize('NFKC').split(/[・、,，/／()（）\s]+/)) {
+    const raw = normalizeJa(part);
+    if (!raw) continue;
+    const key = raw.replace(/(のあれるぎー|あれるぎー|全般|類|系|など|製品)+$/u, '');
+    for (const id of map.get(raw) ?? map.get(key) ?? []) if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** メンバーの除外条件。自由入力（text）がアレルゲンの名前なら、そのアレルゲンの除外も加える（text の判定も残す）。 */
+export function effectiveExclusions(member: Member): Exclusion[] {
+  const out: Exclusion[] = [...member.exclusions];
+  for (const ex of member.exclusions) {
+    if (ex.type !== 'text') continue;
+    for (const id of allergensOfText(ex.text)) {
+      if (!out.some((e) => e.type === 'allergen' && e.id === id)) out.push({ type: 'allergen', id });
+    }
+  }
+  return out;
+}
+
 export function hasAllergenExclusion(household: Household): boolean {
-  return household.members.some((m) => m.ageBand !== 'infant' && m.exclusions.some((e) => e.type === 'allergen'));
+  return household.members.some((m) => m.ageBand !== 'infant' && effectiveExclusions(m).some((e) => e.type === 'allergen'));
 }
 
 export function isFavorite(household: Household, dishId: string): boolean {

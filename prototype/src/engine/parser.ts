@@ -304,11 +304,13 @@ function parseClause(raw: string, ctx: ParseContext, carry: Carry): ParsedComman
       return [{ type: 'request', ...(carry.date ? { date: carry.date } : {}), ...(protein ? { protein } : {}), ...(genre ? { genre } : {}) }];
     }
   }
+  // 表示の命令は、「ごはん」「ご飯」（米の別名）を食材として隠さずに見る（「今日のごはん」「晩ごはん何？」）。
+  const shown = mask(t, spans.filter((sp) => !MEAL_WORDS.test(t.slice(sp.start, sp.end))));
   // 「明日のごはんは？」のように今日以外の日を聞かれたら、週の献立を見せる。
-  if (carry.date && carry.date !== ctx.today && MEAL_WORDS.test(rest)) return [{ type: 'show_week' }];
-  if (SHOW_TODAY.test(rest)) return [{ type: 'show_today' }];
-  if (SHOW_WEEK.test(rest)) return [{ type: 'show_week' }];
-  if (SHOW_SHOPPING.test(rest)) return [{ type: 'show_shopping' }];
+  if (carry.date && carry.date !== ctx.today && MEAL_WORDS.test(shown)) return [{ type: 'show_week' }];
+  if (SHOW_TODAY.test(shown)) return [{ type: 'show_today' }];
+  if (SHOW_WEEK.test(shown)) return [{ type: 'show_week' }];
+  if (SHOW_SHOPPING.test(shown)) return [{ type: 'show_shopping' }];
   return [];
 }
 

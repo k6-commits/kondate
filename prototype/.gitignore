@@ -4,3 +4,6 @@ dist-single/
 .data/
 *.log
 dist-artifact/
+.env
+.env.*
+!.env.example

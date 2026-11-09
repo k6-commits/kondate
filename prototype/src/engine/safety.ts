@@ -1,6 +1,6 @@
 // 安全（DESIGN.md 3-4）。除外とアレルゲンの判定はコードで行い、わからない物は「要確認」で止める。
-import type { Catalog, Dish, Exclusion, Household, Ingredient, Member, Notice, SafetyResult } from './types';
-import { allergenName, eatingMembers, ingredientsOf } from './context';
+import type { AllergenId, Catalog, Dish, Exclusion, Household, Ingredient, Member, Notice, SafetyResult } from './types';
+import { allergenName, eatingMembers, effectiveExclusions, ingredientsOf } from './context';
 import { normalizeJa } from './util';
 
 type Hit = SafetyResult['hits'][number];
@@ -18,7 +18,8 @@ function pushHit(hits: Hit[], hit: Hit): void {
  * excluded：除外に当たる／uncertain：要確認／ok：判定できる範囲で問題なし。
  */
 export function checkDishSafetyFor(dish: Dish, members: Member[], household: Household, catalog: Catalog): SafetyResult {
-  const exclusions: Exclusion[] = members.filter((m) => m.ageBand !== 'infant').flatMap((m) => m.exclusions);
+  // 自由入力の除外がアレルゲンの名前（「鶏肉」「えび」など）なら、アレルゲンの除外としても判定する。
+  const exclusions: Exclusion[] = members.filter((m) => m.ageBand !== 'infant').flatMap(effectiveExclusions);
   const hits: Hit[] = [];
   if (exclusions.length === 0) return { status: 'ok', hits };
 
@@ -145,7 +146,23 @@ export const NOTICE_CHOKING = '5歳以下の子には、豆・ナッツ類など
 export const NOTICE_UNCERTAIN = '市販のルウ・冷凍食品・惣菜は銘柄で原材料が違うため、「要確認」として献立に出していません';
 export const NOTICE_FOOD_SAFETY = '消費期限を優先してください。においや色では安全を判断できません';
 
-/** 世帯に出す注意（免責、重いアレルギー、乳児、窒息）。 */
+/** 大豆・小麦は、醤油・味噌・サラダ油・酢などの調味料にも入る（食材マスタの派生原材料）。 */
+const SEASONING_ALLERGENS: { id: AllergenId; name: string; seasonings: string[] }[] = [
+  { id: 'soy', name: '大豆', seasonings: ['醤油', '味噌', 'サラダ油'] },
+  { id: 'wheat', name: '小麦', seasonings: ['醤油', '酢', 'めんつゆ'] },
+];
+
+/** 大豆・小麦の除外があるときの注意。調味料にも当たるため、出せる料理が少なくなる。 */
+export function seasoningNotice(ids: AllergenId[]): string | null {
+  const hit = SEASONING_ALLERGENS.filter((a) => ids.includes(a.id));
+  if (hit.length === 0) return null;
+  const names = hit.map((a) => a.name).join('・');
+  const seasonings = [...new Set(hit.flatMap((a) => a.seasonings))].slice(0, 4).join('・');
+  const much = ids.includes('soy') ? 'かなり' : '';
+  return `${names}の除外は、${seasonings}などの調味料にも当たるため、出せる料理が${much}少なくなります。組めない日は、その日の注意でお知らせします`;
+}
+
+/** 世帯に出す注意（免責、重いアレルギー、乳児、窒息、調味料に入るアレルゲン、要確認）。 */
 export function householdNotices(household: Household): Notice[] {
   const notices: Notice[] = [{ level: 'info', text: NOTICE_DISCLAIMER }];
   const members = household.members;
@@ -159,10 +176,14 @@ export function householdNotices(household: Household): Notice[] {
   if (members.some((m) => m.ageBand === 'infant' || m.ageBand === 'preschool')) {
     notices.push({ level: 'warning', text: NOTICE_CHOKING });
   }
-  if (
-    !household.settings.allowUncertainWithExclusions &&
-    members.some((m) => m.ageBand !== 'infant' && m.exclusions.some((e) => e.type === 'allergen'))
-  ) {
+  // 自由入力の「鶏肉」「えび」なども、アレルゲンの除外として数える。
+  const allergenIds = members
+    .filter((m) => m.ageBand !== 'infant')
+    .flatMap((m) => effectiveExclusions(m))
+    .flatMap((e) => (e.type === 'allergen' ? [e.id] : []));
+  const seasoning = seasoningNotice(allergenIds);
+  if (seasoning) notices.push({ level: 'info', text: seasoning });
+  if (!household.settings.allowUncertainWithExclusions && allergenIds.length > 0) {
     notices.push({ level: 'info', text: NOTICE_UNCERTAIN });
   }
   return notices;

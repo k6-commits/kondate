@@ -1,11 +1,13 @@
 // 組み直し（DESIGN.md 3-7・3-8）。ここの関数は、複製済みの state（s）を書き換え、bot の返事を追加する。
-import type { AppState, Catalog, Dish, ISODate, Member, PlannedMeal, Proposal } from './types';
+import type { AppState, Catalog, Dish, ISODate, Ingredient, Member, PlannedMeal, Proposal } from './types';
 import { addDays, diffDays, formatJa, weekStartOf } from './dates';
 import {
   allDishes,
   eatingMembers,
   findDishIn,
   ingredientsOf,
+  isFavorite,
+  isMeat,
   mealOn,
   proteinOfKind,
   servingsFor,
@@ -48,8 +50,15 @@ function editable(s: AppState, meal: PlannedMeal | undefined): meal is PlannedMe
 function safetyProblem(s: AppState, catalog: Catalog, dish: Dish, absent: string[]): string | null {
   const res = isSafeOn(s, catalog, dish, absent);
   if (isAllowed(res, s.household)) return null;
-  const why = [...new Set(res.hits.map((h) => h.reason))].slice(0, 2).join('・');
-  if (res.status === 'excluded') return `${dish.name}は除外の条件（${why}）に当たるため、入れられません。`;
+  const branded = res.hits.filter((h) => h.reason.endsWith('銘柄で原材料が違います'));
+  if (res.status === 'excluded') {
+    // 除外に当たった理由（卵 など）を先に。銘柄の注意は、ほかに理由がないときだけ。
+    const strong = res.hits.filter((h) => !branded.includes(h) && !h.reason.includes('要確認'));
+    const reasons = (strong.length > 0 ? strong : res.hits).map((h) => h.reason.replace(/（派生原材料）$/, ''));
+    return `${dish.name}は除外の条件（${[...new Set(reasons)].slice(0, 2).join('・')}）に当たるため、入れられません。`;
+  }
+  const names = [...new Set(branded.map((h) => catalog.ingredientById.get(h.ingredientId)?.name).filter((n): n is string => !!n))];
+  const why = names.length > 0 ? `${names.slice(0, 2).join('・')}は銘柄で原材料が違います` : '材料がわかりません';
   return `${dish.name}は「要確認」（${why}）のため、提案していません。`;
 }
 
@@ -90,6 +99,8 @@ export function todayImpossible(s: AppState, catalog: Catalog, date: ISODate): v
   );
   const targetRakuId = target?.dishIds[0];
 
+  // 元の料理を先に移しておき（仮）、今日のラク日の料理は、移した先と同じたんぱく源を避けて選ぶ。
+  if (target) replaceMeal(s, { ...target, dishIds: original, kind: 'normal' });
   // 今日はラク日に（在庫や冷凍で済むものを優先）。
   const raku = bestRakuFor(s, catalog, date, meal.absentMemberIds)[0]?.dish;
   const rakuIds = raku ? [raku.id, ...sidesFor(s, catalog, date, raku, original)] : [];
@@ -121,8 +132,17 @@ export function todayImpossible(s: AppState, catalog: Catalog, date: ISODate): v
   lines.push(
     target ? `${mainName}は${label(s, target.date)}に回します。` : `${mainName}は、来週の候補に回します。`,
   );
-  if (target && targetRakuId && targetRakuId !== raku?.id) {
-    lines.push(`${dishName(s, catalog, targetRakuId)}は次のラク日に使います。`);
+  // 入れ替えたラク日の料理は、もう買ってあり、日持ちする（冷凍食品など）ときだけ「次のラク日に使う」と伝える。
+  // 買っていなければ、買い物リストから外れるので何も言わない（次のラク日にも使えない約束はしない）。
+  const displaced = targetRakuId && targetRakuId !== raku?.id ? findDishIn(s.household, catalog, targetRakuId) : undefined;
+  if (target && displaced) {
+    const stocked = ingIdsOf(s, displaced)
+      .map((id) => catalog.ingredientById.get(id))
+      .filter((i): i is Ingredient => !!i && !i.pantry)
+      .filter((i) => s.inventory.some((v) => v.ingredientId === i.id && v.level !== 'none'));
+    const keeps = (i: Ingredient) =>
+      i.aisle === 'frozen' || i.shelfLifeDays >= 7 || s.inventory.some((v) => v.ingredientId === i.id && v.frozen);
+    if (stocked.length > 0 && stocked.every(keeps)) lines.push(`${displaced.name}は次のラク日に使います。`);
   }
   const perishable = originalDishes
     .flatMap((d) => ingIdsOf(s, d))
@@ -199,11 +219,34 @@ interface SwapOption {
   score: number;
 }
 
-/** その食材を使う料理への差し替えを探す。 */
+const isSeafood = (p: Dish['protein']) => p === 'fish' || p === 'seafood';
+
+/**
+ * その食材を使う料理への差し替えを探す。
+ * まず、その食材の代わりになる食材（substitutes）を使う日と、同じたんぱく源の日を探す。
+ * なければ、肉なら肉の日、魚介なら魚介の日まで広げる（鶏肉の日がない週でも「鶏むねが安い」を活かせるように）。
+ */
 function findSwapFor(s: AppState, catalog: Catalog, ingredientId: string): SwapOption | null {
   const ing = catalog.ingredientById.get(ingredientId);
   if (!ing) return null;
   const protein = proteinOfKind(ing.kind);
+  return (
+    searchSwap(s, catalog, ing, (main, usesSub) => usesSub || (protein !== 'none' && main.protein === protein)) ??
+    searchSwap(
+      s,
+      catalog,
+      ing,
+      (main) => (isMeat(protein) && isMeat(main.protein)) || (isSeafood(protein) && isSeafood(main.protein)),
+    )
+  );
+}
+
+function searchSwap(
+  s: AppState,
+  catalog: Catalog,
+  ing: Ingredient,
+  target: (main: Dish, usesSub: boolean) => boolean,
+): SwapOption | null {
   const users = allDishes(s.household, catalog).filter((d) => d.role === 'main' && ingIdsOf(s, d).includes(ing.id));
   let best: SwapOption | null = null;
   for (const meal of s.meals) {
@@ -215,8 +258,7 @@ function findSwapFor(s: AppState, catalog: Catalog, ingredientId: string): SwapO
     const usesSub = mainIngs.some(
       (id) => ing.substitutes?.includes(id) || catalog.ingredientById.get(id)?.substitutes?.includes(ing.id),
     );
-    const sameProtein = protein !== 'none' && main.protein === protein;
-    if (!usesSub && !sameProtein) continue;
+    if (!target(main, usesSub)) continue;
     for (const to of users) {
       if (to.id === main.id) continue;
       const sc = scoreMainOn(s, catalog, meal.date, to);
@@ -474,6 +516,31 @@ export function absence(s: AppState, catalog: Catalog, date: ISODate, memberRef:
 // リクエスト
 // ---------------------------------------------------------------------------
 
+/** 料理名の芯（「カレーライス」→「かれー」、「青椒肉絲（チンジャオロース）」→「青椒肉絲」）。 */
+function nameCore(name: string): string {
+  return normalizeJa(name).replace(/[（(].*[）)]$/, '').replace(/らいす$/, '');
+}
+
+/**
+ * 頼まれた料理が除外・要確認に当たるとき、名前の近い、出してよい料理（「カレー」→ ルウを使わないキーマカレー）。
+ * 同じ役割（主菜なら主菜）で、名前に芯を含むものから、最近食べていないもの・定番・名前の短いものの順に選ぶ。
+ */
+function similarAllowedDish(s: AppState, catalog: Catalog, dish: Dish, meal: PlannedMeal): Dish | undefined {
+  const core = nameCore(dish.name);
+  if (core.length < 2) return undefined;
+  return allDishes(s.household, catalog)
+    .filter((d) => d.id !== dish.id && d.role === dish.role && normalizeJa(d.name).includes(core))
+    .filter((d) => !safetyProblem(s, catalog, d, meal.absentMemberIds))
+    .map((d) => ({ d, sc: scoreMainOn(s, catalog, meal.date, d) }))
+    .filter((x) => x.sc.allowed)
+    .sort(
+      (a, b) =>
+        Number(a.sc.recent) - Number(b.sc.recent) ||
+        Number(isFavorite(s.household, b.d.id)) - Number(isFavorite(s.household, a.d.id)) ||
+        a.d.name.length - b.d.name.length,
+    )[0]?.d;
+}
+
 export function request(
   s: AppState,
   catalog: Catalog,
@@ -517,13 +584,22 @@ export function request(
       return;
     }
   }
+  // 安全はゆるめない。頼まれた料理が出せなければ、名前の近い、出せる料理をかわりに提案する（なければ理由だけ伝える）。
   const problem = safetyProblem(s, catalog, to, meal.absentMemberIds);
+  const lead: string[] = [];
   if (problem) {
-    addBotMessage(s, problem, { card: { kind: 'meal', date: meal.date } });
-    return;
+    const alt = dish ? similarAllowedDish(s, catalog, dish, meal) : undefined;
+    if (!alt) {
+      addBotMessage(s, problem, { card: { kind: 'meal', date: meal.date } });
+      return;
+    }
+    lead.push(problem);
+    to = alt;
   }
   if (meal.dishIds.includes(to.id)) {
-    addBotMessage(s, `${label(s, meal.date)}は、もう${to.name}の予定です。`, { card: { kind: 'meal', date: meal.date } });
+    addBotMessage(s, [...lead, `${label(s, meal.date)}は、もう${to.name}の予定です。`].join('\n'), {
+      card: { kind: 'meal', date: meal.date },
+    });
     return;
   }
   let toIds: string[];
@@ -541,7 +617,7 @@ export function request(
     text: `${label(s, meal.date)}を${namesLine(s, catalog, toIds)}にしますか？`,
   };
   s.proposals = [...s.proposals.filter((p) => p.date !== meal.date), proposal];
-  const lines = [proposal.text];
+  const lines = lead.length > 0 ? [...lead, `かわりに、${proposal.text}`] : [proposal.text];
   const sc = scoreMainOn(s, catalog, meal.date, to);
   if (to.role === 'main' && sc.recent) lines.push('最近も食べていますが、リクエストなので入れられます。');
   addBotMessage(s, lines.join('\n'), {

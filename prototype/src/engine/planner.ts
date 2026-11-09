@@ -97,7 +97,11 @@ export function genreCapFor(household: Household, catalog: Catalog, normalDays: 
 const REACTION_VALUE: Record<Reaction, number> = { great: 2, ok: 0.5, meh: -4 };
 
 export const RAKU_FALLBACK_WARNING = '条件に合う主菜が見つからなかったので、この日はラク日にしました';
-export const NOTHING_FOUND_WARNING = '条件に合う料理が見つかりませんでした。除外の設定や定番を見直してください';
+export const NOTHING_FOUND_WARNING = '条件に合う料理が見つかりませんでした。家で食べられる定番を足すと、組みやすくなります';
+/** newPerWeek の範囲で入れた新しい料理の理由。 */
+export const NEW_DISH_REASON = '今週の新しい料理';
+/** newPerWeek を超えて新しい料理を入れたとき、最初の1日だけに付ける理由。 */
+export const EXTRA_NEW_DISH_REASON = '定番が少ないので、新しい料理を多めにしました';
 
 export function rakuReason(dish: Dish): string {
   return `ラクする日。${dish.name}で十分`;
@@ -745,6 +749,13 @@ export function planWeek(state: AppState, catalog: Catalog, weekStart: ISODate, 
 
   const chosenMain = new Map<ISODate, Dish>();
   const fallback = new Set<ISODate>();
+  // 新しい料理として数えた日（newPerWeek の範囲）。超えた分は「多めにしました」と最初の1日だけに書く。
+  const countedNew = new Set<ISODate>();
+  const countNew = (date: ISODate, dish: Dish) => {
+    if (!cons.isNew(dish)) return;
+    if (cons.newQuotaLeft > 0) countedNew.add(date);
+    cons.newQuotaLeft -= 1;
+  };
   const assign = (date: ISODate, dish: Dish, kind: 'normal' | 'raku') => {
     env.byDate.set(date, { kind, dishes: [dish] });
     addEaten(env, dish.id, date);
@@ -760,7 +771,7 @@ export function planWeek(state: AppState, catalog: Catalog, weekStart: ISODate, 
     }
     assign(slot.date, pick.dish, 'normal');
     chosenMain.set(slot.date, pick.dish);
-    if (cons.isNew(pick.dish)) cons.newQuotaLeft -= 1;
+    countNew(slot.date, pick.dish);
     cons.genreCount.set(pick.dish.genre, (cons.genreCount.get(pick.dish.genre) ?? 0) + 1);
   }
 
@@ -780,12 +791,13 @@ export function planWeek(state: AppState, catalog: Catalog, weekStart: ISODate, 
       if (quick) {
         assign(slot.date, quick.dish, 'normal');
         chosenMain.set(slot.date, quick.dish);
-        if (cons.isNew(quick.dish)) cons.newQuotaLeft -= 1;
+        countNew(slot.date, quick.dish);
       }
     }
   }
 
   const meals: PlannedMeal[] = [];
+  let extraNewNoted = false;
   for (const slot of slots) {
     const main = chosenMain.get(slot.date);
     if (main) {
@@ -794,7 +806,13 @@ export function planWeek(state: AppState, catalog: Catalog, weekStart: ISODate, 
       env.byDate.set(slot.date, { kind: 'normal', dishes: [main, ...sides] });
       const all = [...scoreMain(env, slot, main).factors, ...factors];
       if (slot.date === fishDate && main.protein === 'fish') all.push(fishFactor(env, slot.date));
-      if (cons.isNew(main)) all.push({ text: '今週の新しい料理', priority: 4 });
+      if (cons.isNew(main)) {
+        if (countedNew.has(slot.date)) all.push({ text: NEW_DISH_REASON, priority: 4 });
+        else if (!extraNewNoted) {
+          all.push({ text: EXTRA_NEW_DISH_REASON, priority: 5 });
+          extraNewNoted = true;
+        }
+      }
       meals.push(composeMeal(env, slot, 'normal', [main, ...sides], all));
       continue;
     }

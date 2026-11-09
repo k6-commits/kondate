@@ -16,7 +16,7 @@ import {
   sale,
   todayImpossible,
 } from './replan';
-import { FREEZE_NOTE } from './shopping';
+import { FREEZE_NOTE, buildShoppingLists } from './shopping';
 import { lowerStockForMeal, setStock } from './state';
 import {
   BTN_SHOPPING,
@@ -120,7 +120,11 @@ function showToday(s: AppState, catalog: Catalog): void {
 function showShopping(s: AppState): void {
   const lists = s.shopping.filter((l) => l.date >= s.today);
   if (lists.length === 0) {
-    addBotMessage(s, '今は買う物はありません。', { actions: [BTN_WEEK] });
+    // 来週の献立がまだなら、いつリストができるかも伝える。
+    const hasNext = s.meals.some((m) => weekStartOf(m.date) === addDays(weekStartOf(s.today), 7));
+    addBotMessage(s, hasNext ? '今は買う物はありません。' : '今は買う物はありません。来週の分は、来週の献立と一緒に作ります。', {
+      actions: [BTN_WEEK],
+    });
     return;
   }
   lists.slice(0, 3).forEach((list, i) => {
@@ -212,6 +216,8 @@ function recordCooked(s: AppState, catalog: Catalog, date: ISODate): boolean {
   s.history = s.history.filter((r) => !(r.date === date && r.dishIds.join(',') === key));
   s.history.push({ date, dishIds: [...meal.dishIds], status: 'cooked', reactions: [] });
   lowerStockForMeal(s, catalog, meal);
+  // 在庫が減ったので、この先の買い物リストも合わせる（使い切った食材を次のリストに入れる）。
+  s.shopping = buildShoppingLists(s, catalog);
   return true;
 }
 
