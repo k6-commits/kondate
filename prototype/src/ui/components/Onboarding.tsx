@@ -1,19 +1,17 @@
 // 初回設定（DESIGN.md 4章の①〜④）。最後に注意を見せてから始める。
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Catalog, Household, ISODate, OnboardingInput, Weekday } from '../../engine';
 import { WEEKDAY_JA, householdNotices } from '../../engine';
 import { cls, normalizeForSearch } from '../lib';
 import type { MemberDraft } from './Forms';
-import { DishPicker, MemberEditor, PLAN_INFO, PlanPicker, WeekdayPicker, exclusionSummary, memberLine } from './Forms';
+import { DishPicker, MemberEditor, PLAN_INFO, PlanPicker, WeekdayPicker, emptyMemberDraft, exclusionSummary, memberLine } from './Forms';
 import { Icon } from './Icon';
 
 const STEPS = ['家族', '買い物の日', '定番', 'プラン', '確認'] as const;
 const MAX_MEMBERS = 6;
 const SEVERE_TEXT = '重い食物アレルギー（アナフィラキシーの経験など）は、このプロトタイプの対象外です。医師の指示を優先してください';
-
-function emptyMember(first: boolean): MemberDraft {
-  return { nickname: '', ageBand: 'adult', role: first ? 'parent' : 'partner', exclusions: [] };
-}
+/** 今の状態から開いたとき（onCancel があるとき）の、置き換えの注意。 */
+const REPLACE_TEXT = '今の家族と記録は、この内容で置き換わります。元には戻せません。';
 
 export function Onboarding({
   catalog,
@@ -29,7 +27,18 @@ export function Onboarding({
   onCancel?: () => void;
 }) {
   const [step, setStep] = useState(0);
-  const [members, setMembers] = useState<MemberDraft[]>([emptyMember(true)]);
+  const [members, setMembers] = useState<MemberDraft[]>(() => [emptyMemberDraft(0)]);
+  // 今の状態から開いたとき（onCancel がある）は、デモで始め直す前にページの中で確かめる（リセットと同じ）。
+  const [demoConfirm, setDemoConfirm] = useState(false);
+  const demoButtonRef = useRef<HTMLButtonElement>(null);
+  const demoConfirmRef = useRef<HTMLDivElement>(null);
+  const confirmWasOpen = useRef(false);
+  useEffect(() => {
+    // 確認を開いたら確認の文へ、やめたら元のボタンへフォーカスを移す（消えたボタンに残さない）。
+    if (demoConfirm) demoConfirmRef.current?.focus();
+    else if (confirmWasOpen.current) demoButtonRef.current?.focus();
+    confirmWasOpen.current = demoConfirm;
+  }, [demoConfirm]);
   const [editing, setEditing] = useState<number | null>(0);
   const [shoppingWeekdays, setShoppingWeekdays] = useState<Weekday[]>([0, 3]);
   const [favoriteDishIds, setFavoriteDishIds] = useState<string[]>([]);
@@ -126,9 +135,30 @@ export function Onboarding({
       <div className="ob-body">
         <div className="demo-start">
           <p>すぐに試すなら、デモの家族（大人2人、小学生1人、幼児1人。小学生の子が卵アレルギー）で始められます。</p>
-          <button type="button" className="btn" onClick={onDemo}>
-            デモの家族で始める
-          </button>
+          {demoConfirm ? (
+            <div
+              className="confirm"
+              role="group"
+              aria-label="デモの家族で始め直すかの確認"
+              aria-describedby="demo-confirm-text"
+              tabIndex={-1}
+              ref={demoConfirmRef}
+            >
+              <p id="demo-confirm-text">今の家族と記録は消えて、デモの家族で始め直します。元には戻せません。</p>
+              <div className="row-actions">
+                <button type="button" className="btn btn--danger" onClick={onDemo}>
+                  デモで始め直す
+                </button>
+                <button type="button" className="btn" onClick={() => setDemoConfirm(false)}>
+                  やめる
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button type="button" className="btn" ref={demoButtonRef} onClick={() => (onCancel ? setDemoConfirm(true) : onDemo())}>
+              デモの家族で始める
+            </button>
+          )}
         </div>
 
         {step === 0 ? (
@@ -199,7 +229,7 @@ export function Onboarding({
                 className="btn"
                 disabled={members.length >= MAX_MEMBERS}
                 onClick={() => {
-                  setMembers([...members, emptyMember(false)]);
+                  setMembers([...members, emptyMemberDraft(members.length)]);
                   setEditing(members.length);
                 }}
               >
@@ -287,6 +317,7 @@ export function Onboarding({
                 始める前に読んでください
               </p>
               <ul>
+                {onCancel ? <li key="replace">{REPLACE_TEXT}</li> : null}
                 {noticeLines.map((n) => (
                   <li key={n.text}>{n.text}</li>
                 ))}

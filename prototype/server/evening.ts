@@ -1,7 +1,8 @@
 // 夕方の配信（POST /cron/evening）：保存されたすべての送り元について日付を今日まで進め、
-// 有料版の世帯にだけ、たまっている配信（今日の分）を push で送ってから空にする。無料版には送らない。
+// 有料版の世帯にだけ、たまっている配信（今日の分と、届けそびれた週の献立）を push で送ってから空にする。無料版には送らない。
+// 文面は送る直前の state で作り直す（pushesToSend）。週の献立は土日にもできるので、cron は毎日（土日も）呼ぶ。
 import type { Catalog } from '../src/engine/index';
-import { jstToday, syncRecord } from './household';
+import { jstToday, pushesToSend, syncRecord } from './household';
 import { toLineMessages, type LineClient } from './line';
 import { errorKind, type Logger } from './log';
 import type { Store } from './store';
@@ -35,9 +36,9 @@ export async function runEvening(deps: EveningDeps): Promise<EveningResult> {
         const synced = syncRecord(current, catalog, today);
         if (!synced) return null;
         if (synced.state.household.settings.plan !== 'paid') return { ...synced, pendingPush: [] };
-        // 有料版：同期でできた「作りましたか？」（まだ届けていないもの）と、今日の配信を送る。
-        const messages = [...synced.pendingReply, ...synced.pendingPush];
-        if (messages.length === 0) return synced;
+        // 有料版：同期でできた「作りましたか？」（まだ届けていないもの）と、今日の配信（今の献立で作り直したもの）を送る。
+        const messages = [...synced.pendingReply, ...pushesToSend(synced.state, catalog, synced.pendingPush)];
+        if (messages.length === 0) return { ...synced, pendingPush: [] }; // もう送るものがない（作った日の分など）
         if (!line) {
           if (!warnedNoToken) logger.warn('LINE_CHANNEL_ACCESS_TOKEN がないので、配信できません');
           warnedNoToken = true;

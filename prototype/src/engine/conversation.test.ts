@@ -152,6 +152,25 @@ describe('欠席（@きめとく 水曜は夫が飲み会）', () => {
     expectShortReplies(r.replies);
   });
 
+  it('量は食べる人数を主に言い、大人換算を添える（画面の「3人分（大人換算2.2）」と同じ考え方。PRD-10）', () => {
+    expect(r.replies[0].text).toContain('11/11(水)はパパの分を減らしました（3人分、大人換算2.2）。');
+    expect(renderCardText(r.state, catalog, { kind: 'meal', date: '2026-11-11' })).toContain('・3人分（大人換算2.2）（パパはいません）');
+    const back = handleUserText(r.state, catalog, '水曜はパパもいる');
+    expect(back.replies[0].text).toContain('11/11(水)はパパも食べるんですね（4人分、大人換算3.2）。');
+  });
+
+  it('大人だけの家族は「2人分」とだけ言う', () => {
+    const adults = createInitialState(
+      { ...demoInput(), members: demoInput().members.filter((m) => m.ageBand === 'adult') },
+      catalog,
+      MONDAY,
+    );
+    const res = handleUserText(adults, catalog, '水曜はパパが飲み会');
+    expect(res.replies[0].text).toContain('パパの分を減らしました（1人分）。');
+    expect(renderCardText(adults, catalog, { kind: 'meal', date: MONDAY })).toMatch(/分・2人分$/m);
+    expect(renderCardText(adults, catalog, { kind: 'meal', date: MONDAY })).not.toContain('大人換算');
+  });
+
   it('全員いない日は買い物リストから外す', () => {
     const res = handleUserText(state, catalog, '水曜は外食');
     expect(meal(res.state, '2026-11-11').servings).toBe(0);
@@ -333,7 +352,7 @@ describe('表示とことば', () => {
     expect(week).toContain('ラク日：');
     const day = renderCardText(state, catalog, { kind: 'meal', date: MONDAY });
     expect(day).toContain('主菜：');
-    expect(day).toContain('大人換算3.2人分');
+    expect(day).toContain('4人分（大人換算3.2）');
     const shop = renderCardText(state, catalog, { kind: 'shopping', date: MONDAY });
     expect(shop).toContain('【');
     expect(shop).toContain('家にあるか確認：');
@@ -345,6 +364,25 @@ describe('表示とことば', () => {
     const summary = renderCardText(state, catalog, { kind: 'summary', weekStart: MONDAY });
     expect(summary).toContain('5日分の献立でした');
     expect(summary).not.toContain('0日、考えずに');
+  });
+
+  it('新しい料理の日のカードに、作り方の手がかりを添える（画面のカードの「作り方」と同じ文。作ったあとは出さない。PRD-12）', () => {
+    const day = state.meals.find((m) => m.newDishIds.length > 0)!;
+    expect(day).toBeTruthy();
+    const name = findDish(state, catalog, day.newDishIds[0])!.name;
+    const hint = `作り方：「${name}」ははじめての料理です。作り方は、料理名でレシピを探してください。`;
+    expect(renderCardText(state, catalog, { kind: 'meal', date: day.date })).toContain(hint);
+    for (const m of state.meals.filter((x) => x.date !== day.date)) {
+      expect(renderCardText(state, catalog, { kind: 'meal', date: m.date })).not.toContain('はじめての料理');
+    }
+    // 返事の文（「今日のごはん」）には入れない（カードと重ねない）
+    let s = state;
+    while (s.today < day.date) s = advanceDay(s, catalog).state;
+    const today = handleUserText(s, catalog, '今日のごはん').replies[0];
+    expect(today.card).toEqual({ kind: 'meal', date: day.date });
+    expect(today.text).not.toContain('はじめての料理');
+    s = applyAction(s, catalog, { type: 'cooked', date: day.date }).state;
+    expect(renderCardText(s, catalog, { kind: 'meal', date: day.date })).not.toContain('はじめての料理');
   });
 });
 

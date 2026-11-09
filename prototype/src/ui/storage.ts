@@ -62,6 +62,8 @@ export interface UiPrefs {
   menuOpen?: boolean;
   /** 利用者の発言を送った人（メッセージの id → member の id）。 */
   senders?: Record<string, string>;
+  /** 案内（このプロトタイプについて）を一度開いたか。開いたら、スマホ幅の「試し方を見る」を出さない。 */
+  aboutSeen?: boolean;
 }
 
 export function readUiPrefs(): UiPrefs {
@@ -71,6 +73,7 @@ export function readUiPrefs(): UiPrefs {
   if (typeof data.sender === 'string') prefs.sender = data.sender;
   if (data.aiMode === 'auto' || data.aiMode === 'always' || data.aiMode === 'off') prefs.aiMode = data.aiMode;
   if (typeof data.menuOpen === 'boolean') prefs.menuOpen = data.menuOpen;
+  if (typeof data.aboutSeen === 'boolean') prefs.aboutSeen = data.aboutSeen;
   if (isRecord(data.senders)) {
     prefs.senders = Object.fromEntries(
       Object.entries(data.senders).filter((e): e is [string, string] => typeof e[1] === 'string'),

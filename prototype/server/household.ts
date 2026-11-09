@@ -2,7 +2,9 @@
 import { randomUUID } from 'node:crypto';
 import { ALLERGENS, DEMO_ONBOARDING } from '../src/data/index';
 import {
+  addDays,
   advanceDay,
+  applyAction,
   createInitialState,
   diffDays,
   type AgeBand,
@@ -95,14 +97,22 @@ export function introMessages(
 // 日付の同期
 // ---------------------------------------------------------------------------
 
-const onDate = (today: ISODate) => (m: ChatMessage) => m.at.slice(0, 10) === today;
+const dayOf = (m: ChatMessage): ISODate => m.at.slice(0, 10);
+const onDate = (today: ISODate) => (m: ChatMessage) => dayOf(m) === today;
+
+/**
+ * まだ届ける意味のある配信か：今日の配信と、届けそびれた週の献立（その週が終わるまで）。
+ * 週の献立は「最初の買い物日の前日」（土日のこともある）にできるので、cron を呼べなかった日があっても落とさない。
+ */
+const deliverable = (today: ISODate) => (m: ChatMessage) =>
+  dayOf(m) === today || (m.card?.kind === 'week' && dayOf(m) < today && addDays(m.card.weekStart, 6) >= today);
 
 /**
  * state.today が今日より前なら、今日まで advanceDay を繰り返す。
  * - 同期でできた bot のメッセージのうち push でないもの（「昨日の〇〇は作りましたか？」など）は、
- *   最後の1日分だけを pendingReply に入れる（次の返信の先頭に添える）。
- * - push のもの（有料版の配信）は pendingPush にためる。
- * - pendingPush と pendingReply は、今日の日付のものだけを残す。
+ *   最後の1日分だけを pendingReply に入れる（次の返信の先頭に添える）。今日の日付のものだけを残す。
+ * - push のもの（有料版の配信）は pendingPush にためる。今日の日付のものと、届けそびれた週の献立（その週が終わるまで）を残す。
+ *   文面は送るときに今の state で作り直す（pushesToSend）。
  * MAX_SYNC_DAYS より古ければ null（呼ぶ側で作り直す）。
  */
 export function syncRecord(record: StoredRecord, catalog: Catalog, today: ISODate): StoredRecord | null {
@@ -117,13 +127,44 @@ export function syncRecord(record: StoredRecord, catalog: Catalog, today: ISODat
     lastDay = step.replies.filter((m) => !m.push);
     pushed.push(...step.replies.filter((m) => m.push));
   }
-  const isToday = onDate(today);
   return {
     ...record,
     state,
-    pendingPush: [...record.pendingPush, ...pushed].filter(isToday),
-    pendingReply: (lastDay ?? record.pendingReply).filter(isToday),
+    pendingPush: [...record.pendingPush, ...pushed].filter(deliverable(today)),
+    pendingReply: (lastDay ?? record.pendingReply).filter(onDate(today)),
   };
+}
+
+/**
+ * たまっている配信（pendingPush）を、送る直前の state で組み立て直す（有料版の夕方の配信）。
+ * ためたときの文面のままだと、そのあと献立を変えたとき（今日は無理・別のに など）に、本文とカードが食い違うため。
+ * - 今日の献立と明日の解凍の連絡（献立のカードの配信）は、今の献立で作り直す。エンジンが今日の配信を作る
+ *   advanceDay を、前日からもう一度進めて使う（返ってきた state は使わない）。作った・作らなかった日や、
+ *   解凍が要らなくなった日の分は入らない。
+ * - 週の献立は、今日できたものはそのまま（カードは送るときの state から作る）。前の日にできて届けそびれたものは、
+ *   今日の言い方（今週・来週）で作り直す（「今週の献立」のボタンの返事のうち、同じ週のもの）。
+ * たまっているものがなければ、何も送らない（その日の配信は済んでいる）。
+ */
+export function pushesToSend(state: AppState, catalog: Catalog, queued: ChatMessage[]): ChatMessage[] {
+  if (queued.length === 0) return [];
+  const today = state.today;
+  let shown: ChatMessage[] | null = null;
+  const weeks: ChatMessage[] = [];
+  for (const m of queued) {
+    if (m.card?.kind !== 'week') continue;
+    if (dayOf(m) >= today) {
+      weeks.push(m);
+      continue;
+    }
+    const weekStart = m.card.weekStart;
+    shown ??= applyAction(state, catalog, { type: 'open_week' }).replies;
+    const fresh = shown.find((r) => r.card?.kind === 'week' && r.card.weekStart === weekStart);
+    if (fresh) weeks.push({ ...fresh, push: true });
+  }
+  const meals = advanceDay({ ...state, today: addDays(today, -1) }, catalog).replies.filter(
+    (m) => m.push === true && m.card?.kind === 'meal',
+  );
+  return [...weeks, ...meals];
 }
 
 /** デモの家族で新しい状態を作る（作り直すときは、前のプランを引き継ぐ）。 */

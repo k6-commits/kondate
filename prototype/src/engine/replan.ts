@@ -793,7 +793,7 @@ export function absence(s: AppState, catalog: Catalog, date: ISODate, memberRef:
     });
     return;
   }
-  const lines = [`了解です。${label(s, date)}は${names}の分を減らしました（${servingsText(meal.servings)}）。`, '買い物リストも直しました。'];
+  const lines = [`了解です。${label(s, date)}は${names}の分を減らしました（${servingsText(s, meal, true)}）。`, '買い物リストも直しました。'];
   // 除外のある人がいない日は、その除外がゆるむ。予定が変わったら取り消せることも伝える。
   const loosened = looseningOf(s, catalog, newly, meal);
   if (loosened.length > 0) {
@@ -840,7 +840,7 @@ export function presence(s: AppState, catalog: Catalog, date: ISODate, memberRef
   const day = meal.date;
   meal.absentMemberIds = meal.absentMemberIds.filter((id) => !ids.includes(id));
   meal.servings = servingsFor(s.household, meal.absentMemberIds);
-  const lines = [`了解です。${label(s, day)}は${names}も食べるんですね（${servingsText(meal.servings)}）。`];
+  const lines = [`了解です。${label(s, day)}は${names}も食べるんですね（${servingsText(s, meal, true)}）。`];
   const actions: ActionButton[] = [BTN_SHOPPING];
   // 食べる人が増えたので、安全をもう一度判定する（欠席の日だから入っていた料理を、そのままにしない）。
   const unsafe = meal.dishIds

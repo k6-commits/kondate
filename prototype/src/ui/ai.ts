@@ -202,23 +202,49 @@ export class AiReader {
 // 送る前の下ごしらえ（純粋関数）
 // ---------------------------------------------------------------------------
 
-/** 本文に出てくるメンバーのニックネームを、長い順に member の id に置き換える。 */
+const toHiragana = (s: string): string => s.replace(/[ァ-ヶ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60));
+const toKatakana = (s: string): string => s.replace(/[ぁ-ゖ]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60));
+
+/**
+ * 名前として置き換えてよいか。エンジン（parser の名前の照合）が名前として読むものと同じにする：
+ * 1文字の名前は、かな（ひらがな・カタカナ）でないとき（漢字・英字など）だけ。
+ * かな1文字は、ほかの言葉の一部（「ゆでたまご」の「ゆ」）に当たりやすく、エンジンも名前として読まない。
+ * 英字1文字（「K」）はエンジンが名前として読むので、置き換えないと AI に名前が渡る。
+ */
+function usableNickname(nickname: string): boolean {
+  const base = nickname.normalize('NFKC').trim();
+  if (!base) return false;
+  if ([...base].length > 1) return true;
+  return /[^぀-ゟ]/u.test(toHiragana(base));
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 本文に出てくるメンバーのニックネームを、長い順に member の id に置き換える（AI に家族の名前を送らないため）。
+ * サーバーの maskNicknames（server/llm.ts）と同じ考え方：
+ * - 本文は NFKC にそろえる（全角英数・半角カナのゆれをなくす。そろえた文をそのまま送る）。
+ * - ひらがな・カタカナの書き分け（「ゆい」「ユイ」）と、英字の大文字・小文字も置き換える（エンジンが同じ人とみなす表記）。
+ * - 1文字のニックネームは、かなでないとき（漢字・英字など）だけ置き換える（エンジンの名前の照合と同じ）。
+ * 1回の置き換えで済ませるので、短い名前が、置き換えた id の中に当たることはない。
+ */
 export function maskNames(text: string, members: Pick<Member, 'id' | 'nickname'>[]): string {
-  const names = members
-    .map((m) => ({ id: m.id, name: m.nickname.trim() }))
-    // ひらがな1文字の名前は、ほかの語を壊しやすいので置き換えない（エンジンの照合と同じ扱い）。
-    .filter((x) => x.name.length >= 2 || (x.name.length === 1 && !/[぀-ゟ]/.test(x.name)))
-    .sort((a, b) => b.name.length - a.name.length);
-  // いったん私用領域の文字に置き換えてから id に戻す（短い名前が、置き換えた id の中に当たらないように）。
-  const token = (i: number) => String.fromCharCode(0xe000 + i);
-  let out = text;
-  names.forEach((x, i) => {
-    out = out.split(x.name).join(token(i));
-  });
-  names.forEach((x, i) => {
-    out = out.split(token(i)).join(x.id);
-  });
-  return out;
+  const source = text.normalize('NFKC');
+  const idByWord = new Map<string, string>();
+  for (const m of members) {
+    if (!usableNickname(m.nickname)) continue;
+    const base = m.nickname.normalize('NFKC').trim();
+    for (const word of [base, toHiragana(base), toKatakana(base)]) {
+      const key = word.toLowerCase();
+      if (!idByWord.has(key)) idByWord.set(key, m.id);
+    }
+  }
+  if (idByWord.size === 0) return source;
+  const words = [...idByWord.keys()].sort((a, b) => b.length - a.length);
+  const pattern = new RegExp(words.map(escapeRegExp).join('|'), 'giu');
+  return source.replace(pattern, (hit) => idByWord.get(hit.toLowerCase()) ?? hit);
 }
 
 /** 今日から days 日分の日付と曜日の表（例：'2026-11-09(月) 今日・今週'）。 */

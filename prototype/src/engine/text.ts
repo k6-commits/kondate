@@ -1,7 +1,7 @@
 // 文面を作る道具（会話・カード・LINE で共通）。
 import type { AppState, Catalog, Dish, ISODate, PlannedMeal } from './types';
 import { WEEKDAY_JA, addDays, formatJa, weekdayOf } from './dates';
-import { findDishIn, memberName } from './context';
+import { eatingMembers, findDishIn, memberName } from './context';
 
 export function dishesOf(state: AppState, catalog: Catalog, ids: string[]): Dish[] {
   return ids.map((id) => findDishIn(state.household, catalog, id)).filter((d): d is Dish => !!d);
@@ -50,9 +50,24 @@ export function mealLine(state: AppState, catalog: Catalog, meal: PlannedMeal): 
   return `${meal.kind === 'raku' ? 'ラク日：' : ''}${names}${minutes > 0 ? `（${minutes}分）` : ''}`;
 }
 
-export function servingsText(servings: number): string {
-  const n = Number.isInteger(servings) ? String(servings) : servings.toFixed(1);
-  return `大人換算${n}人分`;
+/**
+ * 量の表示（画面の servingsLabel と同じ考え方）。食べる人数（乳児と欠席の人を除く）を主にし、
+ * 小学生・幼児がいて大人換算と違うときだけ換算を添える。例：'4人分（大人換算3.2）'、大人だけなら '2人分'。
+ * inParens：返事の文のかっこの中に置くときの形（'3人分、大人換算2.2'）。
+ */
+export function servingsText(state: AppState, meal: PlannedMeal, inParens = false): string {
+  const eaters = eatingMembers(state.household, meal.absentMemberIds).length;
+  const n = Number.isInteger(meal.servings) ? String(meal.servings) : meal.servings.toFixed(1);
+  if (Math.abs(meal.servings - eaters) < 0.05) return `${eaters}人分`;
+  return inParens ? `${eaters}人分、大人換算${n}` : `${eaters}人分（大人換算${n}）`;
+}
+
+/** 新しい料理（はじめて作る料理）の作り方の手がかり。アプリは作り方の本文を持たない。献立が planned の日だけ。 */
+export function newDishHint(state: AppState, catalog: Catalog, meal: PlannedMeal): string {
+  if (meal.status !== 'planned') return '';
+  const names = meal.dishIds.filter((id) => meal.newDishIds.includes(id)).map((id) => dishName(state, catalog, id));
+  if (names.length === 0) return '';
+  return `${names.map((n) => `「${n}」`).join('')}ははじめての料理です。作り方は、料理名でレシピを探してください。`;
 }
 
 export function absentText(state: AppState, meal: PlannedMeal): string {

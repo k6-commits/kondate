@@ -1,9 +1,9 @@
 // Hono のアプリ（DESIGN.md 5章）。テストしやすいように、外とのつながり（保存・LINE・LLM・時計など）は deps で受け取る。
 //   GET  /health        → { ok, llm, line }
-//   POST /api/parse     → { commands, source }（画面が開発時に使う。CORS は CORS_ORIGIN だけ）
+//   POST /api/parse     → { commands, source }（画面が開発時に使う。PARSE_API_ENABLED のときだけ。CORS は CORS_ORIGIN だけ）
 //   POST /line/webhook  → 署名を確かめて 200 を先に返し、イベントの処理は defer で続ける
 //   POST /cron/evening  → Bearer CRON_SECRET。有料版の世帯に、今日の配信を push する
-import { Hono } from 'hono';
+import { Hono, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
 import { z } from 'zod';
@@ -23,7 +23,12 @@ export interface AppConfig {
   lineChannelSecret?: string;
   /** CRON_SECRET。なければ /cron/evening は 503。 */
   cronSecret?: string;
-  /** /api/parse を許可するオリジン（CORS_ORIGIN。カンマ区切りで複数も可）。 */
+  /**
+   * /api/parse を使えるようにするか（PARSE_API_ENABLED）。既定は使えない（404）。
+   * 開発用の口で認証がなく、ANTHROPIC_API_KEY があれば呼ばれるたびに LLM の費用がかかるので、公開するサーバーでは有効にしない。
+   */
+  parseApiEnabled?: boolean;
+  /** /api/parse を許可するオリジン（CORS_ORIGIN。カンマ区切りで複数も可）。ほかのオリジンからのリクエストは 403。 */
   corsOrigin: string;
 }
 
@@ -60,6 +65,26 @@ export const ParseRequestSchema = z.object({
   members: z.array(MemberSchema).max(20),
 });
 
+/** Content-Type が application/json か（charset などの付いたものも可）。 */
+function isJsonContentType(header: string | undefined): boolean {
+  return (header ?? '').split(';')[0].trim().toLowerCase() === 'application/json';
+}
+
+/**
+ * /api/parse の前の確認（LLM を呼ぶ前に断る）。
+ * - Origin ヘッダーがあって、許可したオリジンでなければ 403（ほかのサイトのページからの呼び出し）。
+ * - 本文が JSON（application/json）でなければ 415（ほかのサイトのフォームなど、プリフライトなしで届く送り方）。
+ * Origin のないリクエスト（curl など、ブラウザ以外）は通す。
+ */
+function parseApiGuard(origins: string[]): MiddlewareHandler {
+  return async (c, next) => {
+    const origin = c.req.header('origin');
+    if (origin !== undefined && !origins.includes(origin)) return c.json({ error: 'forbidden_origin' }, 403);
+    if (!isJsonContentType(c.req.header('content-type'))) return c.json({ error: 'unsupported_media_type' }, 415);
+    await next();
+  };
+}
+
 export function createApp(deps: AppDeps): Hono {
   const logger = deps.logger ?? silentLogger;
   const llm = deps.llm ?? null;
@@ -85,45 +110,48 @@ export function createApp(deps: AppDeps): Hono {
     c.json({ ok: true, llm: llm !== null, line: Boolean(config.lineChannelSecret) && deps.line !== null }),
   );
 
-  // ----- /api/parse -----
+  // ----- /api/parse（PARSE_API_ENABLED のときだけ。なければ 404） -----
 
-  app.use(
-    '/api/*',
-    cors({
-      origin: (origin) => (origins.includes(origin) ? origin : null),
-      allowMethods: ['POST', 'OPTIONS'],
-      allowHeaders: ['Content-Type'],
-      maxAge: 600,
-    }),
-  );
+  if (config.parseApiEnabled) {
+    app.use(
+      '/api/*',
+      cors({
+        origin: (origin) => (origins.includes(origin) ? origin : null),
+        allowMethods: ['POST', 'OPTIONS'],
+        allowHeaders: ['Content-Type'],
+        maxAge: 600,
+      }),
+    );
 
-  app.post(
-    '/api/parse',
-    bodyLimit({ maxSize: MAX_PARSE_BYTES, onError: (c) => c.json({ error: 'payload_too_large' }, 413) }),
-    async (c) => {
-      let body: unknown;
-      try {
-        body = await c.req.json();
-      } catch {
-        return c.json({ error: 'invalid_json' }, 400);
-      }
-      const parsed = ParseRequestSchema.safeParse(body);
-      if (!parsed.success) return c.json({ error: 'invalid_request' }, 400);
-      const { text, today } = parsed.data;
-      const members: Member[] = parsed.data.members.map((m) => ({
-        id: m.id,
-        nickname: m.nickname,
-        ageBand: m.ageBand,
-        ...(m.role ? { role: m.role } : {}),
-        exclusions: [],
-      }));
-      const state = minimalState(today, members);
-      const fromLlm = await interpretWithLlm(llm, catalog, state, text);
-      if (fromLlm) return c.json({ commands: fromLlm, source: 'llm' as const });
-      const rules = validateCommands(state, catalog, parseMessage(text, { today, members, catalog }));
-      return c.json({ commands: rules, source: 'rules' as const });
-    },
-  );
+    app.post(
+      '/api/parse',
+      parseApiGuard(origins),
+      bodyLimit({ maxSize: MAX_PARSE_BYTES, onError: (c) => c.json({ error: 'payload_too_large' }, 413) }),
+      async (c) => {
+        let body: unknown;
+        try {
+          body = await c.req.json();
+        } catch {
+          return c.json({ error: 'invalid_json' }, 400);
+        }
+        const parsed = ParseRequestSchema.safeParse(body);
+        if (!parsed.success) return c.json({ error: 'invalid_request' }, 400);
+        const { text, today } = parsed.data;
+        const members: Member[] = parsed.data.members.map((m) => ({
+          id: m.id,
+          nickname: m.nickname,
+          ageBand: m.ageBand,
+          ...(m.role ? { role: m.role } : {}),
+          exclusions: [],
+        }));
+        const state = minimalState(today, members);
+        const fromLlm = await interpretWithLlm(llm, catalog, state, text);
+        if (fromLlm) return c.json({ commands: fromLlm, source: 'llm' as const });
+        const rules = validateCommands(state, catalog, parseMessage(text, { today, members, catalog }));
+        return c.json({ commands: rules, source: 'rules' as const });
+      },
+    );
+  }
 
   // ----- /line/webhook -----
 

@@ -3,7 +3,7 @@ import type { AppState, Card, Catalog, ISODate, WeeklySummary } from './types';
 import { AISLE_LABEL, AISLE_ORDER } from './types';
 import { addDays, formatJa, weekStartOf } from './dates';
 import { findDishIn, ingredientsOf } from './context';
-import { absentText, dishName, mealLine, mealMinutes, namesLine, servingsText, statusLabel, weekLines } from './text';
+import { absentText, dishName, mealLine, mealMinutes, namesLine, newDishHint, servingsText, statusLabel, weekLines } from './text';
 
 /** 公開API：その週の振り返り。 */
 export function weeklySummary(state: AppState, catalog: Catalog, weekStart: ISODate): WeeklySummary {
@@ -118,8 +118,11 @@ export function renderCardText(state: AppState, catalog: Catalog, card: Card): s
         });
       }
       const absent = absentText(state, meal);
-      lines.push(`${mealMinutes(state, catalog, meal)}分・${servingsText(meal.servings)}${absent ? `（${absent}）` : ''}`);
+      lines.push(`${mealMinutes(state, catalog, meal)}分・${servingsText(state, meal)}${absent ? `（${absent}）` : ''}`);
       if (meal.reasons.length > 0) lines.push(`理由：${meal.reasons.join('／')}`);
+      // 新しい料理には、作り方の手がかりを添える（画面のカードの「作り方」と同じ文）。
+      const hint = newDishHint(state, catalog, meal);
+      if (hint) lines.push(`作り方：${hint}`);
       for (const w of meal.warnings) lines.push(`注意：${w}`);
       for (const n of meal.notes) lines.push(`メモ：${n}`);
       return lines.join('\n');

@@ -1,0 +1,92 @@
+/*
+ * 画面の枠・案内・トークの追加の見た目（styles.css のあとに読む）。
+ * 色は styles.css の :root と暗いテーマのトークンだけを使う（ここでは新しい色を作らない）。
+ */
+
+/* シートの入れ物。箱を作らない（シートは .app を基準に重なる）。案内を重ねて開いているあいだは inert にする。 */
+.sheet-layer {
+  display: contents;
+}
+
+/* ------------------------------------------------------------------ はじめての人への「試し方を見る」 */
+
+.demo-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  margin-left: auto;
+  padding: 0 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 10px;
+  background: var(--paper-raised);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.demo-hint:hover {
+  border-color: var(--kaki);
+}
+
+@media (max-width: 899.98px) {
+  .demo-today.has-hint {
+    align-items: center;
+    flex-wrap: wrap;
+  }
+}
+
+/* 広い画面では案内が左に出ているので、出さない。 */
+@media (min-width: 900px) {
+  .demo-hint {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------------ 案内：試してほしいことの先頭（自分の家族で始める） */
+
+.try-list .try-button {
+  grid-column: 2;
+  margin-top: 4px;
+}
+
+/* ------------------------------------------------------------------ トーク：あとで新しくなったカード */
+
+.card-fold {
+  min-width: 0;
+}
+
+.card-fold > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--paper-raised);
+  color: var(--ink-soft);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+}
+
+.card-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.card-fold > summary:hover {
+  color: var(--ink);
+  border-color: var(--kaki);
+}
+
+.card-fold[open] > summary {
+  margin-bottom: 6px;
+}
+
+.card-fold[open] > summary .icon {
+  transform: rotate(180deg);
+}

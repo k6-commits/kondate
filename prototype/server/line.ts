@@ -138,7 +138,17 @@ export function chatMessageText(state: AppState, catalog: Catalog, message: Chat
   return parts.filter((p) => p.length > 0).join('\n\n');
 }
 
-function actionDate(action: Action): ISODate | null {
+/**
+ * もう使えない提案のボタンか（同じ返信の中で、同じ日の後の提案に置き換わったものなど）。
+ * 押しても「その提案は、もう使えません。」になるだけなので、クイックリプライには入れない。
+ */
+function isGoneProposal(action: Action, state: AppState): boolean {
+  if (action.type !== 'accept_proposal' && action.type !== 'reject_proposal') return false;
+  return !state.proposals.some((p) => p.id === action.proposalId);
+}
+
+/** ボタンの日付（見分けるために付ける）。提案（替える・そのまま）は、state.proposals の提案の日。 */
+function actionDate(action: Action, state: AppState): ISODate | null {
   switch (action.type) {
     case 'cooked':
     case 'not_cooked':
@@ -151,44 +161,81 @@ function actionDate(action: Action): ISODate | null {
       return action.shoppingDate;
     case 'regenerate_week':
       return action.weekStart;
+    case 'accept_proposal':
+    case 'reject_proposal':
+      return state.proposals.find((p) => p.id === action.proposalId)?.date ?? null;
     default:
       return null;
   }
 }
 
+interface QuickButton {
+  label: string;
+  data: string;
+  date: ISODate | null;
+}
+
 /**
  * ボタン（actions）をクイックリプライにする。最後のメッセージのボタンを先に、前のメッセージのボタンを後ろに並べる
  * （LINE ではクイックリプライは最後のメッセージにしか出ないため）。
- * - 13個まで。ラベルは20文字まで（超えたら「…」）。displayText はラベル。
- * - postback の data は JSON.stringify(action)。300文字を超えるものは入れない。
- * - 同じ data は1つに。前のメッセージのボタンのラベルが、もう並べたものと重なるときは、
- *   そのメッセージの日付のあるボタンすべてに日付を付けて見分ける（例：「11/8(日) 作った」「11/8(日) 作らなかった」）。
+ * - 13個まで。入れるかどうかはメッセージ単位で決める（「作った／作らなかった」「替える／そのまま」の組を割らない）。
+ *   最後のメッセージだけで13個を超えるときは、その先頭から13個。
+ * - ラベルは20文字まで（超えたら「…」）。displayText はラベル。
+ * - postback の data は JSON.stringify(action)。300文字を超えるものは入れない。同じ data は1つに（後ろのメッセージのものを残す）。
+ *   もう state.proposals にない提案（同じ返信の中で置き換わったもの）の［替える］［そのまま］も入れない。
+ * - 同じラベルのボタンが2つ以上のメッセージにあるときは、それらのメッセージの日付のあるボタンに日付を付けて見分ける
+ *   （例：「11/8(日) 作った」「11/8(日) 作らなかった」、提案が2つなら「11/10(火) 替える」「11/12(木) 替える」）。
+ *   今日のボタンには付けない（日付のないボタンは今日のこと）。見分けられないボタンは入れない。
  */
-export function quickReplyItems(messages: ChatMessage[]): LineQuickReplyItem[] {
-  const items: LineQuickReplyItem[] = [];
+export function quickReplyItems(messages: ChatMessage[], state: AppState): LineQuickReplyItem[] {
+  // 後ろのメッセージから順に、メッセージごとのボタンを集める。
   const seenData = new Set<string>();
-  const seenLabels = new Set<string>();
+  const groups: QuickButton[][] = [];
   for (const message of [...messages].reverse()) {
-    const buttons = (message.actions ?? [])
-      .map((button) => ({ action: button.action, label: button.label.trim(), data: JSON.stringify(button.action) }))
-      .filter((b) => b.label.length > 0 && b.data.length <= LINE_LIMITS.postbackData && !seenData.has(b.data));
-    const collides = buttons.some((b) => seenLabels.has(b.label));
-    for (const button of buttons) {
-      const date = actionDate(button.action);
-      const label = collides && date ? `${formatJa(date)} ${button.label}` : button.label;
-      if (seenLabels.has(label) || seenData.has(button.data)) continue;
-      seenData.add(button.data);
-      seenLabels.add(label);
+    const group: QuickButton[] = [];
+    for (const button of message.actions ?? []) {
+      const label = button.label.trim();
+      const data = JSON.stringify(button.action);
+      if (label.length === 0 || data.length > LINE_LIMITS.postbackData || seenData.has(data)) continue;
+      if (isGoneProposal(button.action, state)) continue;
+      seenData.add(data);
+      group.push({ label, data, date: actionDate(button.action, state) });
+    }
+    if (group.length > 0) groups.push(group);
+  }
+  // 2つ以上のメッセージに出てくるラベル。
+  const messagesByLabel = new Map<string, number>();
+  for (const group of groups) {
+    for (const label of new Set(group.map((b) => b.label))) messagesByLabel.set(label, (messagesByLabel.get(label) ?? 0) + 1);
+  }
+
+  const max = LINE_LIMITS.quickReplyItems;
+  const items: LineQuickReplyItem[] = [];
+  const usedLabels = new Set<string>();
+  for (const group of groups) {
+    const shared = group.some((b) => (messagesByLabel.get(b.label) ?? 0) > 1);
+    let buttons: QuickButton[] = [];
+    for (const b of group) {
+      const label = shared && b.date && b.date !== state.today ? `${formatJa(b.date)} ${b.label}` : b.label;
+      if (usedLabels.has(label) || buttons.some((x) => x.label === label)) continue;
+      buttons.push({ ...b, label });
+    }
+    if (buttons.length === 0) continue;
+    if (items.length + buttons.length > max) {
+      if (items.length > 0) continue; // 組を割らないように、このメッセージのボタンは入れない
+      buttons = buttons.slice(0, max);
+    }
+    for (const b of buttons) {
+      usedLabels.add(b.label);
       items.push({
         type: 'action',
         action: {
           type: 'postback',
-          label: truncateText(label, LINE_LIMITS.labelLength),
-          data: button.data,
-          displayText: truncateText(label, LINE_LIMITS.displayText),
+          label: truncateText(b.label, LINE_LIMITS.labelLength),
+          data: b.data,
+          displayText: truncateText(b.label, LINE_LIMITS.displayText),
         },
       });
-      if (items.length >= LINE_LIMITS.quickReplyItems) return items;
     }
   }
   return items;
@@ -205,7 +252,7 @@ export function toLineMessages(state: AppState, catalog: Catalog, messages: Chat
   const max = LINE_LIMITS.messagesPerRequest;
   const merged = texts.length > max ? [...texts.slice(0, max - 1), texts.slice(max - 1).join('\n\n')] : texts;
   const out: LineTextMessage[] = merged.map((text) => ({ type: 'text', text: truncateText(text, LINE_LIMITS.textLength) }));
-  const items = quickReplyItems(messages);
+  const items = quickReplyItems(messages, state);
   if (items.length > 0) out[out.length - 1].quickReply = { items };
   return out;
 }

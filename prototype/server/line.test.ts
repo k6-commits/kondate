@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { DEMO_ONBOARDING, defaultCatalog } from '../src/data/index';
-import { applyAction, createInitialState, renderCardText, type ActionButton, type ChatMessage } from '../src/engine/index';
+import {
+  advanceDay,
+  applyAction,
+  createInitialState,
+  formatJa,
+  handleUserText,
+  renderCardText,
+  type ActionButton,
+  type ChatMessage,
+} from '../src/engine/index';
 import {
   LINE_LIMITS,
   createLineClient,
@@ -113,6 +122,22 @@ describe('toLineMessages', () => {
     expect(out[0].quickReply).toBeUndefined();
   });
 
+  it('画面のカードと同じ表現：量は「4人分（大人換算3.2）」、新しい料理の日は作り方の一言を1回だけ', () => {
+    // デモの家族の最初の週は、金曜（11/13）が新しい料理の日
+    let s = state;
+    while (s.today < '2026-11-13') s = advanceDay(s, catalog).state;
+    const r = handleUserText(s, catalog, '今日のごはん');
+    const text = toLineMessages(r.state, catalog, r.replies)[0].text;
+    expect(text).toContain('4人分（大人換算3.2）');
+    expect(text).not.toContain('大人換算3.2人分');
+    expect(text.match(/ははじめての料理です。作り方は、料理名でレシピを探してください。/g)).toHaveLength(1);
+    expect(text).toMatch(/^作り方：「.+」ははじめての料理です。/m);
+    const absent = handleUserText(state, catalog, '水曜はパパが飲み会');
+    const reply = toLineMessages(absent.state, catalog, absent.replies)[0].text;
+    expect(reply).toContain('パパの分を減らしました（3人分、大人換算2.2）。');
+    expect(reply).toContain('3人分（大人換算2.2）（パパはいません）');
+  });
+
   it('5件を超えたら、5件目以降を1つにまとめる。本文は5000文字まで', () => {
     const many = Array.from({ length: 7 }, (_, i) => msg(`メッセージ${i + 1}`));
     const out = toLineMessages(state, catalog, many);
@@ -165,12 +190,95 @@ describe('toLineMessages', () => {
       ],
     });
     const again = msg('ほかに', { actions: [{ label: '今週の献立', action: { type: 'open_week' } }] });
-    const items = quickReplyItems([yesterday, today, again]);
+    const items = quickReplyItems([yesterday, today, again], state);
     expect(items.map((i) => i.action.label)).toEqual(['今週の献立', '作った', '11/8(日) 作った', '11/8(日) 作らなかった']);
     expect(JSON.parse(items[2].action.data)).toEqual({ type: 'cooked', date: '2026-11-08' });
     expect(items[3].action.displayText).toBe('11/8(日) 作らなかった');
     // 重ならなければ、日付は付けない
-    expect(quickReplyItems([yesterday]).map((i) => i.action.label)).toEqual(['作った', '作らなかった']);
+    expect(quickReplyItems([yesterday], state).map((i) => i.action.label)).toEqual(['作った', '作らなかった']);
+  });
+
+  it('1つの返信に提案が2つあると、どちらの［替える］［そのまま］も、提案の日付つきで出る', () => {
+    const r = handleUserText(state, catalog, '鶏むねが安い。豚こまも安い');
+    const withProposal = r.replies.filter((m) => m.actions?.some((a) => a.action.type === 'accept_proposal'));
+    expect(withProposal).toHaveLength(2);
+    const [first, second] = r.state.proposals;
+    const items = quickReplyItems(r.replies, r.state);
+    const byData = new Map(items.map((i) => [i.action.data, i.action.label]));
+    for (const p of [first, second]) {
+      expect(byData.get(JSON.stringify({ type: 'accept_proposal', proposalId: p.id }))).toBe(`${formatJa(p.date)} 替える`);
+      expect(byData.get(JSON.stringify({ type: 'reject_proposal', proposalId: p.id }))).toBe(`${formatJa(p.date)} そのまま`);
+    }
+    for (const item of items) expect(item.action.label.length).toBeLessThanOrEqual(LINE_LIMITS.labelLength);
+    // 提案が1つなら、日付は付けない
+    const one = handleUserText(state, catalog, '鶏むねが安い');
+    expect(quickReplyItems(one.replies, one.state).map((i) => i.action.label)).toEqual(['替える', 'そのまま']);
+  });
+
+  it('今日の提案のボタンには日付を付けない（日付のないボタンは今日のこと）', () => {
+    const p1 = { id: 'prop_a', kind: 'sale_swap' as const, date: TODAY, fromDishIds: [], toDishIds: [], text: '' };
+    const p2 = { ...p1, id: 'prop_b', date: '2026-11-12' };
+    const s = { ...state, proposals: [p1, p2] };
+    const ask = (id: string) =>
+      msg('替えますか？', {
+        actions: [
+          { label: '替える', action: { type: 'accept_proposal', proposalId: id } },
+          { label: 'そのまま', action: { type: 'reject_proposal', proposalId: id } },
+        ],
+      });
+    expect(quickReplyItems([ask('prop_b'), ask('prop_a')], s).map((i) => i.action.label)).toEqual([
+      '替える',
+      'そのまま',
+      '11/12(木) 替える',
+      '11/12(木) そのまま',
+    ]);
+    // 片づいた提案（state にない）は、押しても使えないので入れない
+    expect(quickReplyItems([ask('prop_gone'), ask('prop_a')], s).map((i) => i.action.label)).toEqual(['替える', 'そのまま']);
+    // 今日でない提案の前にあっても、片づいた提案のボタンは入れない（日付のない「替える」を出さない）
+    const onlyB = { ...state, proposals: [p2] };
+    expect(quickReplyItems([ask('prop_gone'), ask('prop_b')], onlyB).map((i) => i.action.data)).toEqual([
+      JSON.stringify({ type: 'accept_proposal', proposalId: 'prop_b' }),
+      JSON.stringify({ type: 'reject_proposal', proposalId: 'prop_b' }),
+    ]);
+  });
+
+  it('同じ返信の中で置き換わった提案（同じ日の後の提案）の［替える］［そのまま］は出さず、使える提案はすべて選べる', () => {
+    // 例：11/10「鶏むねが安い。豚こまも安い」は、11/13 の提案を作り、同じ 11/13 の別の提案に置き換える
+    const cases = [
+      ['2026-11-10', '鶏むねが安い。豚こまも安い'],
+      ['2026-11-09', '鶏ももが安い。鶏むねも安い'],
+      ['2026-11-10', '鶏むねが安い。豚こまも安い。さばも安い'],
+      ['2026-11-09', '鶏むねが安い。豚こまも安い'],
+    ] as const;
+    for (const [start, text] of cases) {
+      const r = handleUserText(createInitialState(DEMO_ONBOARDING, catalog, start), catalog, text);
+      const proposalIds = quickReplyItems(r.replies, r.state)
+        .map((i) => JSON.parse(i.action.data) as { type: string; proposalId?: string })
+        .filter((a) => a.type === 'accept_proposal' || a.type === 'reject_proposal')
+        .map((a) => a.proposalId);
+      for (const id of proposalIds) expect(r.state.proposals.some((p) => p.id === id)).toBe(true);
+      for (const p of r.state.proposals) expect(proposalIds).toContain(p.id);
+    }
+  });
+
+  it('13個の上限はメッセージ単位：入らないメッセージのボタンは、組ごと入れない', () => {
+    let s = createInitialState({ ...DEMO_ONBOARDING, plan: 'paid' }, catalog, '2026-11-08');
+    s = advanceDay(s, catalog).state; // 11/9
+    const step = advanceDay(s, catalog); // 11/10：昨日（11/9）は作りましたか？
+    const ask = step.replies.filter((m) => !m.push);
+    expect(ask.some((m) => m.actions?.some((a) => a.action.type === 'not_cooked'))).toBe(true);
+    const cooked = applyAction(step.state, catalog, { type: 'cooked', date: '2026-11-10' }); // ◎○△ が4人×3＝12個
+    const items = quickReplyItems([...ask, ...cooked.replies], cooked.state);
+    expect(items.length).toBeLessThanOrEqual(LINE_LIMITS.quickReplyItems);
+    const types = items.map((i) => (JSON.parse(i.action.data) as { type: string }).type);
+    expect(types.filter((t) => t === 'react')).toHaveLength(12);
+    // 「作った」「作らなかった」は、両方あるか、両方ないか
+    expect(types.includes('cooked')).toBe(types.includes('not_cooked'));
+    // 入る分は入れる（前のメッセージでも、組ごと入るなら入れる）
+    const small = msg('ほかに', { actions: [{ label: '今週の献立', action: { type: 'open_week' } }] });
+    const more = quickReplyItems([small, ...ask, ...cooked.replies], cooked.state).map((i) => i.action.label);
+    expect(more).toHaveLength(13);
+    expect(more.at(-1)).toBe('今週の献立');
   });
 
   it('一人ずつの反応（有料版）：押したあとの返事のクイックリプライに、まだ押していない人のボタンが残る', () => {

@@ -4,7 +4,8 @@
 //   それ以外の発言は、処理も保存もしない（中身をログにも出さない）。1対1のトークはすべて処理する。
 // - 処理の前に「@きめとく」とメンションの部分を取り除く（ほかの人へのメンションは、家族のニックネームだけ残す）。
 // - イベントを処理する前に、日付を日本時間の今日まで進める（household.ts）。
-// - 保存してから返信する（返信に失敗しても、状態は進んでいる）。
+// - 保存してから返信する（返信に失敗しても、状態は進んでいる）。発言の原文は保存しない（store.ts で空にする）。
+// - unfollow（ブロック）・leave（グループ・ルームからの退出）では、その送り元の記録を消す。
 import { z } from 'zod';
 import {
   applyAction,
@@ -102,6 +103,8 @@ export const LineEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('postback'), ...common, postback: z.object({ data: z.string() }) }),
   z.object({ type: z.literal('follow'), ...common }),
   z.object({ type: z.literal('join'), ...common }),
+  z.object({ type: z.literal('unfollow'), ...common }),
+  z.object({ type: z.literal('leave'), ...common }),
 ]);
 
 export type LineEvent = z.infer<typeof LineEventSchema>;
@@ -246,10 +249,18 @@ export function createWebhookHandler(deps: WebhookDeps): (events: unknown[]) => 
     await reply(event.replyToken, out);
   }
 
+  /** unfollow（ブロック）と leave（退出）：記録を消す（返信はできない）。また follow・join されたら、新しく作る。 */
+  async function onFarewell(event: Extract<LineEvent, { type: 'unfollow' | 'leave' }>, source: SourceRef): Promise<void> {
+    if (alreadyHandled(event)) return;
+    if (await store.delete(source.key)) logger.info('ブロック・退出のため、記録を消しました', { event: event.type });
+  }
+
   async function handleEvent(event: LineEvent): Promise<void> {
+    const source = sourceOf(event.source);
+    // ブロック・退出では、モードにかかわらず記録を消す。
+    if (event.type === 'unfollow' || event.type === 'leave') return onFarewell(event, source);
     if (event.mode === 'standby') return; // ほかのチャネルが応答している間は何もしない
     if (event.replyToken && DUMMY_REPLY_TOKENS.has(event.replyToken)) return;
-    const source = sourceOf(event.source);
     switch (event.type) {
       case 'message':
         return onMessage(event, source);

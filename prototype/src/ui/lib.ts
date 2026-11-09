@@ -1,6 +1,6 @@
 // 画面で使う小さな道具（表示用の文言、日付、検索用の正規化など）。
 import type { AppState, Catalog, Dish, ISODate, MealStatus, Member, PlannedMeal, Reaction, Weekday } from '../engine';
-import { WEEKDAY_JA, addDays, findDish, formatJa, isISODate } from '../engine';
+import { SERVING_WEIGHT, WEEKDAY_JA, addDays, findDish, formatJa, isISODate } from '../engine';
 
 export type MemberRole = NonNullable<Member['role']>;
 
@@ -88,9 +88,26 @@ export function dishRoleLabel(meal: PlannedMeal, index: number, dish: Dish | und
   return dish?.role === 'soup' ? '汁物' : '副菜';
 }
 
-export function servingsLabel(servings: number): string {
+/** その日に食べる人（乳児と、欠席の人を除く）。献立の量（servings）と同じ数え方。 */
+export function eatersOf(state: AppState, meal: PlannedMeal): Member[] {
+  return state.household.members.filter((m) => SERVING_WEIGHT[m.ageBand] > 0 && !meal.absentMemberIds.includes(m.id));
+}
+
+/**
+ * 量の表示。食べる人数を主にし、子どもがいて大人換算と違うときだけ換算を添える。
+ * 例：'4人分（大人換算3.2）'、大人だけなら '2人分'。
+ */
+export function servingsLabel(servings: number, eaters: number): string {
   const n = Number.isInteger(servings) ? String(servings) : servings.toFixed(1);
-  return `大人換算${n}人分`;
+  return Math.abs(servings - eaters) < 0.05 ? `${eaters}人分` : `${eaters}人分（大人換算${n}）`;
+}
+
+/** 大人換算の説明（小学生・幼児がいる家族にだけ出す）。 */
+export const SERVINGS_NOTE = '量は、大人・中高生を1人分、小学生を0.7人分、幼児を0.5人分として計算しています（大人換算）。';
+
+/** 大人換算が人数と違う家族か（小学生・幼児がいる）。 */
+export function hasPartialServings(members: Member[]): boolean {
+  return members.some((m) => SERVING_WEIGHT[m.ageBand] > 0 && SERVING_WEIGHT[m.ageBand] < 1);
 }
 
 export function absentNames(state: AppState, meal: PlannedMeal): string[] {

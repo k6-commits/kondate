@@ -6,6 +6,9 @@
 // - SYSTEM は変わらない部分だけにする（プロンプトキャッシュが効くように）。
 //   日付の表・メンバー・世帯の料理は、毎回 user のメッセージの先頭に入れる。
 // - 結果の検証（エンジンの validateCommands）は呼ぶ側で行う。拒否・失敗・例外はすべて null（呼ぶ側がルールベースに戻る）。
+//   失敗の理由（断られた・上限で切れた・JSON でない・形が違う・時間切れ）はログで見分けられるようにする（本文は出さない）。
+// - 1回の解釈には全体の上限（LLM_TOTAL_TIMEOUT_MS）がある。webhook は世帯ごとに順に処理するので、
+//   その間、同じ世帯のほかのイベントは待つ（順番を守るため）。上限で止めて、ルールに戻る。
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
@@ -26,11 +29,21 @@ import {
   type Protein,
 } from '../src/engine/index';
 import { errorKind, silentLogger, type Logger } from './log';
-import { toHiragana, toKatakana, usableNickname } from './names';
+import { maskableNickname, toHiragana, toKatakana } from './names';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
-export const LLM_MAX_TOKENS = 1024;
+/**
+ * 出力の上限。Opus 5.5 は思考を止められず、思考のトークンも max_tokens に数えるので、
+ * 出力の JSON（最大5件）だけを見た大きさより余裕をとる（課金は使った分だけ）。
+ */
+export const LLM_MAX_TOKENS = 4096;
+/** 1回の呼び出しの上限（SDK の timeout）。 */
 export const LLM_TIMEOUT_MS = 10_000;
+/**
+ * 1回の解釈の全体の上限（再試行と、その前の待ち時間を含む）。SDK は 429 の retry-after を上限なしで待つので、
+ * signal で全体を止める。
+ */
+export const LLM_TOTAL_TIMEOUT_MS = 12_000;
 export const LLM_MAX_RETRIES = 1;
 export const DATE_TABLE_DAYS = 14;
 
@@ -91,7 +104,28 @@ export const LlmOutputSchema = z.object({
 export type LlmCommand = z.infer<typeof LlmCommandSchema>;
 export type LlmOutput = z.infer<typeof LlmOutputSchema>;
 
-const OUTPUT_FORMAT = zodOutputFormat(LlmOutputSchema);
+/** 出力（text ブロック）を読んだ結果。読めなかったときは、その理由。 */
+export type OutputReading = { ok: true; output: LlmOutput } | { ok: false; error: 'invalid_json' | 'schema_mismatch' };
+
+/**
+ * 出力を JSON として読み、スキーマで確かめる。例外は出さない
+ * （messages.parse の中で例外になると stop_reason を見られず、上限で切れたのか形が違うのか分からなくなるため）。
+ */
+export function readOutput(content: string): OutputReading {
+  let json: unknown;
+  try {
+    json = JSON.parse(content);
+  } catch {
+    return { ok: false, error: 'invalid_json' };
+  }
+  const result = LlmOutputSchema.safeParse(json);
+  return result.success ? { ok: true, output: result.data } : { ok: false, error: 'schema_mismatch' };
+}
+
+const ZOD_FORMAT = zodOutputFormat(LlmOutputSchema);
+
+/** messages.parse に渡す出力の形。スキーマは zod から作り、読むのは readOutput（parsed_output に結果が入る）。 */
+const OUTPUT_FORMAT = { type: ZOD_FORMAT.type, schema: ZOD_FORMAT.schema, parse: readOutput };
 
 // ---------------------------------------------------------------------------
 // 名前の置き換え
@@ -105,13 +139,13 @@ function escapeRegExp(s: string): string {
  * 本文のニックネームを、長い順に member の id に置き換える（LLM に名前を送らないため）。
  * - 本文は NFKC にそろえる（全角英数・半角カナのゆれをなくす）。
  * - ひらがな・カタカナの書き分け（「はると」「ハルト」）と、英字の大文字・小文字も置き換える。
- * - 1文字のニックネームは、漢字のときだけ置き換える（かなや英字1文字は、ほかの言葉の一部を壊しやすい）。
+ * - 1文字のニックネームは、かなでないとき（漢字・英字など）だけ置き換える（エンジンの名前の照合と同じ。かな1文字は、ほかの言葉の一部を壊しやすい）。
  */
 export function maskNicknames(text: string, members: Pick<Member, 'id' | 'nickname'>[]): string {
   const source = text.normalize('NFKC');
   const idByWord = new Map<string, string>();
   for (const m of members) {
-    if (!usableNickname(m.nickname)) continue;
+    if (!maskableNickname(m.nickname)) continue;
     const base = m.nickname.normalize('NFKC').trim();
     for (const word of [base, toHiragana(base), toKatakana(base)]) {
       const key = word.toLowerCase();
@@ -338,19 +372,25 @@ export function toParsedCommands(output: LlmOutput): ParsedCommand[] {
 // 呼び出し
 // ---------------------------------------------------------------------------
 
+/** messages.parse の返事のうち、使うところ。 */
+export interface LlmResponse {
+  stop_reason: string | null;
+  /** 断られたとき（stop_reason が refusal）だけ入る。category は null のこともある。 */
+  stop_details?: { category?: string | null } | null;
+  /** 最初の text ブロックを readOutput で読んだもの。text ブロックがなければ null。 */
+  parsed_output: OutputReading | null;
+}
+
 /** messages.parse を持つもの（Anthropic のクライアント。テストではモック）。 */
 export interface LlmClient {
   messages: {
-    parse(
-      params: LlmRequest,
-      options: { timeout: number; maxRetries: number },
-    ): PromiseLike<{ stop_reason: string | null; parsed_output: LlmOutput | null }>;
+    parse(params: LlmRequest, options: { timeout: number; maxRetries: number; signal?: AbortSignal }): PromiseLike<LlmResponse>;
   };
 }
 
 export interface LlmInterpreter {
   readonly model: string;
-  /** 解釈できれば ParsedCommand[]（未検証）。拒否・失敗・例外は null。 */
+  /** 解釈できれば ParsedCommand[]（未検証）。拒否・失敗・例外・時間切れは null。 */
   interpret(input: InterpretInput): Promise<ParsedCommand[] | null>;
 }
 
@@ -359,10 +399,15 @@ export interface LlmInterpreterOptions {
   catalog: Catalog;
   model?: string;
   logger?: Logger;
+  /** サーバーを止めるときに abort する。途中の解釈はやめてルールに戻り、そのあとは LLM を呼ばない。 */
+  stopSignal?: AbortSignal;
+  /** 1回の解釈の全体の上限（テストで短くする）。既定は LLM_TOTAL_TIMEOUT_MS。 */
+  totalTimeoutMs?: number;
 }
 
 /** 例外の種類（本文やキーは入れない）。 */
 export function llmErrorKind(e: unknown): string {
+  if (e instanceof Anthropic.APIUserAbortError) return 'aborted';
   if (e instanceof Anthropic.APIConnectionTimeoutError) return 'timeout';
   if (e instanceof Anthropic.APIConnectionError) return 'connection';
   if (e instanceof Anthropic.APIError) return `api_${e.status ?? 'unknown'}`;
@@ -373,26 +418,44 @@ export function llmErrorKind(e: unknown): string {
 export function createLlmInterpreter(opts: LlmInterpreterOptions): LlmInterpreter {
   const model = opts.model?.trim() || DEFAULT_MODEL;
   const logger = opts.logger ?? silentLogger;
+  const totalTimeoutMs = opts.totalTimeoutMs ?? LLM_TOTAL_TIMEOUT_MS;
+  const stop = opts.stopSignal;
   return {
     model,
     async interpret(input) {
+      if (stop?.aborted) return null; // 止めている途中は、LLM を呼ばずにルールで読む
+      // 全体の上限と、止めるときの合図。SDK の再試行の前の待ち時間（retry-after）も、これで打ち切る。
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, totalTimeoutMs);
+      const onStop = () => controller.abort();
+      stop?.addEventListener('abort', onStop, { once: true });
       try {
         const res = await opts.client.messages.parse(buildRequest(input, opts.catalog, model), {
           timeout: LLM_TIMEOUT_MS,
           maxRetries: LLM_MAX_RETRIES,
+          signal: controller.signal,
         });
         if (res.stop_reason === 'refusal') {
-          logger.warn('LLM が解釈を断りました。ルールで解釈します');
+          logger.warn('LLM が解釈を断りました。ルールで解釈します', { category: res.stop_details?.category ?? 'none' });
           return null;
         }
-        if (!res.parsed_output) {
-          logger.warn('LLM の出力を読めませんでした。ルールで解釈します', { stop: res.stop_reason });
-          return null;
-        }
-        return toParsedCommands(res.parsed_output);
-      } catch (e) {
-        logger.warn('LLM での解釈に失敗しました。ルールで解釈します', { error: llmErrorKind(e) });
+        const reading = res.parsed_output;
+        if (reading?.ok) return toParsedCommands(reading.output);
+        const meta = { error: reading ? reading.error : 'no_output', stop: res.stop_reason };
+        if (res.stop_reason === 'max_tokens') logger.warn('LLM の出力が上限（max_tokens）で切れました。ルールで解釈します', meta);
+        else logger.warn('LLM の出力を読めませんでした。ルールで解釈します', meta);
         return null;
+      } catch (e) {
+        const kind = timedOut ? 'timeout' : stop?.aborted ? 'stopped' : llmErrorKind(e);
+        logger.warn('LLM での解釈に失敗しました。ルールで解釈します', { error: kind });
+        return null;
+      } finally {
+        clearTimeout(timer);
+        stop?.removeEventListener('abort', onStop);
       }
     },
   };

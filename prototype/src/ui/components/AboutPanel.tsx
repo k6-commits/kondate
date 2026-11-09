@@ -1,19 +1,43 @@
 // 案内パネル「このプロトタイプについて」。PC では左に、スマホでは「?」で開く。
 import { useEffect, useRef } from 'react';
-import type { AiStatus } from '../ai';
+import type { AiMode, AiStatus } from '../ai';
 import { aiStatusText } from './HouseholdSheet';
 import { Icon } from './Icon';
 
+/** 試してほしいこと。文は、デモの家族での実際の返事に合わせる（エンジンの動きが変わったら直す）。 */
 const TRY_THESE: { action: string; result: string }[] = [
   { action: '「今日は無理」と送る', result: '今日がラク日になり、元の料理は後ろの日に回ります。' },
-  { action: '「鶏むねが安い」と送る', result: '鶏肉の日があれば、鶏むねを使う料理への差し替えを提案します。' },
+  { action: '「鶏むねが安い」と送る', result: '鶏肉の日（なければほかの肉の日）を、鶏むねを使う料理に替える提案をします。' },
   { action: '「水曜は夫が飲み会」と送る', result: '水曜の人数が減り、買い物リストの量も直ります。' },
   { action: '［翌日へ進む］→［作った］→ ◎○△', result: '家族の反応が、次の週の献立に効きます。' },
   { action: '買い物リストでチェックする', result: '買った物は在庫として覚えます。' },
   { action: '有料に切り替えて［翌日へ進む］', result: '「今日はこれ」などの配信のメッセージが届きます。' },
 ];
 
-export function AboutPanel({ aiStatus, onStartOver, onClose }: { aiStatus: AiStatus; onStartOver: () => void; onClose?: () => void }) {
+/** AI の読み取りの説明（「家族と設定」の AI の読み取りの設定に合わせる）。 */
+function aiModeText(mode: AiMode): string {
+  const privacy = '家族の名前は送らず、「member_1」のような番号に置き換えます。';
+  switch (mode) {
+    case 'always':
+      return `書き込みは、claude.ai で開いているときは、毎回 Claude に読み取りを頼みます（見ている人の Claude の利用枠を使います）。${privacy}`;
+    case 'off':
+      return '書き込みは、AI を使わずにルールだけで読み取ります（「家族と設定」で変えられます）。';
+    default:
+      return `書き込みは、ふだんはルールで読み取ります。claude.ai で開いているときは、ルールで読めない書き込みだけ Claude に読み取りを頼みます（見ている人の Claude の利用枠を使います）。${privacy}`;
+  }
+}
+
+export function AboutPanel({
+  aiStatus,
+  aiMode = 'auto',
+  onStartOver,
+  onClose,
+}: {
+  aiStatus: AiStatus;
+  aiMode?: AiMode;
+  onStartOver: () => void;
+  onClose?: () => void;
+}) {
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     closeRef.current?.focus({ preventScroll: true });
@@ -40,6 +64,15 @@ export function AboutPanel({ aiStatus, onStartOver, onClose }: { aiStatus: AiSta
 
       <h3 className="about-sub">試してほしいこと</h3>
       <ul className="try-list">
+        <li className="try-start">
+          <span className="try-action">自分の家族で始めてみる</span>
+          <span className="try-result">家族・買い物の曜日・定番の料理を答えると、すぐに献立ができます。</span>
+          <span className="try-button">
+            <button type="button" className="btn btn--small" onClick={onStartOver}>
+              はじめから設定する
+            </button>
+          </span>
+        </li>
         {TRY_THESE.map((t) => (
           <li key={t.action}>
             <span className="try-action">{t.action}</span>
@@ -47,12 +80,12 @@ export function AboutPanel({ aiStatus, onStartOver, onClose }: { aiStatus: AiSta
           </li>
         ))}
       </ul>
-      <p className="hint">「金曜はカレーがいい」は、卵アレルギーの家族がいるため「要確認」として断る例です（市販のルウは銘柄で原材料が違います）。</p>
+      <p className="hint">
+        「金曜はカレーがいい」は、アレルギーの判定を見る例です。卵アレルギーの家族がいるので、市販のルウ（銘柄で原材料が違います）を使うカレーライスは「要確認」として出さず、ルウを使わないキーマカレーを代わりに提案します。
+      </p>
 
       <h3 className="about-sub">AI の読み取り</h3>
-      <p>
-        書き込みは、ふだんはルールで読み取ります。claude.ai で開いているときは、ルールで読めない書き込みだけ Claude に読み取りを頼みます（見ている人の Claude の利用枠を使います）。家族の名前は送らず、「member_1」のような番号に置き換えます。
-      </p>
+      <p data-testid="about-ai-mode">{aiModeText(aiMode)}</p>
       <p className="about-status">{aiStatusText(aiStatus)}</p>
 
       <h3 className="about-sub">注意</h3>
@@ -61,12 +94,6 @@ export function AboutPanel({ aiStatus, onStartOver, onClose }: { aiStatus: AiSta
         <li>献立・分量・在庫は試作の計算です。消費期限を優先してください。</li>
         <li>状態はこのブラウザの中だけに保存します。日付は［翌日へ進む］で動かします。</li>
       </ul>
-
-      <div className="about-actions">
-        <button type="button" className="btn" onClick={onStartOver}>
-          はじめから設定する
-        </button>
-      </div>
     </div>
   );
 }

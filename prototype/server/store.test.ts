@@ -47,6 +47,39 @@ describe('store：書き込みと読み戻し', () => {
     expect((await stat(path.join(dir, names[0]))).mode & 0o777).toBe(0o600);
   });
 
+  it('利用者の発言の原文は保存しない（text を空にする。id と時刻は残す）', async () => {
+    const saved = await seedRecord(store, { key: KEY, catalog: defaultCatalog, today: '2026-11-09' });
+    const userMsg = { id: 'msg_900', from: 'user' as const, text: '電話番号は090-1234-5678', at: '2026-11-09T08:00:00+09:00' };
+    const next = await store.update(KEY, (cur) => (cur ? { ...cur, state: { ...cur.state, chat: [...cur.state.chat, userMsg] } } : null));
+    expect(next?.state.chat.at(-1)).toEqual({ ...userMsg, text: '' });
+    expect(next?.state.chat.filter((m) => m.from === 'bot')).toEqual(saved.state.chat.filter((m) => m.from === 'bot'));
+    const raw = await readFile(path.join(dir, `${sha256Hex(KEY)}.json`), 'utf8');
+    expect(raw).not.toContain('090-1234-5678');
+    expect((await store.get(KEY))?.state.chat.at(-1)).toEqual({ ...userMsg, text: '' });
+  });
+
+  it('delete：記録と、壊れて残しておいたファイルを消す。同じキーの更新とは順に行う', async () => {
+    await seedRecord(store, { key: KEY, catalog: defaultCatalog, today: '2026-11-09' });
+    await seedRecord(store, { key: 'Uother', catalog: defaultCatalog, today: '2026-11-09' });
+    await writeFile(path.join(dir, `${sha256Hex(KEY)}.json.broken`), '壊れた {');
+    // 更新の途中で delete が来ても、更新が終わってから消す
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const updating = store.update(KEY, async (cur) => {
+      await gate;
+      return cur;
+    });
+    const deleting = store.delete(KEY);
+    release();
+    await updating;
+    expect(await deleting).toBe(true);
+    expect(await store.get(KEY)).toBeNull();
+    expect((await readdir(dir)).sort()).toEqual([`${sha256Hex('Uother')}.json`]);
+    expect((await store.list()).map((r) => r.key)).toEqual(['Uother']);
+    expect(await store.delete(KEY)).toBe(false); // もうないものは false
+    expect(await createFileStore({ dir: path.join(dir, 'not-yet') }).delete(KEY)).toBe(false);
+  });
+
   it('ないキーは null。fn が null を返したら書き込まない', async () => {
     expect(await store.get('Unone')).toBeNull();
     expect(await store.update('Unone', () => null)).toBeNull();

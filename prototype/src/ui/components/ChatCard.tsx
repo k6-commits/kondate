@@ -31,6 +31,10 @@ export function ChatCard({ card, state, catalog, handlers }: { card: Card; state
 
 function WeekCard({ weekStart, state, catalog, handlers }: { weekStart: ISODate; state: AppState; catalog: Catalog; handlers: CardHandlers }) {
   const meals = state.meals.filter((m) => weekStartOf(m.date) === weekStart);
+  const thisWeek = weekStartOf(state.today);
+  const past = weekStart < thisWeek;
+  // 過ぎた週は、献立が残っている先週の分だけ開ける（週の献立の画面は、先週・今週・来週を出せる）。
+  const canOpen = !past || (weekStart === addDays(thisWeek, -7) && meals.length > 0);
   return (
     <section className="card" data-card="week" aria-label={`${formatJa(weekStart)}からの週の献立`}>
       <header className="card-head">
@@ -38,11 +42,15 @@ function WeekCard({ weekStart, state, catalog, handlers }: { weekStart: ISODate;
         <span className="card-title">{formatJa(weekStart)}〜の夕食</span>
       </header>
       {meals.length === 0 ? (
-        <p className="card-empty">この週の献立はまだありません。</p>
+        <p className="card-empty">{past ? '過ぎた週の献立は、もう表示できません。' : 'この週の献立はまだありません。'}</p>
       ) : (
         <ul className="week-list">
           {meals.map((m) => (
-            <li key={m.date} className={cls('week-row', m.date === state.today && 'is-today')}>
+            <li
+              key={m.date}
+              className={cls('week-row', m.date === state.today && 'is-today')}
+              aria-current={m.date === state.today ? 'date' : undefined}
+            >
               <span className="week-day num">
                 <span className="week-wd">{WEEKDAY_JA[weekdayOf(m.date)]}</span>
                 <span className="week-date">{formatJa(m.date).replace(/\(.\)$/, '')}</span>
@@ -52,6 +60,7 @@ function WeekCard({ weekStart, state, catalog, handlers }: { weekStart: ISODate;
                 <span>{m.dishIds.length > 0 ? dishNames(state, catalog, m.dishIds) : '外食や買ってきたもの'}</span>
               </span>
               <span className="week-flags">
+                {m.date === state.today ? <span className="badge badge--today">今日</span> : null}
                 {m.status !== 'planned' ? <StatusBadge meal={m} /> : null}
                 {m.warnings.length > 0 ? (
                   <span className="badge badge--warn">
@@ -64,12 +73,14 @@ function WeekCard({ weekStart, state, catalog, handlers }: { weekStart: ISODate;
           ))}
         </ul>
       )}
-      <footer className="card-foot">
-        <button type="button" className="text-btn" onClick={() => handlers.onOpenWeek(weekStart)}>
-          献立を開く
-          <Icon name="next" size={16} />
-        </button>
-      </footer>
+      {canOpen ? (
+        <footer className="card-foot">
+          <button type="button" className="text-btn" onClick={() => handlers.onOpenWeek(weekStart)}>
+            献立を開く
+            <Icon name="next" size={16} />
+          </button>
+        </footer>
+      ) : null}
     </section>
   );
 }

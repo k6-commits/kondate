@@ -1,12 +1,13 @@
-import { readdir } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defaultCatalog } from '../src/data/index';
-import type { ParsedCommand } from '../src/engine/index';
+import { applyAction, formatJa, type ParsedCommand } from '../src/engine/index';
 import { createApp, type AppConfig } from './app';
 import { createDeferQueue } from './defer';
 import { GROUP_HINT, RESET_NOTE, WELCOME_BACK } from './household';
-import { createLineClient, type LineTextMessage } from './line';
-import type { InterpretInput, LlmInterpreter } from './llm';
+import { createLineClient, toLineMessages, type LineTextMessage } from './line';
+import { createLlmInterpreter, type InterpretInput, type LlmClient, type LlmInterpreter } from './llm';
 import { memoryLogger } from './log';
 import { createFileStore } from './store';
 import { fakeLineFetch, makeTempDir, seedRecord, signBody, type RecordedCall } from './testing';
@@ -29,6 +30,8 @@ interface SetupOptions {
   llm?: LlmInterpreter | null;
   config?: Partial<AppConfig>;
   now?: Date;
+  /** 時刻を途中で進めるとき（clock.now を書き換える）。 */
+  clock?: { now: Date };
   respond?: Parameters<typeof fakeLineFetch>[0];
 }
 
@@ -36,8 +39,8 @@ async function setup(opts: SetupOptions = {}) {
   const { dir, cleanup } = await makeTempDir('kimetoku-app-');
   cleanups.push(cleanup);
   const logger = memoryLogger();
-  const now = opts.now ?? MONDAY_NOON;
-  const store = createFileStore({ dir, logger, now: () => now });
+  const clock = opts.clock ?? { now: opts.now ?? MONDAY_NOON };
+  const store = createFileStore({ dir, logger, now: () => clock.now });
   const lineApi = fakeLineFetch(opts.respond);
   const line = createLineClient({ accessToken: ACCESS_TOKEN, fetch: lineApi.fetch, logger, retryDelayMs: 0 });
   const queue = createDeferQueue(logger);
@@ -46,7 +49,7 @@ async function setup(opts: SetupOptions = {}) {
     catalog: defaultCatalog,
     line,
     llm: opts.llm ?? null,
-    now: () => now,
+    now: () => clock.now,
     config: { lineChannelSecret: SECRET, cronSecret: CRON_SECRET, corsOrigin: 'http://localhost:5173', ...opts.config },
     defer: queue.defer,
     logger,
@@ -212,7 +215,8 @@ describe('グループ・ルーム', () => {
     expect(saved?.sourceId).toBe('Cgroup0001');
     expect(saved?.state.today).toBe(TODAY);
     expect(saved?.state.meals.find((m) => m.date === TODAY)?.kind).toBe('raku');
-    expect(saved?.state.chat.filter((m) => m.from === 'user').map((m) => m.text)).toEqual(['今日は無理']);
+    // 発言の原文は保存しない（利用者のメッセージは id と時刻だけ残る）
+    expect(saved?.state.chat.filter((m) => m.from === 'user').map((m) => m.text)).toEqual(['']);
 
     const logs = t.logger.lines.join('\n');
     for (const secret of ['今日は無理', ACCESS_TOKEN, SECRET, 'Cgroup0001']) expect(logs).not.toContain(secret);
@@ -234,7 +238,7 @@ describe('グループ・ルーム', () => {
     expect(t.replies()).toHaveLength(1);
     const saved = await t.store.get('Cgroup0001');
     expect(saved?.state.meals.find((m) => m.date === TODAY)?.kind).toBe('raku');
-    expect(saved?.state.chat.filter((m) => m.from === 'user').map((m) => m.text)).toEqual(['今日は無理']);
+    expect(saved?.state.chat.filter((m) => m.from === 'user').map((m) => m.text)).toEqual(['']);
   });
 
   it('ほかの人へのメンション（LINE の表示名）は、保存も LLM への送信もしない。ニックネームが入っていれば、その名前にする', async () => {
@@ -247,7 +251,7 @@ describe('グループ・ルーム', () => {
     expect(llm.interpret.mock.calls.map((c) => c[0].text)).toEqual(['水曜は飲み会', 'パパ 水曜は飲み会']);
     const saved = await t.store.get('Cgroup0001');
     const userTexts = saved?.state.chat.filter((m) => m.from === 'user').map((m) => m.text);
-    expect(userTexts).toEqual(['水曜は飲み会', 'パパ 水曜は飲み会']);
+    expect(userTexts).toEqual(['', '']);
     expect(JSON.stringify(saved)).not.toContain('太郎');
     expect(saved?.state.meals.find((m) => m.date === '2026-11-11')?.absentMemberIds).toEqual(['member_2']);
   });
@@ -304,6 +308,21 @@ describe('postback', () => {
     expect(messagesOf(t.replies()[1])[0].text).toContain('おつかれさまでした');
   });
 
+  it('1つの書き込みで提案が2つできても、1つ目の提案を LINE のボタンで受けられる', async () => {
+    const t = await setup();
+    await t.webhook([textEvent(GROUP, '@きめとく 鶏むねが安い。豚こまも安い')]);
+    const proposals = (await t.store.get('Cgroup0001'))!.state.proposals;
+    expect(proposals).toHaveLength(2);
+    const [first, second] = proposals;
+    const items = expectWithinLimits(messagesOf(t.replies()[0]));
+    const accept = items.find((i) => i.action.data === JSON.stringify({ type: 'accept_proposal', proposalId: first.id }));
+    expect(accept?.action.label).toBe(`${formatJa(first.date)} 替える`);
+    await t.webhook([postbackEvent(GROUP, accept!.action.data)]);
+    const after = (await t.store.get('Cgroup0001'))!.state;
+    expect(after.meals.find((m) => m.date === first.date)?.dishIds[0]).toBe(first.toDishIds[0]);
+    expect(after.proposals.map((p) => p.id)).toEqual([second.id]);
+  });
+
   it('不正な data は無視する（返信も保存もしない）', async () => {
     const t = await setup();
     await t.webhook([
@@ -352,6 +371,48 @@ describe('follow / join', () => {
     expect(messages[0].text).toBe(WELCOME_BACK);
     expect(messages.some((m) => m.text.includes('11/9(月)〜の夕食'))).toBe(true);
     expect((await t.store.get('Uuser0002'))?.state.meals.find((m) => m.date === TODAY)?.kind).toBe('raku');
+  });
+});
+
+describe('保存するもの・消すとき', () => {
+  const unfollowEvent = (source: object) => ({ type: 'unfollow', mode: 'active', timestamp: 1, webhookEventId: `01UNFOLLOW${++seq}`, source });
+  const leaveEvent = (source: object) => ({ type: 'leave', mode: 'active', timestamp: 1, webhookEventId: `01LEAVE${++seq}`, source });
+
+  it('1対1の発言は、献立と関係のないものも原文を保存しない', async () => {
+    const t = await setup();
+    const unrelated = '今日は会社で山田部長に怒られた。電話番号は090-1234-5678';
+    await t.webhook([followEvent(USER), textEvent(USER, unrelated)]);
+    expect(t.replies()).toHaveLength(2);
+    const [file] = await t.files();
+    const raw = await readFile(path.join(t.dir, file), 'utf8');
+    for (const part of ['山田部長', '090-1234-5678', '怒られた']) expect(raw).not.toContain(part);
+    const saved = await t.store.get('Uuser0002');
+    expect(saved?.state.chat.filter((m) => m.from === 'user').map((m) => m.text)).toEqual(['']);
+    // 前の保存データに原文が残っていても、次に保存するときに空にする
+    await t.store.update('Uuser0002', (cur) =>
+      cur ? { ...cur, state: { ...cur.state, chat: [...cur.state.chat, { id: 'old_1', from: 'user', text: unrelated, at: `${TODAY}T08:00:00+09:00` }] } } : null,
+    );
+    expect(await readFile(path.join(t.dir, file), 'utf8')).not.toContain('山田部長');
+  });
+
+  it('unfollow（ブロック）で1対1の記録を、leave（退出）でグループの記録を消す。cron も数えない', async () => {
+    const t = await setup();
+    await t.webhook([followEvent(USER), textEvent(USER, '卵切れた'), joinEvent(GROUP), textEvent(GROUP, '@きめとく 今日は無理')]);
+    expect(await t.files()).toHaveLength(2);
+    await t.webhook([unfollowEvent(USER)]);
+    expect(await t.store.get('Uuser0002')).toBeNull();
+    expect(await t.store.get('Cgroup0001')).not.toBeNull();
+    await t.webhook([leaveEvent(GROUP)]);
+    expect(await t.store.get('Cgroup0001')).toBeNull();
+    expect(await t.files()).toEqual([]);
+    const cron = await t.app.request('/cron/evening', { method: 'POST', headers: { authorization: `Bearer ${CRON_SECRET}` } });
+    expect(await cron.json()).toEqual({ households: 0, pushed: 0 });
+    // また友だち追加されたら、新しく作る
+    await t.webhook([followEvent(USER)]);
+    expect((await t.store.get('Uuser0002'))?.state.chat.filter((m) => m.from === 'user')).toEqual([]);
+    expect(messagesOf(t.replies().at(-1)!)[0].text).toContain('はじめまして');
+    // ログに LINE の ID は出さない
+    expect(t.logger.lines.join('\n')).not.toContain('Uuser0002');
   });
 });
 
@@ -406,6 +467,30 @@ describe('LLM での解釈（webhook）', () => {
     expect(messagesOf(t.replies()[0]).some((m) => m.text.includes('パパの分を減らしました'))).toBe(true);
   });
 
+  it('LLM が返ってこなくても全体の上限でルールに戻り、同じ世帯のボタンも上限＋少しで返る', async () => {
+    const llmLogger = memoryLogger();
+    const client: LlmClient = {
+      messages: {
+        // 返事をせず、signal が来たら中断する
+        parse: (_params, options) =>
+          new Promise((_resolve, reject) => {
+            options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          }),
+      },
+    };
+    const llm = createLlmInterpreter({ client, catalog: defaultCatalog, logger: llmLogger, totalTimeoutMs: 300 });
+    const t = await setup({ llm });
+    const started = Date.now();
+    await Promise.all([
+      t.webhook([textEvent(USER, '今日は無理')]),
+      t.webhook([postbackEvent(USER, JSON.stringify({ type: 'open_week' }))]),
+    ]);
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(t.replies()).toHaveLength(2);
+    expect((await t.store.get('Uuser0002'))?.state.meals.find((m) => m.date === TODAY)?.kind).toBe('raku');
+    expect(llmLogger.lines.join('\n')).toContain('error=timeout');
+  });
+
   it('LLM が失敗したり、検証で全部落ちたりしたら、ルールで解釈する', async () => {
     const t = await setup({ llm: fakeLlm([{ type: 'sale', ingredientId: 'unicorn_meat' }]) });
     await t.webhook([textEvent(USER, '今日は無理')]);
@@ -417,6 +502,8 @@ describe('LLM での解釈（webhook）', () => {
 });
 
 describe('POST /api/parse', () => {
+  // 開発用の口なので、PARSE_API_ENABLED のときだけ使える（このブロックでは有効にして確かめる）
+  const parseSetup = (opts: SetupOptions = {}) => setup({ ...opts, config: { parseApiEnabled: true, ...opts.config } });
   // 画面は state.household.members をそのまま送る（exclusions つき。role がない人もいる）
   const members = [
     { id: 'member_1', nickname: 'ママ', ageBand: 'adult', role: 'parent', exclusions: [] },
@@ -431,7 +518,7 @@ describe('POST /api/parse', () => {
     });
 
   it('LLM がなければルールの結果（source: rules）', async () => {
-    const t = await setup();
+    const t = await parseSetup();
     const res = await post(t, { text: '@きめとく 水曜はパパが飲み会、卵切れた', today: TODAY, members });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -448,7 +535,7 @@ describe('POST /api/parse', () => {
       { type: 'sale', ingredientId: 'chicken_breast' },
       { type: 'request', date: '2026-11-13', dishId: 'curry_rice' },
     ]);
-    const t = await setup({ llm });
+    const t = await parseSetup({ llm });
     const res = await post(t, { text: 'むね肉がお買い得。金曜はカレー', today: TODAY, members });
     expect(await res.json()).toEqual({
       commands: [
@@ -466,7 +553,7 @@ describe('POST /api/parse', () => {
   });
 
   it('マスタにない ingredientId や不正な日付は落ち、全部落ちたらルールに戻る', async () => {
-    const partial = await setup({
+    const partial = await parseSetup({
       llm: fakeLlm([
         { type: 'sale', ingredientId: 'unicorn_meat' },
         { type: 'absence', date: '2026-02-30', memberRef: 'member_2' },
@@ -478,7 +565,7 @@ describe('POST /api/parse', () => {
       source: 'llm',
     });
 
-    const none = await setup({
+    const none = await parseSetup({
       llm: fakeLlm([
         { type: 'sale', ingredientId: 'unicorn_meat' },
         { type: 'absence', date: '2026-02-30', memberRef: 'member_2' },
@@ -491,7 +578,7 @@ describe('POST /api/parse', () => {
   });
 
   it('入力を検査する（text は500文字まで、today は ISODate）', async () => {
-    const t = await setup();
+    const t = await parseSetup();
     expect((await post(t, { text: 'あ'.repeat(501), today: TODAY, members })).status).toBe(400);
     expect((await post(t, { text: '今日は無理', today: '2026-02-30', members })).status).toBe(400);
     expect((await post(t, { text: '今日は無理', today: TODAY })).status).toBe(400);
@@ -501,7 +588,7 @@ describe('POST /api/parse', () => {
   });
 
   it('CORS は CORS_ORIGIN だけ許可する', async () => {
-    const t = await setup();
+    const t = await parseSetup();
     const ok = await post(t, { text: '今日は無理', today: TODAY, members });
     expect(ok.headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
     const other = await post(t, { text: '今日は無理', today: TODAY, members }, 'https://evil.example');
@@ -511,6 +598,62 @@ describe('POST /api/parse', () => {
       headers: { origin: 'http://localhost:5173', 'access-control-request-method': 'POST' },
     });
     expect(preflight.headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
+  });
+
+  it('既定（PARSE_API_ENABLED なし）では 404。LLM も呼ばない', async () => {
+    const llm = fakeLlm([{ type: 'today_impossible' }]);
+    const t = await setup({ llm });
+    expect((await post(t, { text: '今日は無理', today: TODAY, members })).status).toBe(404);
+    const preflight = await t.app.request('/api/parse', {
+      method: 'OPTIONS',
+      headers: { origin: 'http://localhost:5173', 'access-control-request-method': 'POST' },
+    });
+    expect(preflight.status).toBe(404);
+    expect(preflight.headers.get('access-control-allow-origin')).toBeNull();
+    expect(llm.interpret).not.toHaveBeenCalled();
+  });
+
+  it('許可していないオリジンからは 403。LLM は呼ばない', async () => {
+    const llm = fakeLlm([{ type: 'today_impossible' }]);
+    const t = await parseSetup({ llm });
+    for (const origin of ['https://evil.example', 'null', 'http://localhost:5174']) {
+      const res = await post(t, { text: '今日は無理', today: TODAY, members }, origin);
+      expect(res.status).toBe(403);
+      expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    }
+    expect(llm.interpret).not.toHaveBeenCalled();
+  });
+
+  it('JSON でない本文（ほかのサイトのフォームなど）は 415。LLM は呼ばない', async () => {
+    const llm = fakeLlm([{ type: 'today_impossible' }]);
+    const t = await parseSetup({ llm });
+    const body = JSON.stringify({ text: '今日は無理', today: TODAY, members });
+    for (const type of ['text/plain', 'application/x-www-form-urlencoded', 'multipart/form-data; boundary=x', null]) {
+      const headers: Record<string, string> = type ? { 'content-type': type } : {};
+      const res = await t.app.request('/api/parse', { method: 'POST', headers, body });
+      expect(res.status).toBe(415);
+    }
+    // 許可していないオリジンから、プリフライトの要らない形で送っても届かない
+    const simple = await t.app.request('/api/parse', {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain', origin: 'https://evil.example' },
+      body,
+    });
+    expect(simple.status).toBe(403);
+    expect(llm.interpret).not.toHaveBeenCalled();
+  });
+
+  it('Origin のないリクエスト（curl など）と、charset 付きの JSON は受ける', async () => {
+    const llm = fakeLlm([{ type: 'today_impossible' }]);
+    const t = await parseSetup({ llm });
+    const res = await t.app.request('/api/parse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ text: '今日は無理', today: TODAY, members }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ commands: [{ type: 'today_impossible' }], source: 'llm' });
+    expect(llm.interpret).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -580,5 +723,35 @@ describe('POST /cron/evening', () => {
     await seedRecord(t.store, { key: 'Upaid', catalog: defaultCatalog, today: '2026-11-07', plan: 'paid' });
     expect(await (await cron(t, `Bearer ${CRON_SECRET}`)).json()).toEqual({ households: 1, pushed: 0 });
     expect((await t.store.get('Upaid'))?.pendingPush.length).toBeGreaterThan(0);
+  });
+
+  it('有料版：朝の書き込みで配信がたまっても、昼に献立を変えたら、夕方は今の献立の文面で送る', async () => {
+    const clock = { now: new Date('2026-11-09T23:00:00Z') }; // 日本時間 11/10(火) 08:00
+    const t = await setup({ clock });
+    await seedRecord(t.store, { key: 'Uuser0002', catalog: defaultCatalog, today: '2026-11-09', plan: 'paid' });
+    await t.webhook([textEvent(USER, '今日の献立')]);
+    const morning = (await t.store.get('Uuser0002'))!;
+    const queued = morning.pendingPush.find((m) => m.card?.kind === 'meal' && m.card.date === '2026-11-10')!;
+    expect(queued).toBeDefined();
+
+    clock.now = new Date('2026-11-10T03:00:00Z'); // 12:00
+    await t.webhook([textEvent(USER, '今日は無理')]);
+    const noon = (await t.store.get('Uuser0002'))!;
+    const expected = applyAction(noon.state, defaultCatalog, { type: 'open_today' }).replies[0];
+    expect(expected.text).not.toBe(queued.text);
+
+    clock.now = new Date('2026-11-10T08:00:00Z'); // 17:00
+    expect(await (await cron(t, `Bearer ${CRON_SECRET}`)).json()).toEqual({ households: 1, pushed: 1 });
+    const pushed = messagesOf(t.pushes()[0]);
+    expectWithinLimits(pushed);
+    // 本文とカードが、どちらも今の献立のもの（ためたときの文面は送らない）
+    const [today] = toLineMessages(noon.state, defaultCatalog, [expected]);
+    expect(pushed.map((m) => m.text)).toContain(today.text);
+    expect(pushed.some((m) => m.text.includes(queued.text))).toBe(false);
+    if (noon.state.meals.find((m) => m.date === '2026-11-10')?.kind === 'raku') {
+      const types = pushed.at(-1)!.quickReply!.items.map((i) => (JSON.parse(i.action.data) as { type: string }).type);
+      expect(types).not.toContain('today_impossible');
+    }
+    expect((await t.store.get('Uuser0002'))?.pendingPush).toEqual([]);
   });
 });

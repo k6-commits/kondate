@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import type { Action, AppState, Catalog, ISODate, PlannedMeal } from '../../engine';
 import { addDays, alternativesFor, findDish, formatJa, weekStartOf, weeklySummary } from '../../engine';
-import { REACTIONS, cls } from '../lib';
+import { REACTIONS, SERVINGS_NOTE, cls, hasPartialServings } from '../lib';
 import { SummaryBody } from './ChatCard';
 import { MealDetails, RakuBadge, StatusBadge } from './MealDetails';
 import { Sheet } from './Sheet';
@@ -25,14 +25,29 @@ export function WeekSheet({
   const thisWeek = weekStartOf(state.today);
   const nextWeek = addDays(thisWeek, 7);
   const lastWeek = addDays(thisWeek, -7);
-  const hasNext = state.meals.some((m) => weekStartOf(m.date) === nextWeek);
-  const shown = weekStart === nextWeek && hasNext ? nextWeek : thisWeek;
-  const meals = state.meals.filter((m) => weekStartOf(m.date) === shown);
+  const mealsOf = (ws: ISODate) => state.meals.filter((m) => weekStartOf(m.date) === ws);
+  const hasNext = mealsOf(nextWeek).length > 0;
+  // 今週の献立日がもう残っていない（すべて過ぎた、または今週の献立がない）。
+  const thisWeekOver = mealsOf(thisWeek).every((m) => m.date < state.today);
+  const shown =
+    weekStart === lastWeek && mealsOf(lastWeek).length > 0
+      ? lastWeek // トークに残っている先週のカードから開いた
+      : weekStart === nextWeek && hasNext
+        ? nextWeek
+        : weekStart === thisWeek
+          ? thisWeek
+          : thisWeekOver && hasNext
+            ? nextWeek // メニューから開いた日曜など：これからの献立がある週を開く
+            : thisWeek;
+  const meals = mealsOf(shown);
   const lastHasRecord = weeklySummary(state, catalog, lastWeek).plannedDays > 0;
+  // 来週を開いたときは、終わった今週の振り返りを上に出す（トークの「今週の献立」の返事と同じ）。
+  const thisWeekSummary = shown === nextWeek && thisWeekOver && weeklySummary(state, catalog, thisWeek).plannedDays > 0;
   const shownDone = meals.length > 0 && meals.every((m) => m.date < state.today);
+  const title = shown === nextWeek ? '来週の献立' : shown === lastWeek ? '先週の献立' : '今週の献立';
 
   return (
-    <Sheet id="week" title={shown === nextWeek ? '来週の献立' : '今週の献立'} onBack={onBack}>
+    <Sheet id="week" title={title} onBack={onBack}>
       <div className="sheet-tools">
         <div className="seg" role="group" aria-label="表示する週">
           <button type="button" className="seg-btn" aria-pressed={shown === thisWeek} onClick={() => onWeekChange(thisWeek)}>
@@ -52,12 +67,18 @@ export function WeekSheet({
           {formatJa(shown)}〜{formatJa(addDays(shown, 6))}
         </span>
       </div>
-      {!hasNext ? <p className="hint">来週の献立は、来週の最初の買い物日の前日にできます。</p> : null}
+      {!hasNext && shown !== lastWeek ? <p className="hint">来週の献立は、来週の最初の買い物日の前日にできます。</p> : null}
 
       {shown === thisWeek && lastHasRecord ? (
         <section className="panel" aria-label="先週の振り返り">
           <h3 className="panel-title">先週の振り返り</h3>
           <SummaryBody weekStart={lastWeek} state={state} catalog={catalog} />
+        </section>
+      ) : null}
+      {thisWeekSummary ? (
+        <section className="panel" aria-label="今週の振り返り">
+          <h3 className="panel-title">今週の振り返り</h3>
+          <SummaryBody weekStart={thisWeek} state={state} catalog={catalog} />
         </section>
       ) : null}
 
@@ -77,6 +98,7 @@ export function WeekSheet({
           <SummaryBody weekStart={shown} state={state} catalog={catalog} />
         </section>
       ) : null}
+      {meals.length > 0 && hasPartialServings(state.household.members) ? <p className="hint">{SERVINGS_NOTE}</p> : null}
     </Sheet>
   );
 }

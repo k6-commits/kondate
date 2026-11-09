@@ -80,7 +80,7 @@ describe('デモの家族：開始日（月〜日、旬の違う月）を変え�
     // 卵を含む料理が1つも入らない。要確認の食材を使う料理も入らない。
     expect(eggDishes(s)).toEqual([]);
     expect(safetyViolations(s, catalog)).toEqual([]);
-    // ラク日が1日（3日以上あるとき）、新しい料理が1品以内。全員いる日の人数は大人換算3.2人分。
+    // ラク日が1日（3日以上あるとき）、新しい料理が1品以内。全員いる日の量は4人分（大人換算3.2）。
     expect(freshWeekViolations(week, 1)).toEqual([]);
     expect(s.meals.every((m) => m.servings === 3.2)).toBe(true);
     // 同じ主菜が7日以内に2回出ない。前日と同じたんぱく源が続かない。旬の料理は旬の月だけ。

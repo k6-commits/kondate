@@ -48,7 +48,10 @@ describe('LineEventSchema', () => {
   it('使う種類のイベントだけを読む（ほかは無視する）', () => {
     const source = { type: 'user', userId: 'U1' };
     expect(LineEventSchema.safeParse({ type: 'follow', replyToken: 'r', source }).success).toBe(true);
-    expect(LineEventSchema.safeParse({ type: 'unfollow', source }).success).toBe(false);
+    // ブロック・退出は、記録を消すために読む
+    expect(LineEventSchema.safeParse({ type: 'unfollow', source }).success).toBe(true);
+    expect(LineEventSchema.safeParse({ type: 'leave', source: { type: 'group', groupId: 'C1' } }).success).toBe(true);
+    expect(LineEventSchema.safeParse({ type: 'unsend', source, unsend: { messageId: 'm1' } }).success).toBe(false);
     expect(LineEventSchema.safeParse({ type: 'message', source: { type: 'group' }, message: { type: 'text', text: 'a' } }).success).toBe(
       false,
     );

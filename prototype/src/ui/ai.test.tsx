@@ -2,8 +2,10 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { createInitialState } from '../engine';
 import { DEMO_ONBOARDING, defaultCatalog } from '../data';
+import type { AppState } from '../engine';
 import { AiReader, buildAiInstruction, dateTable, maskNames, toParsedCommands } from './ai';
 import { App } from './App';
+import { STORAGE_KEY } from './storage';
 
 const MONDAY = '2026-11-09';
 const NULLS = {
@@ -56,6 +58,32 @@ describe('送る前の下ごしらえ', () => {
     );
     // 短い名前が、置き換えた id の中に当たらない
     expect(maskNames('ぼくとmem', [{ id: 'member_1', nickname: 'ぼく' }, { id: 'member_2', nickname: 'mem' }])).toBe('member_1とmember_2');
+  });
+
+  it('エンジンが同じ人とみなす表記ゆれ（ひらがな・カタカナ・半角カナ・全角英字・大文字小文字）も id に置き換える', () => {
+    const ms = demo().household.members; // ママ・パパ・はると・ゆい
+    expect(maskNames('週末にユイの誕生日なので何か考えて', ms)).toBe('週末にmember_4の誕生日なので何か考えて');
+    expect(maskNames('ハルトの好きなものを増やしたい', ms)).toBe('member_3の好きなものを増やしたい');
+    expect(maskNames('ﾊﾟﾊﾟの好物を週末に', ms)).toBe('member_2の好物を週末に');
+    expect(maskNames('ぱぱの好物を週末に', ms)).toBe('member_2の好物を週末に');
+    expect(maskNames('ＫＥＮは出張、kenの分はなし', [{ id: 'member_9', nickname: 'Ken' }])).toBe('member_9は出張、member_9の分はなし');
+  });
+
+  it('1文字の名前は、かなでないとき（漢字・英字）だけ置き換える（かな1文字は、ほかの言葉を壊すので置き換えない）', () => {
+    expect(maskNames('ゆでたまご', [{ id: 'member_1', nickname: 'ゆ' }])).toBe('ゆでたまご');
+    expect(maskNames('ユでたまご', [{ id: 'member_1', nickname: 'ユ' }])).toBe('ユでたまご');
+    expect(maskNames('翔は部活', [{ id: 'member_5', nickname: '翔' }])).toBe('member_5は部活');
+    // 英字1文字はエンジンが名前として読む（「明日はKがいない」）ので、全角・小文字も含めて置き換える
+    expect(maskNames('明日はKがいない、Ｋの好物は？ kも', [{ id: 'member_4', nickname: 'K' }])).toBe(
+      '明日はmember_4がいない、member_4の好物は? member_4も',
+    );
+  });
+
+  it('AI に送る文に、表記ゆれの名前が残らない', () => {
+    const s = demo();
+    const text = buildAiInstruction(maskNames('ハルトとﾕｲの好きなものを、ぱぱの帰りが早い日に', s.household.members), s, defaultCatalog);
+    expect(text.endsWith('member_3とmember_4の好きなものを、member_2の帰りが早い日に')).toBe(true);
+    for (const name of ['ハルト', 'ﾕｲ', 'ユイ', 'ぱぱ', 'パパ', 'はると', 'ゆい', 'ママ']) expect(text).not.toContain(name);
   });
 
   it('今日から14日分の日付と曜日の表を作る', () => {
@@ -306,5 +334,109 @@ describe('画面での AI の読み取り', () => {
     send('ふわふわのやつ');
     expect(within(log()).getByText('ルールで読み取り')).toBeTruthy();
     expect(json).not.toHaveBeenCalled();
+  });
+
+  it('画面から送るときも、表記ゆれの名前（カタカナ）を AI に送らない', async () => {
+    const { json } = mockClaude(async () => ({ commands: [] }));
+    render(<App todayFn={() => MONDAY} />);
+    await waitFor(() => expect(form().getAttribute('data-ai-status')).toBe('claude'));
+    send('ハルトの好きなものを増やしたい');
+    await waitFor(() => expect(within(log()).getByText('ルールで読み取り')).toBeTruthy());
+    expect(json).toHaveBeenCalledTimes(1);
+    const sent = json.mock.calls[0][0] as string;
+    expect(sent.endsWith('member_3の好きなものを増やしたい')).toBe(true);
+    expect(sent).not.toContain('ハルト');
+  });
+
+  it('読み取りのあいだにリセットしたら、前の状態で読んだ結果は入れない。読み取り中は［翌日へ進む］を押せない', async () => {
+    let release: (v: unknown) => void = () => {};
+    mockClaude(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const saved = () => JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null') as AppState;
+    const advance = () => screen.getByRole('button', { name: '翌日へ進む' }) as HTMLButtonElement;
+    render(<App todayFn={() => MONDAY} />);
+    await waitFor(() => expect(form().getAttribute('data-ai-status')).toBe('claude'));
+    send('ふわふわのやつ');
+    expect(advance().disabled).toBe(true);
+    fireEvent.click(advance());
+    expect(saved().today).toBe(MONDAY);
+
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'メニュー' })).getByRole('button', { name: '家族と設定' }));
+    fireEvent.click(screen.getByRole('button', { name: 'リセット' }));
+    fireEvent.click(screen.getByRole('button', { name: '本当にリセットする' }));
+    const afterReset = saved().chat.length;
+    // リセット前の状態で読んだ「明日はパパ（member_2）がいない」が戻ってくる
+    release({ commands: [{ type: 'absence', ...NULLS, date: '2026-11-10', memberRef: 'member_2' }] });
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('さっきの書き込みは使いませんでした'));
+    const s = saved();
+    expect(s.chat.length).toBe(afterReset);
+    expect(s.chat.some((m) => m.from === 'user')).toBe(false);
+    expect(s.meals.every((m) => m.absentMemberIds.length === 0)).toBe(true);
+    expect(advance().disabled).toBe(false);
+  });
+
+  it('読み取りのあいだに家族を外したり、データを読み込んだりしても、前の状態で読んだ結果は入れない', async () => {
+    const saved = () => JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null') as AppState;
+    const openHousehold = () =>
+      fireEvent.click(within(screen.getByRole('navigation', { name: 'メニュー' })).getByRole('button', { name: '家族と設定' }));
+    for (const change of ['外す', '読み込む'] as const) {
+      let release: (v: unknown) => void = () => {};
+      mockClaude(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      const { unmount } = render(<App todayFn={() => MONDAY} />);
+      await waitFor(() => expect(form().getAttribute('data-ai-status')).toBe('claude'));
+      const exported = JSON.stringify(saved());
+      send('ふわふわのやつ');
+      openHousehold();
+      if (change === '外す') {
+        // パパ（member_2）を外す。読み取りの結果は「member_2 がいない」なので、入れると外した人を指してしまう。
+        const card = [...document.querySelectorAll('[data-sheet="household"] .member-card')].find(
+          (c) => c.querySelector('.member-name')?.textContent === 'パパ',
+        ) as HTMLElement;
+        fireEvent.click(within(card).getByRole('button', { name: '外す' }));
+        fireEvent.click(within(screen.getByRole('group', { name: 'パパを外すかの確認' })).getByRole('button', { name: '外す' }));
+      } else {
+        fireEvent.change(screen.getByLabelText('読み込み'), { target: { value: exported } });
+        fireEvent.click(screen.getByRole('button', { name: '読み込む' }));
+      }
+      const before = saved();
+      release({ commands: [{ type: 'absence', ...NULLS, date: '2026-11-10', memberRef: 'member_2' }] });
+      await waitFor(() => expect(screen.getByRole('status').textContent).toContain('さっきの書き込みは使いませんでした'));
+      const s = saved();
+      expect(s.chat.length).toBe(before.chat.length);
+      expect(s.chat.some((m) => m.from === 'user' && m.text.includes('ふわふわのやつ'))).toBe(false);
+      expect(s.meals.every((m) => m.absentMemberIds.length === 0)).toBe(true);
+      unmount();
+      window.localStorage.clear();
+      window.location.hash = '';
+    }
+  });
+
+  it('読み取りのあいだに何も入れ替えなければ、結果をそのまま使う', async () => {
+    let release: (v: unknown) => void = () => {};
+    mockClaude(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    render(<App todayFn={() => MONDAY} />);
+    await waitFor(() => expect(form().getAttribute('data-ai-status')).toBe('claude'));
+    send('ふわふわのやつ');
+    // 読み取り中にシートを開いて閉じても（状態は入れ替えていない）、結果は使う
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'メニュー' })).getByRole('button', { name: '今週の献立' }));
+    fireEvent.click(screen.getByRole('button', { name: '戻る' }));
+    release({ commands: [{ type: 'absence', ...NULLS, date: '2026-11-10', memberRef: 'member_2' }] });
+    await waitFor(() => expect(within(log()).getByText('AIで読み取り')).toBeTruthy());
+    const s = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null') as AppState;
+    expect(s.meals.find((m) => m.date === '2026-11-10')?.absentMemberIds).toEqual(['member_2']);
   });
 });

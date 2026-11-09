@@ -15,6 +15,19 @@ export interface MemberDraft {
 
 const AGE_BANDS: AgeBand[] = ['adult', 'teen', 'child', 'preschool', 'infant'];
 
+/** 子どもの年齢帯。これを選んだら、続柄の「わたし」「パートナー」は「子ども」に直す。 */
+const CHILD_BANDS: AgeBand[] = ['teen', 'child', 'preschool', 'infant'];
+
+/**
+ * 新しく加える家族の入力の既定（index は何人目か、0 から）。
+ * 1人目は「わたし」、2人目は「パートナー」（どちらも大人）、3人目からは「子ども」（小学生）で始める。
+ */
+export function emptyMemberDraft(index: number): MemberDraft {
+  if (index === 0) return { nickname: '', ageBand: 'adult', role: 'parent', exclusions: [] };
+  if (index === 1) return { nickname: '', ageBand: 'adult', role: 'partner', exclusions: [] };
+  return { nickname: '', ageBand: 'child', role: 'child', exclusions: [] };
+}
+
 // ---------------------------------------------------------------------------
 // 曜日・数・プラン
 // ---------------------------------------------------------------------------
@@ -31,25 +44,27 @@ export function WeekdayPicker({
   min?: number;
 }) {
   return (
-    <div className="weekdays" role="group" aria-label={label}>
-      {WEEKDAYS_MON_FIRST.map((wd) => {
-        const on = value.includes(wd);
-        const locked = on && value.length <= min;
-        return (
-          <button
-            key={wd}
-            type="button"
-            className={cls('wd-btn', wd === 0 && 'is-sun', wd === 6 && 'is-sat')}
-            aria-pressed={on}
-            aria-label={`${WEEKDAY_JA[wd]}曜日`}
-            disabled={locked}
-            title={locked ? '1つ以上選んでください' : undefined}
-            onClick={() => onChange(on ? value.filter((x) => x !== wd) : [...value, wd].sort((a, b) => a - b))}
-          >
-            {WEEKDAY_JA[wd]}
-          </button>
-        );
-      })}
+    <div className="weekdays-box">
+      <div className="weekdays" role="group" aria-label={label}>
+        {WEEKDAYS_MON_FIRST.map((wd) => {
+          const on = value.includes(wd);
+          const locked = on && value.length <= min;
+          return (
+            <button
+              key={wd}
+              type="button"
+              className={cls('wd-btn', wd === 0 && 'is-sun', wd === 6 && 'is-sat')}
+              aria-pressed={on}
+              aria-label={`${WEEKDAY_JA[wd]}曜日`}
+              disabled={locked}
+              title={locked ? '1つ以上選んでください' : undefined}
+              onClick={() => onChange(on ? value.filter((x) => x !== wd) : [...value, wd].sort((a, b) => a - b))}
+            >
+              {WEEKDAY_JA[wd]}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -253,7 +268,19 @@ export function MemberEditor({
         <div className="choice-row">
           {AGE_BANDS.map((b) => (
             <label key={b} className={cls('choice', value.ageBand === b && 'is-on')}>
-              <input type="radio" name={`${idPrefix}-age`} checked={value.ageBand === b} onChange={() => set({ ageBand: b })} />
+              <input
+                type="radio"
+                name={`${idPrefix}-age`}
+                checked={value.ageBand === b}
+                onChange={() =>
+                  set(
+                    // 子どもの年齢にしたら、続柄の「わたし」「パートナー」は「子ども」にする（そのままだと「小学生・パートナー」になる）。
+                    CHILD_BANDS.includes(b) && (!value.role || value.role === 'parent' || value.role === 'partner')
+                      ? { ageBand: b, role: 'child' }
+                      : { ageBand: b },
+                  )
+                }
+              />
               {AGE_BAND_LABEL[b]}
             </label>
           ))}
@@ -517,7 +544,11 @@ export function DishPicker({
               <Icon name="plus" size={15} />「{query.trim()}」を追加（マスタにない料理）
             </button>
           ) : null}
-          {matches.length === 0 ? <p className="hint">マスタに見つかりませんでした。名前だけで追加できます（材料がわからないので、除外のある家族では「要確認」になります）。</p> : null}
+          {matches.length === 0 ? (
+            <p className="hint">
+              マスタに見つかりませんでした。名前だけで追加できます（材料がわからないので、アレルギーの除外がある家族では「要確認」になり、献立には出ません）。
+            </p>
+          ) : null}
         </div>
       ) : (
         <div className="dish-groups">

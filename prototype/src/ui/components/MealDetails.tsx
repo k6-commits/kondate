@@ -1,7 +1,7 @@
 // 1日の献立の中身（トークのカードと「今週の献立」で共通）。すべて今の state から描く。
 import type { AppState, Catalog, PlannedMeal } from '../../engine';
 import { findDish } from '../../engine';
-import { STATUS_LABEL, absentNames, cls, dishRoleLabel, mealMinutes, servingsLabel } from '../lib';
+import { STATUS_LABEL, absentNames, cls, dishRoleLabel, eatersOf, mealMinutes, servingsLabel } from '../lib';
 import { Icon } from './Icon';
 
 export function StatusBadge({ meal }: { meal: PlannedMeal }) {
@@ -43,6 +43,11 @@ export function MealDetails({
 }) {
   const minutes = mealMinutes(state, catalog, meal);
   const absent = absentNames(state, meal);
+  // 新しい料理（はじめて作る料理）には、作り方の手がかりを添える（アプリは作り方の本文を持たない）。
+  const newNames =
+    meal.status === 'planned'
+      ? meal.dishIds.filter((id) => meal.newDishIds.includes(id)).map((id) => findDish(state, catalog, id)?.name ?? id)
+      : [];
   return (
     <div className="meal">
       {meal.dishIds.length === 0 ? (
@@ -65,13 +70,21 @@ export function MealDetails({
       )}
       <p className="meal-meta">
         {minutes > 0 ? <span className="num">{minutes}分</span> : null}
-        <span className="num">{servingsLabel(meal.servings)}</span>
+        <span className="num">{servingsLabel(meal.servings, eatersOf(state, meal).length)}</span>
         {absent.length > 0 ? <span>{absent.join('・')}はいません</span> : null}
       </p>
       {meal.reasons.length > 0 && !compact ? (
         <p className="meal-line">
           <span className="meal-key">理由</span>
           <span>{meal.reasons.join('／')}</span>
+        </p>
+      ) : null}
+      {newNames.length > 0 && !compact ? (
+        <p className="meal-line">
+          <span className="meal-key">作り方</span>
+          <span>
+            {newNames.map((n) => `「${n}」`).join('')}ははじめての料理です。作り方は、料理名でレシピを探してください。
+          </span>
         </p>
       ) : null}
       <Warnings lines={meal.warnings} />

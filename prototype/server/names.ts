@@ -26,6 +26,19 @@ export function usableNickname(nickname: string): boolean {
   return [...base].length > 1 || HAN_CHAR.test(base);
 }
 
+/**
+ * LLM に送る前に id に置き換える名前か。エンジン（parser の名前の照合）が名前として読むものと同じにする：
+ * 2文字以上か、1文字ならかな（ひらがな・カタカナ）でないもの（漢字・英字など）。
+ * かな1文字は、ほかの言葉の一部（「ゆでたまご」の「ゆ」）に当たりやすく、エンジンも名前として読まない。
+ * 英字1文字（「K」）はエンジンが名前として読むので、置き換えないと LLM に名前が渡る。
+ * 画面の maskNames（src/ui/ai.ts）も同じ決まり。照合（nicknameIn）は、これより厳しい usableNickname を使う。
+ */
+export function maskableNickname(nickname: string): boolean {
+  const base = nickname.normalize('NFKC').trim();
+  if (!base) return false;
+  return [...base].length > 1 || /[^\u3040-\u309f]/u.test(toHiragana(base));
+}
+
 /** 文の中に出てくる家族のニックネーム（長いものを優先）。なければ undefined。 */
 export function nicknameIn(text: string, members: Pick<Member, 'nickname'>[]): string | undefined {
   const folded = foldName(text);

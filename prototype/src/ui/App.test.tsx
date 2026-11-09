@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import type { AppState } from '../engine';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type { AppState, ChatMessage } from '../engine';
 import { AISLE_ORDER, advanceDay, applyAction, createInitialState, householdNotices } from '../engine';
 import { DEMO_ONBOARDING, defaultCatalog } from '../data';
-import { App, ROUTES } from './App';
-import { STORAGE_KEY } from './storage';
+import { App, ROUTES, WIDE_QUERY } from './App';
+import { STORAGE_KEY, UI_STORAGE_KEY } from './storage';
+import { supersededCards } from './components/Talk';
 
 const MONDAY = '2026-11-09';
 const todayFn = () => MONDAY;
@@ -40,6 +41,43 @@ function menu(): HTMLElement {
   return screen.getByRole('navigation', { name: 'メニュー' });
 }
 
+function uiPrefs(): Record<string, unknown> {
+  return JSON.parse(window.localStorage.getItem(UI_STORAGE_KEY) ?? '{}') as Record<string, unknown>;
+}
+
+/** window.matchMedia の偽物（jsdom にはない）。set で幅を変えたことにする。 */
+function mockMatchMedia(wide: boolean) {
+  let matches = wide;
+  const listeners = new Set<() => void>();
+  const mql = {
+    media: WIDE_QUERY,
+    get matches() {
+      return matches;
+    },
+    onchange: null,
+    addEventListener: (_: string, fn: () => void) => listeners.add(fn),
+    removeEventListener: (_: string, fn: () => void) => listeners.delete(fn),
+    addListener: (fn: () => void) => listeners.add(fn),
+    removeListener: (fn: () => void) => listeners.delete(fn),
+    dispatchEvent: () => true,
+  };
+  Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: vi.fn(() => mql) });
+  return {
+    set(next: boolean) {
+      matches = next;
+      act(() => listeners.forEach((fn) => fn()));
+    },
+  };
+}
+
+function demoBar(): HTMLElement {
+  return document.querySelector('.demo-bar') as HTMLElement;
+}
+
+function talkLayer(): HTMLElement {
+  return document.querySelector('.talk-layer') as HTMLElement;
+}
+
 beforeEach(() => {
   window.localStorage.clear();
   window.location.hash = '';
@@ -48,6 +86,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  Reflect.deleteProperty(window, 'matchMedia');
 });
 
 describe('はじめの表示', () => {
@@ -110,11 +149,16 @@ describe('トーク', () => {
     expect(within(talkLog()).getByText(/卵を「なし」にしました/)).toBeTruthy();
   });
 
-  it('「金曜はカレーがいい」は、卵アレルギーの家なので「要確認」として断る', () => {
+  it('「金曜はカレーがいい」は、卵アレルギーの家なので「要確認」として出さず、キーマカレーを代わりに提案する（案内の文と同じ）', () => {
     render(<App todayFn={todayFn} />);
     const examples = screen.getByRole('group', { name: 'ためしに送る書き込み' });
     fireEvent.click(within(examples).getByRole('button', { name: '金曜はカレーがいい' }));
-    expect(within(talkLog()).getByText(/「要確認」.*提案していません/)).toBeTruthy();
+    const reply = [...talkLog().querySelectorAll('[data-from="bot"] .bubble--bot')].pop()?.textContent ?? '';
+    expect(reply).toMatch(/「要確認」.*提案していません/);
+    expect(reply).toMatch(/かわりに.*キーマカレー/);
+    const hint = document.querySelector('.about-col .hint')?.textContent ?? '';
+    expect(hint).toContain('「要確認」');
+    expect(hint).toContain('キーマカレーを代わりに提案');
   });
 
   it('日本語入力の変換中の Enter では送らない', () => {
@@ -483,12 +527,15 @@ describe('初回設定', () => {
     expect(within(talkLog()).getByText(/はじめまして。きめとくです。/)).toBeTruthy();
   });
 
-  it('「デモの家族で始める」でデモの状態に戻る', () => {
+  it('「デモの家族で始める」でデモの状態に戻る（今の状態からは、ページの中で確かめてから）', () => {
     render(<App todayFn={todayFn} />);
     fireEvent.click(screen.getByRole('button', { name: '翌日へ進む' }));
     window.location.hash = '#start';
     fireEvent(window, new HashChangeEvent('hashchange'));
     fireEvent.click(screen.getByRole('button', { name: 'デモの家族で始める' }));
+    // 確認の前は変えない（UI-5）
+    expect(saved().today).toBe('2026-11-10');
+    fireEvent.click(screen.getByRole('button', { name: 'デモで始め直す' }));
     expect(saved().today).toBe(MONDAY);
     expect(screen.getByTestId('demo-today').textContent).toBe('11/9(月)');
   });
@@ -538,5 +585,198 @@ describe('保存', () => {
     unmount();
     render(<App todayFn={todayFn} />);
     expect(screen.getByTestId('demo-today').textContent).toBe('11/10(火)');
+  });
+});
+
+describe('案内（このプロトタイプについて）と幅', () => {
+  it('重ねて開いた案内は、幅が広がったら閉じ、トークを操作できる', () => {
+    const media = mockMatchMedia(false);
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(screen.getByRole('button', { name: 'このプロトタイプについて' }));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(talkLayer().hasAttribute('inert')).toBe(true);
+    media.set(true);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(talkLayer().hasAttribute('inert')).toBe(false);
+    expect(demoBar().hasAttribute('inert')).toBe(false);
+    send('卵切れた');
+    expect(userCount()).toBe(1);
+    // 幅を戻しても、閉じたまま
+    media.set(false);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(talkLayer().hasAttribute('inert')).toBe(false);
+  });
+
+  it('広い画面では、案内を重ねて開かず、トークに inert を付けない', () => {
+    mockMatchMedia(true);
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(screen.getByRole('button', { name: 'このプロトタイプについて' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(talkLayer().hasAttribute('inert')).toBe(false);
+  });
+});
+
+describe('フォーカス', () => {
+  it('タイルからシートを開いて、Esc や［戻る］で閉じると、フォーカスがタイルに戻る', () => {
+    render(<App todayFn={todayFn} />);
+    const week = within(menu()).getByRole('button', { name: '今週の献立' });
+    week.focus();
+    fireEvent.click(week);
+    expect((document.activeElement as HTMLElement).classList.contains('sheet-title')).toBe(true);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(document.querySelector('[data-sheet="week"]')).toBeNull();
+    expect(document.activeElement).toBe(week);
+
+    const shop = within(menu()).getByRole('button', { name: '買い物リスト' });
+    shop.focus();
+    fireEvent.click(shop);
+    fireEvent.click(screen.getByRole('button', { name: '戻る' }));
+    expect(document.activeElement).toBe(shop);
+  });
+
+  it('案内を開いているあいだは、デモの操作・トーク・シートにフォーカスが出ず、閉じると「?」に戻る', () => {
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(within(menu()).getByRole('button', { name: '買い物リスト' }));
+    const help = screen.getByRole('button', { name: 'このプロトタイプについて' });
+    help.focus();
+    fireEvent.click(help);
+    const dialog = screen.getByRole('dialog');
+    const close = within(dialog).getByRole('button', { name: '閉じる' });
+    expect(document.activeElement).toBe(close);
+    expect(demoBar().hasAttribute('inert')).toBe(true);
+    expect(talkLayer().hasAttribute('inert')).toBe(true);
+    expect(document.querySelector('[data-sheet="shopping"]')?.closest('[inert]')).not.toBeNull();
+    fireEvent.click(close);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(demoBar().hasAttribute('inert')).toBe(false);
+    expect(document.querySelector('[data-sheet="shopping"]')?.closest('[inert]')).toBeNull();
+    expect(document.activeElement).toBe(help);
+  });
+});
+
+describe('トークの古いカード', () => {
+  const msg = (id: string, card?: ChatMessage['card']): ChatMessage => ({ id, from: 'bot', text: '', at: `${MONDAY}T09:00:00+09:00`, card });
+
+  it('あとに同じ日の1日のカードか、その週の週のカードがあれば、前のカードを古いとみなす', () => {
+    const chat = [
+      msg('a', { kind: 'week', weekStart: MONDAY }),
+      msg('b', { kind: 'meal', date: '2026-11-10' }),
+      msg('c', { kind: 'meal', date: '2026-11-11' }),
+      msg('d', { kind: 'meal', date: '2026-11-10' }),
+      msg('e', { kind: 'week', weekStart: '2026-11-16' }),
+      msg('f', { kind: 'shopping', date: MONDAY }),
+      msg('g', { kind: 'shopping', date: MONDAY }),
+      msg('h'),
+    ];
+    expect([...supersededCards(chat)]).toEqual(['b']);
+    const later = [...chat, msg('i', { kind: 'week', weekStart: MONDAY })];
+    expect([...supersededCards(later)].sort()).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('あとで同じ日のカードが届いたら、前のカードは畳んで「いまの献立を見る」にする（文とカードを食い違わせない）', () => {
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(within(menu()).getByRole('button', { name: '今日のごはん' }));
+    send('今日は無理');
+    const withMeal = [...talkLog().querySelectorAll('[data-from="bot"]')].filter((m) => m.querySelector('[data-card="meal"]'));
+    const older = withMeal[withMeal.length - 2] as HTMLElement;
+    const latest = withMeal[withMeal.length - 1] as HTMLElement;
+    const fold = older.querySelector('details.card-fold') as HTMLDetailsElement;
+    expect(fold).not.toBeNull();
+    expect(fold.open).toBe(false);
+    expect(fold.querySelector('summary')?.textContent).toBe('いまの献立を見る（11/9(月)）');
+    expect(latest.querySelector('details.card-fold')).toBeNull();
+    expect(latest.querySelector('[data-card="meal"] .badge--raku')).not.toBeNull();
+  });
+});
+
+describe('AI の読み取りの文', () => {
+  it('AI につながっていないときに「いつも AI」を選ぶと、ルールで読み取ると知らせる', async () => {
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(within(menu()).getByRole('button', { name: '家族と設定' }));
+    await waitFor(() => expect(screen.getByTestId('ai-status').textContent).toContain('AI につながっていない'));
+    fireEvent.click(screen.getByLabelText(/いつも AI/));
+    expect(screen.getByRole('status').textContent).toBe('今は AI につながっていないので、ルールで読み取ります。');
+    fireEvent.click(screen.getByLabelText(/使わない/));
+    expect(screen.getByRole('status').textContent).toBe('AI を使わずに読み取ります。');
+  });
+
+  it('案内の AI の説明は、設定（おまかせ・いつも AI・使わない）に合わせて変わる', () => {
+    render(<App todayFn={todayFn} />);
+    const aboutAi = () => document.querySelector('.about-col [data-testid="about-ai-mode"]')?.textContent ?? '';
+    expect(aboutAi()).toContain('ルールで読めない書き込みだけ Claude に');
+    fireEvent.click(within(menu()).getByRole('button', { name: '家族と設定' }));
+    fireEvent.click(screen.getByLabelText(/使わない/));
+    expect(aboutAi()).toContain('AI を使わずにルールだけで読み取ります');
+    fireEvent.click(screen.getByLabelText(/いつも AI/));
+    expect(aboutAi()).toContain('毎回 Claude に読み取りを頼みます');
+  });
+
+  it('案内の「鶏むねが安い」の説明は、鶏肉の日がないとき（デモの週）の動きも書く', () => {
+    render(<App todayFn={todayFn} />);
+    expect(document.querySelector('.about-col')?.textContent).toContain('鶏肉の日（なければほかの肉の日）を、鶏むねを使う料理に替える提案をします。');
+    send('鶏むねが安い');
+    const reply = [...talkLog().querySelectorAll('[data-from="bot"] .bubble--bot')].pop()?.textContent ?? '';
+    expect(reply).toMatch(/鶏むね.*に替えますか/);
+  });
+});
+
+describe('リセットと画面の設定', () => {
+  it('リセットで、AI の読み取りの設定・メニューの開閉も既定に戻る', () => {
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(within(menu()).getByRole('button', { name: '家族と設定' }));
+    fireEvent.click(screen.getByLabelText(/使わない/));
+    fireEvent.click(screen.getByRole('button', { name: '戻る' }));
+    fireEvent.click(within(menu()).getByRole('button', { name: 'メニュー' }));
+    expect(uiPrefs()).toMatchObject({ aiMode: 'off', menuOpen: false });
+    window.location.hash = '#household';
+    fireEvent(window, new HashChangeEvent('hashchange'));
+    fireEvent.click(screen.getByRole('button', { name: 'リセット' }));
+    fireEvent.click(screen.getByRole('button', { name: '本当にリセットする' }));
+    expect(uiPrefs()).toMatchObject({ aiMode: 'auto', menuOpen: true, senders: {} });
+    fireEvent.click(within(menu()).getByRole('button', { name: '家族と設定' }));
+    expect((screen.getByLabelText(/おまかせ/) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('設定で献立を作り直しても、トークに利用者の発言（献立を作り直す）は入らない', () => {
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(within(menu()).getByRole('button', { name: '家族と設定' }));
+    fireEvent.click(within(screen.getByRole('group', { name: 'ラク日の数' })).getByRole('button', { name: '0日' }));
+    const chat = saved().chat;
+    expect(chat.some((m) => m.from === 'user')).toBe(false);
+    expect(chat[chat.length - 1].card).toEqual({ kind: 'week', weekStart: MONDAY });
+  });
+});
+
+describe('はじめての人への案内', () => {
+  it('はじめての表示では「試し方を見る」を出し、案内を開いたら覚えて出さない', () => {
+    const { unmount } = render(<App todayFn={todayFn} />);
+    fireEvent.click(screen.getByRole('button', { name: '試し方を見る' }));
+    const dialog = screen.getByRole('dialog');
+    const first = dialog.querySelector('.try-list li') as HTMLElement;
+    expect(first.textContent).toContain('自分の家族で始めてみる');
+    expect(within(first).getByRole('button', { name: 'はじめから設定する' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '試し方を見る' })).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: '閉じる' }));
+    // 「試し方を見る」はもうないので、フォーカスは「?」へ
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'このプロトタイプについて' }));
+    expect(uiPrefs().aboutSeen).toBe(true);
+    unmount();
+    render(<App todayFn={todayFn} />);
+    expect(screen.queryByRole('button', { name: '試し方を見る' })).toBeNull();
+  });
+
+  it('案内の［はじめから設定する］で、初回設定が開く', () => {
+    render(<App todayFn={todayFn} />);
+    fireEvent.click(screen.getByRole('button', { name: 'このプロトタイプについて' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'はじめから設定する' }));
+    expect(screen.getByRole('heading', { name: 'はじめの設定' })).toBeTruthy();
+    expect(window.location.hash).toBe('#start');
+  });
+
+  it('広い画面では「試し方を見る」を出さない（案内が左に出ている）', () => {
+    mockMatchMedia(true);
+    render(<App todayFn={todayFn} />);
+    expect(screen.queryByRole('button', { name: '試し方を見る' })).toBeNull();
+    expect(uiPrefs().aboutSeen).toBe(true);
   });
 });

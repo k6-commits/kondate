@@ -6,6 +6,10 @@ import { interpretWithLlm, minimalState } from './interpret';
 import {
   COMMAND_TYPES,
   DEFAULT_MODEL,
+  LLM_MAX_RETRIES,
+  LLM_MAX_TOKENS,
+  LLM_TIMEOUT_MS,
+  LLM_TOTAL_TIMEOUT_MS,
   LlmOutputSchema,
   buildRequest,
   buildSystemPrompt,
@@ -14,10 +18,11 @@ import {
   dateTable,
   maskNicknames,
   toParsedCommand,
+  readOutput,
   type LlmClient,
   type LlmCommand,
-  type LlmOutput,
   type LlmRequest,
+  type LlmResponse,
 } from './llm';
 import { memoryLogger } from './log';
 import { nicknameIn } from './names';
@@ -41,14 +46,16 @@ function cmd(partial: Partial<LlmCommand> & { type: string }): LlmCommand {
   };
 }
 
+type ParseOptions = { timeout: number; maxRetries: number; signal?: AbortSignal };
+
 /** messages.parse のモック。渡されたパラメータを記録する。 */
-function mockClient(reply: () => Promise<{ stop_reason: string | null; parsed_output: LlmOutput | null }>) {
-  const calls: { params: LlmRequest; options: { timeout: number; maxRetries: number } }[] = [];
+function mockClient(reply: (options: ParseOptions) => Promise<LlmResponse>) {
+  const calls: { params: LlmRequest; options: ParseOptions }[] = [];
   const client: LlmClient = {
     messages: {
       parse: (params, options) => {
         calls.push({ params, options });
-        return reply();
+        return reply(options);
       },
     },
   };
@@ -75,7 +82,13 @@ describe('名前の置き換え（maskNicknames）', () => {
 
   it('1文字のかなの名前は置き換えない（ほかの言葉を壊さない）。1文字の漢字の名前は置き換える', () => {
     expect(maskNicknames('ゆでたまご', [{ id: 'member_1', nickname: 'ゆ' }])).toBe('ゆでたまご');
+    expect(maskNicknames('ゆでたまご', [{ id: 'member_1', nickname: 'ユ' }])).toBe('ゆでたまご');
     expect(maskNicknames('翔は部活', [{ id: 'member_5', nickname: '翔' }])).toBe('member_5は部活');
+  });
+
+  it('英字1文字の名前も置き換える（エンジンが名前として読むので。画面の maskNames と同じ決まり）', () => {
+    expect(maskNicknames('明日はKがいない', [{ id: 'member_2', nickname: 'K' }])).toBe('明日はmember_2がいない');
+    expect(maskNicknames('明日はｋがいない', [{ id: 'member_2', nickname: 'Ｋ' }])).toBe('明日はmember_2がいない');
   });
 });
 
@@ -148,7 +161,9 @@ describe('プロンプト', () => {
   it('パラメータ：モデル・max_tokens・effort・出力の形', () => {
     const req = buildRequest({ text: '今日は無理', today: TODAY, members }, catalog, 'claude-test-model');
     expect(req.model).toBe('claude-test-model');
-    expect(req.max_tokens).toBe(1024);
+    // Opus 5.5 は思考を止められず、思考も max_tokens に数えるので、余裕をとる
+    expect(req.max_tokens).toBe(4096);
+    expect(LLM_MAX_TOKENS).toBe(4096);
     expect(req.output_config.effort).toBe('low');
     expect(req.output_config.format.type).toBe('json_schema');
     const schema = req.output_config.format.schema as {
@@ -231,7 +246,8 @@ describe('createLlmInterpreter', () => {
     const { client, calls } = mockClient(async () => ({
       stop_reason: 'end_turn',
       parsed_output: {
-        commands: [cmd({ type: 'absence', date: '2026-11-11', memberRef: 'member_2' }), cmd({ type: 'nonsense' })],
+        ok: true,
+        output: { commands: [cmd({ type: 'absence', date: '2026-11-11', memberRef: 'member_2' }), cmd({ type: 'nonsense' })] },
       },
     }));
     const llm = createLlmInterpreter({ client, catalog });
@@ -239,7 +255,12 @@ describe('createLlmInterpreter', () => {
     const out = await llm.interpret({ text: '水曜はパパが飲み会', today: TODAY, members });
     expect(out).toEqual([{ type: 'absence', date: '2026-11-11', memberRef: 'member_2' }]);
     expect(calls).toHaveLength(1);
-    expect(calls[0].options).toEqual({ timeout: 10_000, maxRetries: 1 });
+    expect(calls[0].options).toMatchObject({ timeout: LLM_TIMEOUT_MS, maxRetries: LLM_MAX_RETRIES });
+    expect(LLM_TIMEOUT_MS).toBe(10_000);
+    expect(LLM_MAX_RETRIES).toBe(1);
+    // 全体の上限で止めるための signal も渡す（終わったら abort しない）
+    expect(calls[0].options.signal).toBeInstanceOf(AbortSignal);
+    expect(calls[0].options.signal?.aborted).toBe(false);
     expect(calls[0].params.model).toBe('claude-opus-5-5');
     expect(JSON.stringify(calls[0].params.messages)).not.toContain('パパ');
   });
@@ -316,7 +337,7 @@ describe('公式SDK のクライアントで（fetch をモックして、ネッ
     expect(url).toBe('https://api.anthropic.com/v1/messages');
     expect(headers.get('x-api-key') ?? headers.get('authorization')).toContain('sk-ant-test-key');
     expect(body.model).toBe('claude-opus-5-5');
-    expect(body.max_tokens).toBe(1024);
+    expect(body.max_tokens).toBe(LLM_MAX_TOKENS);
     expect(body.system).toEqual([{ type: 'text', text: buildSystemPrompt(catalog), cache_control: { type: 'ephemeral' } }]);
     const config = body.output_config as { effort: string; format: { type: string; schema: unknown } };
     expect(config.effort).toBe('low');
@@ -341,6 +362,108 @@ describe('公式SDK のクライアントで（fetch をモックして、ネッ
     expect(logger.lines.join('\n')).toContain('api_529');
     expect(logger.lines.join('\n')).not.toContain('sk-ant');
   }, 20_000);
+
+  it('失敗の理由をログで見分けられる（上限で切れた・断られた・JSON でない・形が違う・出力なし）。本文は出さない', async () => {
+    const thinking = { type: 'thinking', thinking: '', signature: 'sig' };
+    const full = JSON.stringify({ commands: [cmd({ type: 'sale', ingredientId: 'chicken_breast' })] });
+    const cases: { name: string; content: unknown[]; stop: string; extra?: object; expected: string[] }[] = [
+      { name: '途中で切れた', content: [thinking, { type: 'text', text: full.slice(0, 40) }], stop: 'max_tokens', expected: ['max_tokens', 'error=invalid_json', 'stop=max_tokens'] },
+      { name: '思考だけで切れた', content: [thinking], stop: 'max_tokens', expected: ['max_tokens', 'error=no_output'] },
+      {
+        name: '途中で断られた',
+        content: [thinking, { type: 'text', text: '{"comm' }],
+        stop: 'refusal',
+        extra: { stop_details: { type: 'refusal', category: 'cyber', explanation: null } },
+        expected: ['断りました', 'category=cyber'],
+      },
+      { name: '空の text で断られた', content: [{ type: 'text', text: '' }], stop: 'refusal', expected: ['断りました', 'category=none'] },
+      { name: 'JSON でない', content: [{ type: 'text', text: 'はい、わかりました' }], stop: 'end_turn', expected: ['読めませんでした', 'error=invalid_json', 'stop=end_turn'] },
+      { name: '形が違う', content: [{ type: 'text', text: '{"foo":1}' }], stop: 'end_turn', expected: ['読めませんでした', 'error=schema_mismatch'] },
+    ];
+    for (const c of cases) {
+      const logger = memoryLogger();
+      const { client } = sdkWith(() => ({ status: 200, json: { ...message(c.stop, ''), content: c.content, ...c.extra } }));
+      const out = await createLlmInterpreter({ client, catalog, logger }).interpret({ text: 'パパが鶏むねが安いって', today: TODAY, members });
+      expect(out, c.name).toBeNull();
+      expect(logger.lines, c.name).toHaveLength(1);
+      for (const e of c.expected) expect(logger.lines[0], c.name).toContain(e);
+      expect(logger.lines[0], c.name).not.toContain('鶏むね');
+    }
+    // 上限で止まっても、JSON が最後までそろっていれば使う
+    const { client } = sdkWith(() => ({ status: 200, json: message('max_tokens', full) }));
+    expect(await createLlmInterpreter({ client, catalog }).interpret({ text: '鶏むねが安い', today: TODAY, members })).toEqual([
+      { type: 'sale', ingredientId: 'chicken_breast' },
+    ]);
+  });
+
+  it('readOutput：例外を出さずに、読めた結果か理由を返す', () => {
+    expect(readOutput('{"commands":[]}')).toEqual({ ok: true, output: { commands: [] } });
+    expect(readOutput('{"commands":[')).toEqual({ ok: false, error: 'invalid_json' });
+    expect(readOutput('')).toEqual({ ok: false, error: 'invalid_json' });
+    expect(readOutput('{"commands":[{"type":"help"}]}')).toEqual({ ok: false, error: 'schema_mismatch' });
+  });
+
+  it('429 の retry-after が長くても、全体の上限で止めてルールに戻る（再試行の前の待ち時間も打ち切る）', async () => {
+    const logger = memoryLogger();
+    let calls = 0;
+    const client = new Anthropic({
+      apiKey: 'sk-ant-test-key',
+      baseURL: 'https://api.anthropic.com',
+      fetch: async () => {
+        calls += 1;
+        return new Response(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'rate limited' } }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '60' },
+        });
+      },
+    });
+    const llm = createLlmInterpreter({ client, catalog, logger, totalTimeoutMs: 300 });
+    const started = Date.now();
+    expect(await llm.interpret({ text: '卵切れた', today: TODAY, members })).toBeNull();
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(calls).toBe(1); // 60秒待ってからの再試行はしない
+    expect(logger.lines.join('\n')).toContain('error=timeout');
+    expect(LLM_TOTAL_TIMEOUT_MS).toBeLessThanOrEqual(15_000); // 画面（15秒で諦める）より先に返す
+  });
+
+  it('応答がなくても、全体の上限で止める（1回の timeout ×（再試行＋1）にならない）', async () => {
+    const logger = memoryLogger();
+    let calls = 0;
+    const client = new Anthropic({
+      apiKey: 'sk-ant-test-key',
+      baseURL: 'https://api.anthropic.com',
+      fetch: (_input: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          calls += 1;
+          init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+        }),
+    });
+    const started = Date.now();
+    expect(await createLlmInterpreter({ client, catalog, logger, totalTimeoutMs: 300 }).interpret({ text: '卵切れた', today: TODAY, members })).toBeNull();
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(calls).toBe(1);
+    expect(logger.lines.join('\n')).toContain('error=timeout');
+  });
+
+  it('止めるとき（stopSignal）は、途中の解釈をやめてルールに戻り、そのあとは LLM を呼ばない', async () => {
+    const logger = memoryLogger();
+    const stop = new AbortController();
+    const { client, calls } = mockClient(
+      (options) =>
+        new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new Anthropic.APIUserAbortError()));
+        }),
+    );
+    const llm = createLlmInterpreter({ client, catalog, logger, stopSignal: stop.signal });
+    const pending = llm.interpret({ text: '卵切れた', today: TODAY, members });
+    setTimeout(() => stop.abort(), 20);
+    const started = Date.now();
+    expect(await pending).toBeNull();
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(logger.lines.join('\n')).toContain('error=stopped');
+    expect(await llm.interpret({ text: '豆腐買った', today: TODAY, members })).toBeNull();
+    expect(calls).toHaveLength(1);
+  });
 });
 
 describe('検証（validateCommands）とルールへの戻り', () => {

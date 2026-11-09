@@ -1,13 +1,13 @@
 // 家族と設定。いちばん上に注意（householdNotices）を必ず出す。
 import { useEffect, useRef, useState } from 'react';
-import type { AppState, Catalog, Household, HouseholdSettings, Member } from '../../engine';
-import { householdNotices } from '../../engine';
+import type { AppState, Catalog, Exclusion, Household, HouseholdSettings, Member } from '../../engine';
+import { checkDishSafety, findDish, householdNotices } from '../../engine';
 import type { AiMode, AiStatus } from '../ai';
 import { AI_MODES } from '../ai';
-import { SIDE_POLICY, cls, nextMemberId, normalizeForSearch } from '../lib';
+import { SERVINGS_NOTE, SIDE_POLICY, cls, hasPartialServings, nextMemberId, normalizeForSearch } from '../lib';
 import { parseImportedState } from '../storage';
 import type { MemberDraft } from './Forms';
-import { MemberEditor, PlanPicker, Segmented, WeekdayPicker, exclusionSummary, memberLine } from './Forms';
+import { MemberEditor, PlanPicker, Segmented, WeekdayPicker, emptyMemberDraft, exclusionSummary, memberLine } from './Forms';
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
 
@@ -26,7 +26,7 @@ export function aiStatusText(status: AiStatus): string {
     case 'claude':
       return 'この画面では、Claude に読み取りを頼めます（あなたの Claude の利用枠を使います）。';
     case 'server':
-      return '開発用のサーバーに読み取りを頼みます。';
+      return '開発用のサーバーに読み取りを頼みます。サーバーで使えないときは、ルールで読み取ります。';
     case 'blocked':
       return 'この画面では AI を使えません。ルールだけで読み取ります。';
     default:
@@ -57,6 +57,24 @@ export function NoticeList({ household }: { household: Household }) {
 
 function toDraft(m: Member): MemberDraft {
   return { nickname: m.nickname, ageBand: m.ageBand, role: m.role, exclusions: m.exclusions };
+}
+
+/** 除外の中身を、順序によらず比べるための文字列（重いアレルギーの印も含める）。 */
+function exclusionsKey(exclusions: Exclusion[]): string {
+  return exclusions
+    .map((e) =>
+      e.type === 'allergen' ? `a:${e.id}:${e.severe ? 1 : 0}` : e.type === 'ingredient' ? `i:${e.id}` : `t:${normalizeForSearch(e.text)}`,
+    )
+    .sort()
+    .join('|');
+}
+
+/**
+ * 献立に効く変更か。年齢帯は量と料理の選び方に、除外は安全に効く。
+ * ニックネームと続柄は献立に効かないので、それだけを直したときは献立（今日の分や選んだ差し替え）を作り直さない。
+ */
+export function memberChangeAffectsMeals(before: Member, after: Member): boolean {
+  return before.ageBand !== after.ageBand || exclusionsKey(before.exclusions) !== exclusionsKey(after.exclusions);
 }
 
 export function HouseholdSheet({
@@ -114,9 +132,17 @@ export function HouseholdSheet({
       exclusions: editing.draft.exclusions,
     };
     const members = editing.id ? h.members.map((m) => (m.id === editing.id ? member : m)) : [...h.members, member];
+    const before = editing.id ? h.members.find((m) => m.id === editing.id) : undefined;
     setEditing(null);
     setEditError(null);
-    onHouseholdChange({ ...h, members }, regen(editing.id ? `${nickname}を直しました。` : `${nickname}を加えました。`));
+    if (!before) {
+      onHouseholdChange({ ...h, members }, regen(`${nickname}を加えました。`));
+      return;
+    }
+    onHouseholdChange(
+      { ...h, members },
+      memberChangeAffectsMeals(before, member) ? regen(`${nickname}を直しました。`) : { regenerate: false, toast: `${nickname}を直しました。` },
+    );
   };
 
   const deleteMember = (id: string) => {
@@ -226,12 +252,13 @@ export function HouseholdSheet({
             type="button"
             className="btn"
             disabled={h.members.length >= MAX_MEMBERS}
-            onClick={() => setEditing({ id: null, draft: { nickname: '', ageBand: 'adult', role: 'other', exclusions: [] } })}
+            onClick={() => setEditing({ id: null, draft: emptyMemberDraft(h.members.length) })}
           >
             <Icon name="plus" size={18} />
             家族を加える
           </button>
         ) : null}
+        {hasPartialServings(h.members) ? <p className="field-note">{SERVINGS_NOTE}</p> : null}
       </section>
 
       <section className="block" aria-labelledby="days-title">
@@ -252,6 +279,8 @@ export function HouseholdSheet({
           onChange={(shoppingWeekdays) => setSettings({ shoppingWeekdays }, regen('買い物の曜日を変えました。'))}
         />
       </section>
+
+      <FavoritesBlock state={state} catalog={catalog} />
 
       <section className="block" aria-labelledby="plan-rule-title">
         <h3 className="block-title" id="plan-rule-title">
@@ -361,6 +390,50 @@ export function HouseholdSheet({
 
       <DataTools state={state} onImport={onImport} onReset={onReset} onStartOver={onStartOver} onToast={onToast} />
     </Sheet>
+  );
+}
+
+/** うちの定番の一覧。献立に出ない定番（除外に当たる・要確認）には、そのわけを添える。 */
+function FavoritesBlock({ state, catalog }: { state: AppState; catalog: Catalog }) {
+  const h = state.household;
+  const allowUncertain = h.settings.allowUncertainWithExclusions;
+  // 自由入力の定番（customDishes）も定番として扱う（エンジンの isFavorite と同じ）。
+  const ids = [...h.favorites.map((f) => f.dishId), ...h.customDishes.map((d) => d.id)].filter((id, i, all) => all.indexOf(id) === i);
+  const rows = ids.map((id) => {
+    const dish = findDish(state, catalog, id);
+    return { id, name: dish?.name ?? id, custom: !!dish?.custom, status: dish ? checkDishSafety(dish, h, catalog).status : 'ok' };
+  });
+  const hiddenUncertain = !allowUncertain && rows.some((r) => r.status === 'uncertain');
+  return (
+    <section className="block" aria-labelledby="fav-title">
+      <h3 className="block-title" id="fav-title">
+        うちの定番
+        <span className="block-count num">{rows.length}品</span>
+      </h3>
+      <p className="field-note">献立は、この定番を中心に組みます（定番の追加と削除は、この試作ではまだできません）。</p>
+      {rows.length === 0 ? (
+        <p className="field-note">定番はまだありません。</p>
+      ) : (
+        <ul className="fav-list">
+          {rows.map((r) => (
+            <li key={r.id} className="fav-item">
+              <span className="fav-name">{r.name}</span>
+              {r.custom ? <span className="badge badge--planned">名前だけ</span> : null}
+              {r.status === 'excluded' ? (
+                <span className="badge badge--warn">除外に当たるので出しません</span>
+              ) : r.status === 'uncertain' ? (
+                <span className="badge badge--uncertain">{allowUncertain ? '要確認（注意を付けて出します）' : '要確認なので出しません'}</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+      {hiddenUncertain ? (
+        <p className="hint">
+          「要確認」は、材料がわからない料理（名前だけの定番）や、銘柄で原材料が変わる物を使う料理です。アレルギーの除外がある家族では、献立に出しません。下の「要確認の料理も出す」をオンにすると、注意を付けて出します。
+        </p>
+      ) : null}
+    </section>
   );
 }
 

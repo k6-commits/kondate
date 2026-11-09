@@ -18,7 +18,7 @@ import {
 import { DEMO_ONBOARDING, defaultCatalog } from '../data';
 import { AiReader } from './ai';
 import type { AiMode, AiReading } from './ai';
-import { adultsOf, firstLine, japanToday } from './lib';
+import { adultsOf, cls, firstLine, japanToday } from './lib';
 import { clearStored, readStoredState, readUiPrefs, writeStoredState, writeUiPrefs } from './storage';
 import { AboutPanel } from './components/AboutPanel';
 import { HouseholdSheet } from './components/HouseholdSheet';
@@ -45,6 +45,60 @@ function readRoute(): Route {
 /** デモの家族ですぐ始まった状態。開始日は今日を含む週の月曜日。 */
 export function demoState(catalog: Catalog, today: ISODate): AppState {
   return createInitialState(DEMO_ONBOARDING, catalog, weekStartOf(today));
+}
+
+/** 案内を左に常に出す広い画面（styles.css の @media (min-width: 900px) と同じ幅）。 */
+export const WIDE_QUERY = '(min-width: 900px)';
+
+function wideMedia(): MediaQueryList | null {
+  try {
+    return typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia(WIDE_QUERY) : null;
+  } catch {
+    return null;
+  }
+}
+
+function subscribeWide(onChange: () => void): () => void {
+  const mq = wideMedia();
+  if (!mq) return () => {};
+  if (typeof mq.addEventListener === 'function') {
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }
+  // 古いブラウザは addListener だけを持つ。
+  mq.addListener?.(onChange);
+  return () => mq.removeListener?.(onChange);
+}
+
+const isWide = (): boolean => wideMedia()?.matches ?? false;
+
+/** 広い画面か。幅が変わると描き直す（matchMedia がない環境では false）。 */
+function useWide(): boolean {
+  return useSyncExternalStore(subscribeWide, isWide, () => false);
+}
+
+const isSheet = (r: Route): boolean => r === 'week' || r === 'shopping' || r === 'household';
+
+/** 今フォーカスのある要素（なければ null）。シートや案内を閉じたときに、ここへ戻す。 */
+function focusedElement(): HTMLElement | null {
+  if (typeof document === 'undefined') return null;
+  const el = document.activeElement;
+  return el instanceof HTMLElement && el !== document.body ? el : null;
+}
+
+/**
+ * シートや案内を閉じたあと、開いたときのボタンにフォーカスを戻す。そのボタンがもうなければ fallback の要素へ。
+ * ほかの要素にフォーカスがあるとき（閉じる前に別の所を押した）は動かさない。
+ */
+function restoreFocus(ref: { current: HTMLElement | null }, fallback: string): void {
+  const el = ref.current;
+  ref.current = null;
+  if (typeof document === 'undefined') return;
+  const now = document.activeElement;
+  if (now instanceof HTMLElement && now !== document.body && now.isConnected && !now.closest('[inert]')) return;
+  const usable = (e: HTMLElement | null): e is HTMLElement => !!e && e.isConnected && !e.closest('[inert]');
+  const target = usable(el) ? el : document.querySelector<HTMLElement>(fallback);
+  if (usable(target)) target.focus();
 }
 
 /**
@@ -104,6 +158,8 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
   const [senderPref, setSenderPref] = useState<string | undefined>(initialPrefs.sender);
   const [aiMode, setAiMode] = useState<AiMode>(initialPrefs.aiMode ?? 'auto');
   const [menuOpen, setMenuOpen] = useState<boolean>(initialPrefs.menuOpen ?? true);
+  /** 案内（このプロトタイプについて）を一度でも開いたか。まだなら、スマホ幅でデモの操作に「試し方を見る」を出す。 */
+  const [aboutSeen, setAboutSeen] = useState<boolean>(initialPrefs.aboutSeen ?? false);
   const [marks, setMarks] = useState<Record<string, 'ai' | 'rules'>>({});
   const [route, setRoute] = useState<Route>(readRoute);
   const [weekParam, setWeekParam] = useState<ISODate | null>(null);
@@ -113,6 +169,21 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
   const [pendingText, setPendingText] = useState<string | null>(null);
   const busyRef = useRef(false);
   const toastSeq = useRef(0);
+  /** 家族や記録を丸ごと入れ替えた回数（はじめからの設定・リセット・読み込み・家族を外す）。読み取り中に変わったら、その結果は使わない。 */
+  const epochRef = useRef(0);
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const sheetReturn = useRef<HTMLElement | null>(null);
+  const aboutReturn = useRef<HTMLElement | null>(null);
+
+  // 広い画面では案内が左に出ているので、重ねて開く案内は出さない（開いたまま幅が広がったら閉じる）。
+  const wide = useWide();
+  const aboutVisible = aboutOpen && !wide;
+  useEffect(() => {
+    if (!wide) return;
+    setAboutOpen(false);
+    setAboutSeen(true);
+  }, [wide]);
 
   const adults = adultsOf(state.household.members);
   const senderId = adults.find((m) => m.id === senderPref)?.id ?? adults[0]?.id ?? '';
@@ -130,8 +201,8 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
   useEffect(() => {
     const ids = new Set(state.chat.map((m) => m.id));
     const kept = Object.fromEntries(Object.entries(senders).filter(([id]) => ids.has(id)));
-    writeUiPrefs({ sender: senderPref, aiMode, menuOpen, senders: kept });
-  }, [state.chat, senders, senderPref, aiMode, menuOpen]);
+    writeUiPrefs({ sender: senderPref, aiMode, menuOpen, senders: kept, aboutSeen });
+  }, [state.chat, senders, senderPref, aiMode, menuOpen, aboutSeen]);
 
   useEffect(() => {
     const onHash = () => setRoute(readRoute());
@@ -156,6 +227,8 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
   }, []);
 
   const navigate = useCallback((r: Route) => {
+    // トークからシートを開くときは、押したボタンを覚えておき、閉じたらそこへフォーカスを戻す。
+    if (isSheet(r) && !isSheet(routeRef.current)) sheetReturn.current = focusedElement();
     setRoute(r);
     setAboutOpen(false);
     try {
@@ -165,12 +238,36 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
     }
   }, []);
 
+  const openAbout = () => {
+    // 広い画面では案内が左に出ているので、重ねて開かない（「?」も出ていない）。
+    if (wide) return;
+    aboutReturn.current = focusedElement();
+    setAboutOpen(true);
+    setAboutSeen(true);
+  };
+
+  const sheetOpen = isSheet(route);
+
+  // シートや案内を閉じたら、開いたときのボタンにフォーカスを戻す（キーボードで続けて操作できるように）。
+  const prevSheetOpen = useRef(sheetOpen);
+  useEffect(() => {
+    const was = prevSheetOpen.current;
+    prevSheetOpen.current = sheetOpen;
+    if (was && !sheetOpen && route === 'talk') restoreFocus(sheetReturn, '.talk-layer .menu-toggle');
+  }, [sheetOpen, route]);
+  const prevAboutVisible = useRef(aboutVisible);
+  useEffect(() => {
+    const was = prevAboutVisible.current;
+    prevAboutVisible.current = aboutVisible;
+    if (was && !aboutVisible && route !== 'start') restoreFocus(aboutReturn, '.about-toggle');
+  }, [aboutVisible, route]);
+
   // Esc でシートや案内を閉じる（日本語入力の変換中の Esc は除く）。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.isComposing) return;
-      if (aboutOpen) setAboutOpen(false);
-      else if (route === 'week' || route === 'shopping' || route === 'household') navigate('talk');
+      if (aboutVisible) setAboutOpen(false);
+      else if (sheetOpen) navigate('talk');
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -198,6 +295,7 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
     if (!trimmed || busyRef.current) return;
     const text = `@きめとく ${trimmed}`;
     const cur = stateRef.current;
+    const epoch = epochRef.current;
     let reading: AiReading = { commands: null, source: 'rules' };
     if (ai.available && aiMode !== 'off') {
       const rules = parseMessage(text, { today: cur.today, members: cur.household.members, catalog });
@@ -212,6 +310,11 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
           busyRef.current = false;
           setPendingText(null);
         }
+        if (epochRef.current !== epoch) {
+          // 読み取りのあいだに家族や記録が入れ替わった。前の状態で読んだ結果（member の id や日付）は、新しい状態に入れない。
+          showToast('家族やデータが入れ替わったので、さっきの書き込みは使いませんでした。');
+          return;
+        }
         if (reading.notice) showToast(reading.notice);
       }
     }
@@ -224,6 +327,8 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
   };
 
   const advance = () => {
+    // 読み取り中は進めない（「明日」などを、送ったときの日付で読んでいるため）。ボタンも押せなくしてある。
+    if (busyRef.current) return;
     const r = advanceDay(stateRef.current, catalog);
     commit(r.state);
     const pushed = r.replies.filter((m) => m.push).length;
@@ -234,6 +339,8 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
     const prev = stateRef.current;
     let s: AppState = { ...prev, household: next };
     const removed = change.removedMemberIds ?? [];
+    // 家族を外したら、読み取り中の結果は使わない（外した人の id が、あとで加えた人に使われることがあるため）。
+    if (prev.household.members.some((m) => !next.members.some((n) => n.id === m.id))) epochRef.current += 1;
     if (removed.length > 0) {
       s = {
         ...s,
@@ -263,8 +370,10 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
         regenerated = true;
       }
       if (!regenerated) s = { ...s, shopping: buildShoppingLists(s, catalog) };
+      // 設定からの作り直しは、家族の書き込みではない。エンジンが足す「献立を作り直す」の発言は残さない（送った人も付けない）。
+      const before = new Set(prev.chat.map((m) => m.id));
+      s = { ...s, chat: s.chat.filter((m) => m.from !== 'user' || before.has(m.id)) };
     }
-    recordSenders(prev, s);
     commit(s);
     const kept = regenerated ? keptChangedDays(prev, s) : [];
     const keptText = kept.length > 0 ? `自分で替えた日（${kept.map(formatJa).join('・')}）は、そのままです。` : '';
@@ -273,6 +382,7 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
 
   const startWith = (input: OnboardingInput, today: ISODate, message: string) => {
     const s = createInitialState(input, catalog, today);
+    epochRef.current += 1;
     setSenders({});
     setMarks({});
     setSenderPref(adultsOf(s.household.members)[0]?.id);
@@ -304,12 +414,20 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
     },
   };
 
-  const sheetOpen = route === 'week' || route === 'shopping' || route === 'household';
+  const busy = pendingText !== null;
+
+  /** AI の読み取りの設定を変えたときの知らせ。AI が使えないときは、そう言う（ルールで読み取る）。 */
+  const aiModeToast = (mode: AiMode): string => {
+    if (mode === 'off') return 'AI を使わずに読み取ります。';
+    if (aiStatus === 'blocked') return 'この画面では AI を使えないので、ルールで読み取ります。';
+    if (aiStatus === 'none') return '今は AI につながっていないので、ルールで読み取ります。';
+    return mode === 'always' ? 'いつも AI に読み取りを頼みます。' : 'ルールで読めないときだけ AI に頼みます。';
+  };
 
   return (
     <div className="shell">
       <aside className="about-col" aria-labelledby="about-title">
-        <AboutPanel aiStatus={aiStatus} onStartOver={() => navigate('start')} />
+        <AboutPanel aiStatus={aiStatus} aiMode={aiMode} onStartOver={() => navigate('start')} />
       </aside>
       <main className="phone" aria-label="きめとく（試作）">
         {route === 'start' ? (
@@ -325,12 +443,15 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
             <DemoBar
               today={state.today}
               plan={state.household.settings.plan}
+              busy={busy}
+              showHint={!aboutSeen}
+              inert={aboutVisible}
               onAdvance={advance}
               onPlanChange={setPlan}
-              onHelp={() => setAboutOpen(true)}
+              onHelp={openAbout}
             />
             <div className="app">
-              <div className="talk-layer" inert={sheetOpen || aboutOpen}>
+              <div className="talk-layer" inert={sheetOpen || aboutVisible}>
                 <Talk
                   state={state}
                   catalog={catalog}
@@ -339,7 +460,7 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
                   senderId={senderId}
                   adults={adults}
                   onSenderChange={setSenderPref}
-                  busy={pendingText !== null}
+                  busy={busy}
                   pendingText={pendingText}
                   aiStatus={aiStatus}
                   onSend={(t) => void sendText(t)}
@@ -360,57 +481,70 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
                   visible={!sheetOpen}
                 />
               </div>
-              {route === 'week' ? (
-                <WeekSheet
-                  state={state}
-                  catalog={catalog}
-                  weekStart={weekParam}
-                  onWeekChange={setWeekParam}
-                  onAction={(a) => runAction(a, { toast: true })}
-                  onBack={() => navigate('talk')}
-                />
-              ) : null}
-              {route === 'shopping' ? (
-                <ShoppingSheet
-                  state={state}
-                  catalog={catalog}
-                  date={shoppingParam}
-                  onDateChange={setShoppingParam}
-                  onAction={(a) => runAction(a)}
-                  onBack={() => navigate('talk')}
-                  onToast={showToast}
-                />
-              ) : null}
-              {route === 'household' ? (
-                <HouseholdSheet
-                  state={state}
-                  catalog={catalog}
-                  aiMode={aiMode}
-                  aiStatus={aiStatus}
-                  onAiModeChange={(mode) => {
-                    setAiMode(mode);
-                    showToast(mode === 'off' ? 'AI を使わずに読み取ります。' : mode === 'always' ? 'いつも AI に読み取りを頼みます。' : 'ルールで読めないときだけ AI に頼みます。');
-                  }}
-                  onHouseholdChange={changeHousehold}
-                  onImport={(s) => {
-                    setSenders({});
-                    setMarks({});
-                    commit(s);
-                    navigate('talk');
-                    showToast('読み込みました。');
-                  }}
-                  onReset={() => {
-                    clearStored();
-                    startDemo('リセットしました。デモの家族で始めています。');
-                  }}
-                  onStartOver={() => navigate('start')}
-                  onBack={() => navigate('talk')}
-                  onToast={showToast}
-                />
-              ) : null}
-              {aboutOpen ? (
+              {/* 案内を重ねて開いているあいだは、シートにもフォーカスが出ないようにする（display: contents の入れ物）。 */}
+              <div className="sheet-layer" inert={aboutVisible}>
+                {route === 'week' ? (
+                  <WeekSheet
+                    state={state}
+                    catalog={catalog}
+                    weekStart={weekParam}
+                    onWeekChange={setWeekParam}
+                    onAction={(a) => runAction(a, { toast: true })}
+                    onBack={() => navigate('talk')}
+                  />
+                ) : null}
+                {route === 'shopping' ? (
+                  <ShoppingSheet
+                    state={state}
+                    catalog={catalog}
+                    date={shoppingParam}
+                    onDateChange={setShoppingParam}
+                    onAction={(a) => runAction(a)}
+                    onBack={() => navigate('talk')}
+                    onToast={showToast}
+                  />
+                ) : null}
+                {route === 'household' ? (
+                  <HouseholdSheet
+                    state={state}
+                    catalog={catalog}
+                    aiMode={aiMode}
+                    aiStatus={aiStatus}
+                    onAiModeChange={(mode) => {
+                      setAiMode(mode);
+                      showToast(aiModeToast(mode));
+                    }}
+                    onHouseholdChange={changeHousehold}
+                    onImport={(s) => {
+                      epochRef.current += 1;
+                      setSenders({});
+                      setMarks({});
+                      commit(s);
+                      navigate('talk');
+                      showToast('読み込みました。');
+                    }}
+                    onReset={() => {
+                      clearStored();
+                      // 画面の設定（AI の読み取り・メニューの開閉・案内の印）も既定に戻す。画面が壊れたときのリセットと同じ結果にする。
+                      setAiMode('auto');
+                      setMenuOpen(true);
+                      setAboutSeen(false);
+                      startDemo('リセットしました。デモの家族で始めています。');
+                    }}
+                    onStartOver={() => navigate('start')}
+                    onBack={() => navigate('talk')}
+                    onToast={showToast}
+                  />
+                ) : null}
+              </div>
+              {aboutVisible ? (
                 <div className="about-overlay" role="dialog" aria-modal="true" aria-labelledby="about-overlay-title">
-                  <AboutPanel aiStatus={aiStatus} onStartOver={() => navigate('start')} onClose={() => setAboutOpen(false)} />
+                  <AboutPanel
+                    aiStatus={aiStatus}
+                    aiMode={aiMode}
+                    onStartOver={() => navigate('start')}
+                    onClose={() => setAboutOpen(false)}
+                  />
                 </div>
               ) : null}
               <div className="toast-region" role="status" aria-live="polite">
@@ -431,25 +565,40 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
 function DemoBar({
   today,
   plan,
+  busy,
+  showHint,
+  inert,
   onAdvance,
   onPlanChange,
   onHelp,
 }: {
   today: ISODate;
   plan: 'free' | 'paid';
+  /** AI の読み取り中。日付を進めない。 */
+  busy: boolean;
+  /** 案内をまだ開いていなければ、スマホ幅で「試し方を見る」を出す（広い画面では案内が左に出ているので出さない）。 */
+  showHint: boolean;
+  /** 案内を重ねて開いているあいだは、外へフォーカスが出ないようにする。 */
+  inert: boolean;
   onAdvance: () => void;
   onPlanChange: (plan: 'free' | 'paid') => void;
   onHelp: () => void;
 }) {
   return (
-    <div className="demo-bar" role="region" aria-label="デモの操作">
-      <p className="demo-today">
+    <div className="demo-bar" role="region" aria-label="デモの操作" inert={inert}>
+      <p className={cls('demo-today', showHint && 'has-hint')}>
         <span className="demo-label">今日（デモ）</span>
         <strong className="demo-date num" data-testid="demo-today">
           {formatJa(today)}
         </strong>
+        {showHint ? (
+          <button type="button" className="demo-hint" onClick={onHelp}>
+            試し方を見る
+            <Icon name="next" size={14} />
+          </button>
+        ) : null}
       </p>
-      <button type="button" className="btn btn--small btn--demo" onClick={onAdvance}>
+      <button type="button" className="btn btn--small btn--demo" disabled={busy} onClick={onAdvance}>
         翌日へ進む
         <Icon name="next" size={16} />
       </button>

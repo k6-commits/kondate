@@ -33,6 +33,11 @@ function parsePort(raw: string | undefined): number {
   return Number.isInteger(n) && n > 0 && n < 65536 ? n : 8787;
 }
 
+/** 1・true・yes・on なら有効。 */
+const flag = (name: string): boolean => /^(1|true|yes|on)$/i.test(value(name) ?? '');
+
+const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
+
 const port = parsePort(value('PORT'));
 const dataDir = value('DATA_DIR') ?? '.data';
 const lineChannelSecret = value('LINE_CHANNEL_SECRET');
@@ -40,11 +45,18 @@ const lineAccessToken = value('LINE_CHANNEL_ACCESS_TOKEN');
 const anthropicApiKey = value('ANTHROPIC_API_KEY');
 const cronSecret = value('CRON_SECRET');
 const corsOrigin = value('CORS_ORIGIN') ?? 'http://localhost:5173';
+// /api/parse は開発用の口で、認証がない（呼ばれるたびに LLM の費用がかかる）。既定では使えない。
+const parseApiEnabled = flag('PARSE_API_ENABLED');
+// 待ち受けるアドレス。未設定なら、/api/parse を有効にしたときは 127.0.0.1（このマシンからだけ）、
+// そうでなければすべてのアドレス（LINE の webhook を、コンテナやクラウドでも受けられるように）。
+const host = value('HOST') ?? (parseApiEnabled ? '127.0.0.1' : undefined);
 
 const catalog = defaultCatalog;
 const queue = createDeferQueue(logger);
 const store = createFileStore({ dir: dataDir, logger });
 const line = lineAccessToken ? createLineClient({ accessToken: lineAccessToken, logger }) : null;
+// 止めるときに、途中の LLM の解釈を打ち切る（その書き込みはルールで読んで、保存と返信まで済ませる）。
+const stopLlm = new AbortController();
 // ANTHROPIC_API_KEY があるときだけ、書き込みの解釈に LLM を使う（なければルールベース）。
 const llm = anthropicApiKey
   ? createLlmInterpreter({
@@ -52,6 +64,7 @@ const llm = anthropicApiKey
       catalog,
       model: value('KIMETOKU_MODEL') ?? DEFAULT_MODEL,
       logger,
+      stopSignal: stopLlm.signal,
     })
   : null;
 
@@ -61,7 +74,7 @@ const app = createApp({
   line,
   llm,
   now: () => new Date(),
-  config: { lineChannelSecret, cronSecret, corsOrigin },
+  config: { lineChannelSecret, cronSecret, parseApiEnabled, corsOrigin },
   defer: queue.defer,
   logger,
 });
@@ -75,11 +88,29 @@ logger.info(
     (line ? '' : '（返信と配信はしません）'),
 );
 logger.info(`CRON_SECRET：${yesNo(cronSecret)}${cronSecret ? '' : '（/cron/evening は 503 を返します）'}`);
+logger.info(
+  parseApiEnabled
+    ? `/api/parse：有効（開発用。許可するオリジン：${corsOrigin}）`
+    : '/api/parse：無効（開発で画面から使うときは PARSE_API_ENABLED=1）',
+);
+if (parseApiEnabled && !(host && LOOPBACK.has(host))) {
+  logger.warn('/api/parse には認証がありません。ほかのマシンからも呼べるので、手元だけで使うときは HOST=127.0.0.1 にしてください');
+}
 logger.info(`保存先：${dataDir}`);
 
-const server = serve({ fetch: app.fetch, port }, (info) => {
-  logger.info(`待ち受けています：http://localhost:${info.port}`);
+const server = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
+  logger.info(
+    host
+      ? `待ち受けています：http://${host.includes(':') ? `[${host}]` : host}:${info.port}`
+      : `待ち受けています：http://localhost:${info.port}（すべてのアドレスで受けます。HOST で変えられます）`,
+  );
 });
+
+/**
+ * 止めるときに、受け取ったイベントの処理（保存・返信）を待つ時間の上限。LLM の解釈は止めてルールに戻すので、
+ * 残るのは保存と LINE への返信（1回10秒まで）。LLM の全体の上限（LLM_TOTAL_TIMEOUT_MS）より長くとる。
+ */
+const SHUTDOWN_WAIT_MS = 20_000;
 
 let stopping = false;
 async function shutdown(signal: string): Promise<void> {
@@ -87,8 +118,13 @@ async function shutdown(signal: string): Promise<void> {
   stopping = true;
   logger.info(`${signal} を受け取ったので、止めます`);
   server.close();
-  // 返信や保存の途中のものは、少しだけ待つ。
-  await Promise.race([queue.idle(), new Promise((r) => setTimeout(r, 10_000))]);
+  stopLlm.abort();
+  const timer = setTimeout(() => {
+    logger.warn('処理の途中のイベントを待ちきれずに止めます', { pending: queue.size });
+    process.exit(0);
+  }, SHUTDOWN_WAIT_MS);
+  await queue.idle();
+  clearTimeout(timer);
   process.exit(0);
 }
 process.on('SIGINT', () => void shutdown('SIGINT'));

@@ -460,6 +460,14 @@ h4 {
   border-style: dashed;
 }
 
+/* 選べないチップは、半透明にしない（中の「除外」などの理由の印が読めるように）。文字と枠を薄くして示す。 */
+.chip:disabled {
+  opacity: 1;
+  color: var(--ink-faint);
+  border-color: var(--rule);
+  background: var(--paper);
+}
+
 .chip-flag {
   font-size: 11px;
   padding: 0 6px;
@@ -1548,10 +1556,11 @@ h4 {
 }
 
 .item {
+  position: relative;
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
+  grid-template-columns: 44px minmax(0, 1fr);
   align-items: center;
-  padding: 0 12px 0 2px;
+  padding: 0 12px 0 0;
 }
 
 .item + .item {
@@ -1575,6 +1584,16 @@ h4 {
   min-height: 44px;
   padding: 10px 0;
   cursor: pointer;
+}
+
+/* チェックの列（44px 幅・行の高さ）のどこを押してもチェックできるように、品名の label をチェックの上まで広げる。 */
+.item-label::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 44px;
 }
 
 .item-name {
@@ -1745,6 +1764,33 @@ h4 {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+/* うちの定番の一覧 */
+.fav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fav-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 5px 0;
+}
+
+.fav-item + .fav-item {
+  border-top: 1px dotted var(--rule);
+}
+
+.fav-name {
+  font-weight: 700;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .confirm {
@@ -1924,10 +1970,21 @@ h4 {
   font-size: 14px;
 }
 
+/* 曜日のボタンは 44px 以上にする。7つ並べると足りない幅（スマホの 360〜400px）では、4つと3つの2段にする。 */
+.weekdays-box {
+  container-type: inline-size;
+}
+
 .weekdays {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 6px;
+}
+
+@container (max-width: 343.98px) {
+  .weekdays {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 .wd-btn {
@@ -2373,13 +2430,6 @@ h4 {
   margin: 0;
   padding-left: 1.2em;
   font-size: 14px;
-}
-
-.about-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding-top: 4px;
 }
 
 /* PC：冷蔵庫に磁石で留めたメモ */

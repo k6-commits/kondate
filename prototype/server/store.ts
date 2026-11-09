@@ -1,7 +1,9 @@
 // 送り元（LINE のユーザー・グループ・ルーム）ごとの状態を、DATA_DIR に JSON ファイルで保存する。
 // - ファイル名は送り元のキーの SHA-256（LINE の ID はファイル名に使わない）。
+// - 利用者の発言の原文は保存しない（書く前に state.chat の利用者のメッセージの text を空にする。
+//   エンジンもサーバーも、利用者のメッセージは id でしか見ないので、動きは変わらない）。
 // - 書き込みは一時ファイルに書いてから rename する（途中で落ちても、古いか新しいかのどちらかが残る）。
-// - 同じキーの更新は、このプロセスの中で1つずつ順に行う（同じ送り元のイベントが同時に来ても壊れない）。
+// - 同じキーの更新・削除は、このプロセスの中で1つずつ順に行う（同じ送り元のイベントが同時に来ても壊れない）。
 //   複数のプロセスから同じ DATA_DIR を使うことは想定していない。
 import { randomBytes } from 'node:crypto';
 import { mkdir, open, readdir, readFile, rename, unlink, type FileHandle } from 'node:fs/promises';
@@ -19,7 +21,10 @@ export interface StoredRecord {
   /** push の宛先（LINE の ID）。 */
   sourceId: string;
   state: AppState;
-  /** 有料版の配信（push）で、まだ送っていないもの。今日の日付のものだけを残す。 */
+  /**
+   * 有料版の配信（push）で、まだ送っていないもの。今日の日付のものと、届けそびれた週の献立（その週が終わるまで）を残す。
+   * 送るときは、今の state で文面を作り直す（household.ts の pushesToSend）。
+   */
   pendingPush: ChatMessage[];
   /**
    * 次の返信の先頭に添える、まだ届けていない bot のメッセージ（cron の日付の同期でできた「昨日の〇〇は作りましたか？」など）。
@@ -37,10 +42,19 @@ export interface Store {
    * 同じキーの中で1つずつ順に、読み込み → fn → 書き込みを行う。
    * fn が null を返したら書き込まない。書き込んだレコード（updatedAt つき）か null を返す。
    * 読み込んだファイルが壊れていたら、ログを出して fn には null を渡す（新しく作れるように）。
+   * 書くときは、利用者の発言の原文を空にする（withoutUserText）。
    */
   update(key: string, fn: Updater): Promise<StoredRecord | null>;
   /** 保存されているすべてのレコード（壊れたものは飛ばす）。 */
   list(): Promise<StoredRecord[]>;
+  /** そのキーの記録を消す（壊れて残しておいたファイルも）。消すものがあれば true。 */
+  delete(key: string): Promise<boolean>;
+}
+
+/** 利用者の発言の原文を空にした state（id と時刻は残す）。原文がなければ、そのまま返す。 */
+export function withoutUserText(state: AppState): AppState {
+  if (!state.chat.some((m) => m.from === 'user' && m.text !== '')) return state;
+  return { ...state, chat: state.chat.map((m) => (m.from === 'user' && m.text !== '' ? { ...m, text: '' } : m)) };
 }
 
 export interface FileStoreOptions {
@@ -191,9 +205,25 @@ export function createFileStore(opts: FileStoreOptions): Store {
         const next = await fn(current);
         if (!next) return null;
         if (next.key !== key) throw new Error('保存するレコードのキーが違います');
-        const saved: StoredRecord = { ...next, updatedAt: now().toISOString() };
+        const saved: StoredRecord = { ...next, state: withoutUserText(next.state), updatedAt: now().toISOString() };
         await writeAtomic(file, JSON.stringify(saved));
         return saved;
+      });
+    },
+
+    delete(key) {
+      return withLock(key, async () => {
+        const file = fileOf(key);
+        let removed = false;
+        for (const target of [file, `${file}.broken`]) {
+          try {
+            await unlink(target);
+            removed = true;
+          } catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+          }
+        }
+        return removed;
       });
     },
 

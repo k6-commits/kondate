@@ -1,8 +1,8 @@
 // トーク画面（LINE のグループで使う想定のトーク画面の試作）。
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactElement } from 'react';
-import type { Action, AppState, Catalog, ChatMessage, ISODate, Member } from '../../engine';
-import { formatJa } from '../../engine';
+import type { Action, AppState, Card, Catalog, ChatMessage, ISODate, Member } from '../../engine';
+import { formatJa, weekStartOf } from '../../engine';
 import type { AiStatus } from '../ai';
 import { cls } from '../lib';
 import { ChatCard } from './ChatCard';
@@ -44,6 +44,35 @@ function lastUserIndex(chat: ChatMessage[]): number {
 
 function timeOf(at: string): string {
   return /T(\d{2}:\d{2})/.exec(at)?.[1] ?? '';
+}
+
+/**
+ * あとのメッセージに、同じ日（週）のカードがあるメッセージの id。
+ * 1日のカードと週のカードは日付だけを持ち、中身を今の献立で描く。あとで献立が変わると、古いメッセージの文と
+ * カードが食い違うので、古いカードは畳んで「いまの献立を見る」にする（その日の最新のカードは、そのまま出す）。
+ * 1日のカードは、あとの同じ日の1日のカードか、その週の週のカードで新しくなったとみなす。
+ */
+export function supersededCards(chat: ChatMessage[]): Set<string> {
+  const out = new Set<string>();
+  const laterDays = new Set<ISODate>();
+  const laterWeeks = new Set<ISODate>();
+  for (let i = chat.length - 1; i >= 0; i--) {
+    const { id, card } = chat[i];
+    if (card?.kind === 'meal') {
+      if (laterDays.has(card.date) || laterWeeks.has(weekStartOf(card.date))) out.add(id);
+      laterDays.add(card.date);
+    } else if (card?.kind === 'week') {
+      if (laterWeeks.has(card.weekStart)) out.add(id);
+      laterWeeks.add(card.weekStart);
+    }
+  }
+  return out;
+}
+
+function foldLabel(card: Card): string {
+  if (card.kind === 'week') return `いまの献立を見る（${formatJa(card.weekStart)}〜）`;
+  if (card.kind === 'meal') return `いまの献立を見る（${formatJa(card.date)}）`;
+  return 'いまの内容を見る';
 }
 
 function UserText({ text }: { text: string }) {
@@ -107,6 +136,7 @@ export function Talk(props: TalkProps) {
     };
   }, []);
 
+  const superseded = supersededCards(chat);
   const rows: ReactElement[] = [];
   let prevDay = '';
   let prevFrom: ChatMessage['from'] | null = null;
@@ -144,7 +174,19 @@ export function Talk(props: TalkProps) {
             <div className="bubble bubble--bot">{m.text}</div>
             <span className="msg-time num">{timeOf(m.at)}</span>
           </div>
-          {m.card ? <ChatCard card={m.card} state={state} catalog={catalog} handlers={props.cardHandlers} /> : null}
+          {m.card ? (
+            superseded.has(m.id) ? (
+              <details className="card-fold">
+                <summary>
+                  <Icon name="chevronDown" size={16} />
+                  {foldLabel(m.card)}
+                </summary>
+                <ChatCard card={m.card} state={state} catalog={catalog} handlers={props.cardHandlers} />
+              </details>
+            ) : (
+              <ChatCard card={m.card} state={state} catalog={catalog} handlers={props.cardHandlers} />
+            )
+          ) : null}
           {m.push || mark ? (
             <div className="msg-tags">
               {m.push ? (
