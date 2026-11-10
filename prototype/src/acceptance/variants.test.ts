@@ -932,3 +932,174 @@ describe('作った・作らなかったを文字で答えるとき（前日の�
     }
   });
 });
+
+describe('作った・作らなかったの文字の答え：読みもらし・読みちがいの再確認（cooked-check）', () => {
+  const ask = () => advanceDay(start(), catalog).state; // 火曜。月曜の「作りましたか？」が直前
+
+  it('C-1 確認も日の言葉もないとき：絵文字・方言・ひとこと・人や副詞・理由のついた答えも、今日の記録にする', () => {
+    const s = start();
+    for (const t of [
+      '作ったよ😊', '作った👍', '作ったw', '作ったで', '作ったけん', '作った、みんな完食', '作ったけど不評だった',
+      '作ったよ！おいしかった', '作りました。ありがとうございます', 'ママが作った', 'パパが作ってくれた', 'はるとと一緒に作った',
+      'なんとか作った', 'さっき作った', '唐揚げ作ったよ', '🍛作った',
+    ]) {
+      expect(meal(say(s, t).state, MON).status, t).toBe('cooked');
+    }
+    for (const t of ['作れなかった💦', '結局作れなかった', 'しんどくて作れなかった', '寝落ちして作れなかった', '子どもが熱出して作れなかった', '夜は作れなかった', '作れませんでした']) {
+      const r = say(s, t);
+      expect(meal(r.state, MON).status, t).toBe('skipped');
+      expect(meal(r.state, MON).kind, t).toBe('normal');
+    }
+    // 夕食でない話・夕食でない物の話は、今までどおり記録しない
+    for (const t of ['はるとがおやつ食べた', '宿題できた', 'ゆいが逆上がりできた', 'パパが資料作った', 'はるとがピーマン食べた', 'お弁当作った', '学校で作った', '誰が作った', '昼は外で食べた']) {
+      expect(say(s, t).state.meals, t).toEqual(s.meals);
+    }
+    // AI（LLM）が今日は無理・今日のみんな外食と読んでも、答えを先にする（ラク日・みんな外食の日にしない）
+    const llm = say(s, 'しんどくて作れなかった', [{ type: 'today_impossible' }]);
+    expect(meal(llm.state, MON).status).toBe('skipped');
+    expect(meal(llm.state, MON).kind).toBe('normal');
+    expect(meal(say(s, '作ったよ😊', [{ type: 'absence', date: MON, memberRef: 'みんな' }]).state, MON).status).toBe('cooked');
+  });
+
+  it('C-2 「〜てたら」「気づいたら」のあとが作れなかったで終わる文は、仮定ではなく作らなかったの答え', () => {
+    const s0 = start();
+    const s1 = ask();
+    for (const t of ['バタバタしてたら作れなかった', '気づいたら寝てて作れなかった', '帰ったら遅くて作れなかった', 'だらだらして作れなかった']) {
+      expect(meal(say(s0, t).state, MON).status, t).toBe('skipped');
+      const r = say(s1, t);
+      expect(meal(r.state, MON).status, t).toBe('skipped');
+      expect(meal(r.state, TUE), t).toEqual(meal(s1, TUE));
+    }
+    // 仮定は今までどおり記録しない
+    for (const t of ['無理だったら別のにして', '作れなかったらごめん', '帰りが遅かったら出前にする', '作ったら写真送るね']) {
+      expect(say(s0, t).state.meals, t).toEqual(s0.meals);
+      expect(say(s1, t).state.meals, t).toEqual(s1.meals);
+    }
+  });
+
+  it('C-3 理由にだけ宿題・お昼が出てくる「宿題見てて作れなかった」「お昼食べすぎて夕飯作らなかった」は、夕食の答え', () => {
+    const s0 = start();
+    const s1 = ask();
+    for (const t of ['宿題見てて作れなかった', 'お昼食べすぎて夕飯作らなかった']) {
+      expect(meal(say(s0, t).state, MON).status, t).toBe('skipped');
+      expect(meal(say(s1, t).state, MON).status, t).toBe('skipped');
+    }
+  });
+
+  it('C-4 「夕飯まだ作ってない」「夕飯作った方がいいかな」は答えではない（記録せず、今日の献立を見せる）', () => {
+    const s0 = start();
+    const s1 = ask();
+    for (const t of ['夕飯まだ作ってない', 'まだ夕飯作ってない', '夕飯作った方がいいかな', '夕飯作ったほうがいい']) {
+      const r = say(s0, t);
+      expect(r.state.meals, t).toEqual(s0.meals);
+      expect(r.state.shopping, t).toEqual(s0.shopping);
+      expect(r.replies[0].card, t).toEqual({ kind: 'meal', date: MON });
+      expect(say(s1, t).state.meals, t).toEqual(s1.meals);
+    }
+    for (const t of ['まだ作ってない', 'キーマカレー作ったことない']) {
+      expect(say(s0, t).state.meals, t).toEqual(s0.meals);
+      expect(say(s1, t).state.meals, t).toEqual(s1.meals);
+    }
+  });
+
+  it('C-5 前日の確認への「パパが外で食べてきた」「パパは外食した」で、家族の夕食を作らなかったことにしない', () => {
+    const s1 = ask();
+    for (const t of ['パパが外で食べてきた', 'パパは外食した']) {
+      expect(meal(say(s1, t).state, MON).status, t).toBe('unconfirmed');
+    }
+    // 家族みんなの外食は、今までどおり前日の作らなかった
+    expect(meal(say(s1, 'みんなで外食した').state, MON).status).toBe('skipped');
+  });
+
+  it('C-6 「今夜は出前にする」「今日は出前にしよう」は今日の夕食を作らない日にする。日の言葉のない出前の予定は、前日の答えにしない', () => {
+    const s0 = start();
+    const s1 = ask();
+    for (const t of ['今夜は出前にする', '今日は出前にしよう', '今日は出前とる']) {
+      expect(meal(say(s0, t).state, MON).status, t).toBe('skipped');
+      const r = say(s1, t);
+      expect(meal(r.state, TUE).status, t).toBe('skipped');
+      expect(meal(r.state, MON).status, t).toBe('unconfirmed');
+      // AI が今日は無理・今日のみんな外食と読んでも、作らない日（ラク日・外食の日にしない）
+      expect(meal(say(s0, t, [{ type: 'today_impossible' }]).state, MON).status, t).toBe('skipped');
+      expect(meal(say(s0, t, [{ type: 'absence', date: MON, memberRef: 'みんな' }]).state, MON).absentMemberIds, t).toEqual([]);
+    }
+    for (const t of ['出前にします', '出前とる', '出前を取る']) {
+      expect(say(s1, t).state.meals, t).toEqual(s1.meals);
+    }
+    // 有料版で今日の配信が直前なら、日の言葉がなくても今日の予定（今までどおり）
+    const paid = advanceDay(start(MON, { ...DEMO_ONBOARDING, plan: 'paid' }), catalog).state;
+    expect(meal(say(paid, '出前にします').state, TUE).status).toBe('skipped');
+    expect(meal(say(paid, '出前にします').state, MON).status).toBe('unconfirmed');
+  });
+
+  it('C-7 「外で食べた」「外でカレー食べた」は作ったではなく作らなかった（有料版の今日の配信のあとも）', () => {
+    const s1 = ask();
+    const paid = advanceDay(start(MON, { ...DEMO_ONBOARDING, plan: 'paid' }), catalog).state;
+    for (const t of ['外で食べた', '外でカレー食べた']) {
+      expect(meal(say(paid, t).state, TUE).status, t).toBe('skipped');
+      expect(meal(say(s1, t).state, MON).status, t).toBe('skipped');
+    }
+    // AI が今日の献立を見る命令と読んでも、作ったにしない
+    expect(meal(say(s1, '実家で食べた', [{ type: 'show_today' }]).state, MON).status).toBe('skipped');
+    // お昼の外食は、夕食の答えにしない
+    expect(say(paid, '昼は外で食べた').state.meals, '昼は外で食べた').toEqual(paid.meals);
+    expect(say(s1, '昼は外で食べた').state.meals, '昼は外で食べた').toEqual(s1.meals);
+  });
+
+  it('C-8 前日の確認への「外食しました」「無理やった」「作れませんでした」なども、前日の作らなかった（今日は変えない）', () => {
+    const s1 = ask();
+    for (const t of ['外食しました', '外食しちゃった', 'がいしょくした', '無理やった', '作れませんでした', '作れんかった', '実家で食べた']) {
+      const r = say(s1, t);
+      expect(meal(r.state, MON).status, t).toBe('skipped');
+      expect(meal(r.state, TUE), t).toEqual(meal(s1, TUE));
+    }
+  });
+
+  it('C-9 AI が「夕飯作れなかった」を今日は無理と読んでも、ルールと同じに今日の作らなかったにする（ラク日にしない）', () => {
+    const s = start();
+    const r = say(s, '夕飯作れなかった', [{ type: 'today_impossible' }]);
+    expect(meal(r.state, MON).status).toBe('skipped');
+    expect(meal(r.state, MON).kind).toBe('normal');
+  });
+
+  it('C-11 「本日は作れませんでした」「きょうは作れなかった」は、前日の確認があっても今日の答え', () => {
+    const s1 = ask();
+    for (const t of ['本日は作れませんでした', 'きょうは作れなかった', 'こんやは作った']) {
+      const r = say(s1, t);
+      expect(meal(r.state, MON).status, t).toBe('unconfirmed');
+      expect(meal(r.state, TUE).status, t).not.toBe('planned');
+    }
+  });
+
+  it('C-10 「外食の場合は連絡する」は仮定なので、今日をみんな外食の日にしない', () => {
+    const s = start();
+    for (const t of ['外食の場合は連絡する', 'パパが飲み会の場合は言うね']) {
+      expect(say(s, t).state.meals, t).toEqual(s.meals);
+    }
+  });
+});
+
+describe('前日の確認のあとに、ほかの返事をはさんでも、「無理だった」「外食した」は前日の答え（LINE では、確認がほかの返事と一緒に届く）', () => {
+  it('「買い物リスト」のあとでも、前日の作らなかったにする（今日は変えない）', () => {
+    const s = say(advanceDay(start(), catalog).state, '買い物リスト').state;
+    for (const t of ['無理だった', '外食した', '外で食べた']) {
+      const r = say(s, t);
+      expect(meal(r.state, MON).status, t).toBe('skipped');
+      expect(meal(r.state, TUE), t).toEqual(meal(s, TUE));
+    }
+  });
+
+  it('有料版で、いちばん新しい［作った］が今日の配信なら、今までどおり今日のこと', () => {
+    const paid = advanceDay(start(MON, { ...DEMO_ONBOARDING, plan: 'paid' }), catalog).state;
+    const r = say(paid, '無理だった');
+    expect(meal(r.state, MON).status).toBe('unconfirmed');
+    expect(meal(r.state, TUE).kind).toBe('raku');
+  });
+
+  it('前日にもう答えていれば、前日の答えにしない', () => {
+    const s = say(advanceDay(start(), catalog).state, '作った').state;
+    expect(meal(s, MON).status).toBe('cooked');
+    const r = say(s, '無理だった');
+    expect(meal(r.state, MON).status).toBe('cooked');
+  });
+});

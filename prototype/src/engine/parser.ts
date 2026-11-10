@@ -79,8 +79,8 @@ const IMPOSSIBLE = re(
 /** キーワードのすぐ後ろの否定（「無理じゃない」「疲れてない」「外食じゃなくて」「体調はいい」）。「無理しない」は否定にしない。 */
 const NEG_AFTER =
   /^(じゃ|では|でわ)(ない|なく|ありません|ねー)|^て(い)?(ない|ません|なく)|^くない|^なく(て)?(いい|ても)|^ない|^(が|は)?(いい|良い|よい|大丈夫|だいじょうぶ|ばっちり)/;
-/** 仮定（「切れたら」「無理なら」「あれば」）。 */
-const HYPO = /たら|なら(?!な|べ)|ければ|であれば|れば/;
+/** 仮定（「切れたら」「無理なら」「あれば」「外食の場合は」）。 */
+const HYPO = /たら|なら(?!な|べ)|ければ|であれば|れば|場合|ばあい/;
 /** 質問の文末（「あったっけ」「あるかな」）。「？」は文を区切るときに見る。 */
 const QUESTION_END = /(っけ|かな|かしら|でしょうか|ですか|ますか)$/;
 const CHANGE = re([
@@ -257,6 +257,18 @@ function findSpans(t: string, terms: Term[]): (Span & { kind: Term['kind'] })[] 
 /** 料理の名前が書いてあるか（「さばの味噌煮作った」「カレー作ったよ」）。作った・作らなかったの答えの見分けに使う。 */
 export function mentionsDish(text: string, catalog: Catalog): boolean {
   return findSpans(n(text), vocabOf(catalog).dishFirst).some((s) => s.kind === 'dish');
+}
+
+/**
+ * 「作った」の前の語が料理か（「唐揚げ作ったよ」「生姜焼きを作った」。名前の一部でもよい）。「資料作った」「工作作った」は料理ではない。
+ * 作った・作らなかったの答えの見分けに使う。
+ */
+export function dishBefore(text: string, catalog: Catalog): boolean {
+  const t = n(text).replace(/(を|は|が|も|[、,])+$/, '');
+  if (!t) return false;
+  if (mentionsDish(t, catalog)) return true;
+  const noun = t.split(/[がはもとにでをの、,]/).pop() ?? '';
+  return noun.length >= 2 && looseDishes(noun, catalog).length > 0;
 }
 
 function mask(t: string, spans: Span[]): string {
@@ -467,6 +479,11 @@ function findMemberRefs(t: string, members: Member[]): { refs: string[]; masked:
   const all = refs.filter((r) => ALL_REFS.includes(r));
   const out = all.length > 1 ? refs.filter((r) => !ALL_REFS.includes(r) || r === all[0]) : refs;
   return { refs: uniq(out), masked: cleaned };
+}
+
+/** 書かれた家族のうち、家族全員を指す語（みんな・全員・家族）でない人がいるか（「パパは外食した」）。 */
+export function namesSomeone(text: string, members: Member[]): boolean {
+  return findMemberRefs(n(text), members).refs.some((r) => !ALL_REFS.includes(r));
 }
 
 // ---------------------------------------------------------------------------

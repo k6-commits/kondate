@@ -2,7 +2,17 @@
 import type { Action, ActionButton, AppState, Catalog, ChatMessage, ISODate, ParsedCommand, Proposal, Reaction, StepResult } from './types';
 import { addDays, formatJa, isISODate, weekStartOf, weekdayOf } from './dates';
 import { eatingMembers, everyoneOut, findDishIn, ingredientsOf, mealOn } from './context';
-import { SELF_WORDS, dateAnswer, findDates, isReasonableDate, memberAnswer, mentionsDish, parseMessage } from './parser';
+import {
+  SELF_WORDS,
+  dateAnswer,
+  dishBefore,
+  findDates,
+  isReasonableDate,
+  memberAnswer,
+  mentionsDish,
+  namesSomeone,
+  parseMessage,
+} from './parser';
 import {
   absence,
   acceptProposal,
@@ -652,35 +662,127 @@ function withRuleViewDates(commands: ParsedCommand[], rules: ParsedCommand[]): P
   });
 }
 
-/** 前日（など）の献立を作ったかどうかの、文字での答え（「作った」「作らなかった」「昨日は無理だった」）。 */
-const COOKED_WORDS = /(作った|作りました|つくった|作れた|つくれた|できた|食べた|たべた|食べました)(?!い|く|ら|り|っけ)/;
+/**
+ * 前日（など）の献立を作ったかどうかの、文字での答え（「作った」「作らなかった」「昨日は無理だった」）。
+ * 「作った方がいい」「作ったことない」は、作ったの答えではない。
+ */
+const COOKED_WORDS = /(作った|作りました|つくった|作れた|つくれた|作ってくれた|作ってくれました|できた|食べた|たべた|食べました)(?!い|く|ら|り|っけ|こと|ほう|方)/;
 const NOT_COOKED_WORDS =
-  /作らなかった|つくらなかった|作れなかった|つくれなかった|作ってない|作っていない|つくってない|作れず|作りませんでした|つくりませんでした|無理だった|むりだった|無理でした|むりでした|できなかった|できませんでした|外食(だった|した|にした|に行った|でした)|食べに行った|(出前|でまえ)(?!に?しよ|にする|取ろ|とろ|頼も|たのも)|ぱすした|休んだ/;
+  /作らなかった|つくらなかった|作れなかった|つくれなかった|作ってない|作っていない|つくってない|作れず|作りませんでした|つくりませんでした|作れませんでした|つくれませんでした|作れんかった|作れへんかった|作られへんかった|作らんかった|作らへんかった|無理だった|むりだった|無理でした|むりでした|無理やった|むりやった|できなかった|できませんでした|(外食|がいしょく)(だった|した|にした|に行った|でした|しました|しちゃった|してきた)|食べに行った|(出前|でまえ)(?!を?(?:に?しよ|にする|にしま(?!した)|にしたい|取ろ|とろ|取る|とる|取りま(?!した)|とりま(?!した)|頼も|たのも|頼む|たのむ|頼みま(?!した)|たのみま(?!した)|でいい))|ぱすした|休んだ/;
+/**
+ * 出前のこれからの話（「今夜は出前にする」「今日は出前にしよう」「出前とる」）。今日の夕食を作らないことにする。
+ * 過ぎた日の確認への答えにはしない（日の言葉のない「出前にします」で、昨日を記録しない）。
+ */
+const DELIVERY_PLAN =
+  /(出前|でまえ)を?(に?しよ|にする|にしま(?!した)|にしたい|取ろ|とろ|取る|とる|取りま(?!した)|とりま(?!した)|頼も|たのも|頼む|たのむ|頼みま(?!した)|たのみま(?!した)|でいい)/;
+/** 外で食べた（「外で食べた」「外でカレー食べてきた」「実家で食べた」）。作ったではなく、作らなかった。 */
+const ATE_OUT = /(外|そと|実家|じっか|店|みせ)で[^、。,!]{0,6}?(食べ|たべ)(た|ました|てきた|てきました)(?!い|ら|り|っけ|こと|ほう|方)/;
 /**
  * 仮定の言い方（「無理だったら」「作れなかったら」「休んだら」「外食なら」「作ってないなら」「外食の場合は」）。
  * 作った・作らなかったの答えにしない（「無理だったら別のにして」「外食だったら言うね」で、今日の夕食を記録しない）。
  * 「たら」の前が文頭・助詞・記号なら、魚の「たら」（「たらこ」も）なので仮定にしない。
  */
-const CONDITIONAL = /(?<!^|[のはがをともでにへやか、,・])[ただ]ら(?!こ)|なら(?![なずんべ])|場合|ばあい/;
+const CONDITIONAL = /(?<!^|[のはがをともでにへやか、,・])[ただ]ら(?!こ)|なら(?![なずんべ])|場合|ばあい/g;
+/** 答えの終わりに付けてよい言葉（「作ったよ」「作ったで」「作ったっす」「作りましたー」）。 */
+const ANSWER_TAIL = '(?:よ|ね|わ|な|で|さ|ぞ|ん|です|っす|けん|ばい|ー)*$';
+/** 作った・作らなかったの過去の言い方で終わる（「バタバタしてたら作れなかった」の、たらのあと）。 */
+const ENDS_IN_ANSWER = new RegExp(`(?:${COOKED_WORDS.source}|${NOT_COOKED_WORDS.source}|${ATE_OUT.source})${ANSWER_TAIL}`);
 /**
  * 「作った」「作らなかった」だけの答え（始めの「うん」、終わりの「よ」「です」「ー」は許す）。前日の確認も日の言葉もないときは、
- * これだけを今日の夕食の答えにする（「はるとがおやつ食べた」「宿題できた」を、今日の夕食の記録にしない）。
+ * これ（と、作る・作れないで終わる答え、料理の名前・「夕飯」の入った答え）を今日の夕食の答えにする
+ * （「はるとがおやつ食べた」「宿題できた」を、今日の夕食の記録にしない）。
  */
 const BARE_ANSWER = new RegExp(
-  `^(?:はい|うん|ええ|いや|いいえ|ううん)?[、,]?(?:${COOKED_WORDS.source}|${NOT_COOKED_WORDS.source}|(?:出前|でまえ)(?:だった|でした|にした|にしました|を?(?:とった|取った|頼んだ|たのんだ)))(?:よ|ね|わ|です|ー)*$`,
+  `^(?:はい|うん|ええ|いや|いいえ|ううん)?[、,]?(?:${COOKED_WORDS.source}|${NOT_COOKED_WORDS.source}|${ATE_OUT.source}|(?:出前|でまえ)(?:だった|でした|にした|にしました|を?(?:とった|取った|頼んだ|たのんだ)))${ANSWER_TAIL}`,
 );
+/**
+ * 作る・作れないの過去の言い方で終わる答え（「ママが作った」「しんどくて作れなかった」「なんとか作った」）。
+ * その前は、文頭・助詞・理由の「〜て」「〜で」・決まった副詞・料理の名前だけ（「資料作った」「工作作った」は夕食の答えにしない）。
+ */
+const COOK_END = new RegExp(
+  `(作った|作りました|つくった|作れた|つくれた|作ってくれた|作ってくれました|作らなかった|つくらなかった|作れなかった|つくれなかった|作れず|作りませんでした|作れませんでした|作れんかった|作れへんかった|作らんかった)${ANSWER_TAIL}`,
+);
+const COOK_LEAD = /(^|が|は|も|と|に|て|で|って|から|ので|たら|だら|[、,])$/;
+const COOK_ADVERB =
+  /(なんとか|何とか|どうにか|ちゃんと|一応|いちおう|さっき|今|いま|もう|無事|ぶじ|全部|ぜんぶ|結局|けっきょく|やっぱり|やっぱ|やっと|全然|ぜんぜん|久しぶりに|ひさしぶりに|一緒に|いっしょに|自分で|ひとりで|一人で|急いで|いそいで)$/;
 
 /**
  * 夕食でない食事や用事の話（「給食でカレー食べた」「はるとがおやつ食べた」「宿題できた」）。作った・作らなかったの答えにしない。
  * bodyOf のあとの文に当てるので、カタカナはひらがなで書く（ランチ→らんち）。
  */
-const NOT_DINNER = /給食|弁当|べんとう|おやつ|お菓子|間食|お昼|昼ごはん|昼ご飯|昼飯|昼食|らんち|朝ごはん|朝ご飯|朝飯|朝食|宿題|しゅくだい/;
+const NOT_DINNER_MEAL = /給食|弁当|べんとう|おやつ|お菓子|間食|お昼|昼ごはん|昼ご飯|昼飯|昼食|昼は|昼に|昼も|らんち|朝ごはん|朝ご飯|朝飯|朝食/;
+const NOT_DINNER_TASK = /宿題|しゅくだい/;
+/** 夕食だけを指す言葉（「お昼食べすぎて夕飯作らなかった」は、夕食の答え）。 */
+const DINNER_ONLY = /夕飯|夕ご飯|夕ごはん|夕食|晩ご飯|晩ごはん|晩御飯|晩飯|夜ご飯|夜ごはん|ばんごはん|よるごはん|ゆうはん|ゆうごはん/;
 /** 夕食のことだとわかる言葉（「夕飯作った」「ごはんできた」）。 */
-const DINNER_WORDS = /夕飯|夕ご飯|夕ごはん|夕食|晩ご飯|晩ごはん|晩御飯|晩飯|夜ご飯|夜ごはん|ばんごはん|よるごはん|ゆうはん|ゆうごはん|ごはん|ご飯/;
-/** 前日の確認への、日の言葉のない「外で食べた」（NOT_COOKED_WORDS にない言い方）。 */
-const ATE_OUT = /外で食べ(た|ました|てきた)/;
+const DINNER_WORDS = new RegExp(`${DINNER_ONLY.source}|ごはん|ご飯`);
+/** まだ作っていないだけ（「まだ作ってない」「夕飯まだ作ってない」）。作らなかったの答えではない。 */
+const NOT_YET = /まだ.{0,8}?((作|つく)って(い)?ない|できて(い)?ない)/;
 /** 日の言葉（あれば、answerCookedCheck ではなく、ふだんの読み方にまかせる）。 */
-const DAY_WORDS = /今日|きょう|今夜|今晩|こんや|こんばん|明日|あした|あす|明後日|あさって|昨日|きのう|一昨日|おととい|昨晩|昨夜|ゆうべ|今週|来週|曜/;
+const DAY_WORDS = /今日|きょう|本日|ほんじつ|今夜|今晩|こんや|こんばん|明日|あした|あす|明後日|あさって|昨日|きのう|一昨日|おととい|昨晩|昨夜|ゆうべ|今週|来週|曜/;
+
+/** 文末の飾り（絵文字・「w」「笑」・顔文字）を外す（「作ったよ😊」「作ったw」も、同じ答えに読む）。 */
+function plainAnswer(t: string): string {
+  return t
+    .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{20E3}]/gu, '')
+    .replace(/([(（][^()（）]{1,8}[)）]|w+|笑)+$/u, '')
+    .replace(/[!！。、.,\s〜~♪]+$/u, '');
+}
+
+/** 質問・迷っている言い方（「作った？」「誰が作った」「出前にしようかな」）。 */
+const isQuestion = (t: string) => /[?？]/.test(t) || /(かな|かしら)$/.test(t) || /(誰|だれ)(が|と|に)|どうやって|どこで|何を作|なにを作/.test(t);
+/** 家の外で作った話（「学校で作った」「料理教室で作った」）。今日の夕食の答えにしない。 */
+const MADE_ELSEWHERE = /学校|保育園|幼稚園|会社|職場|塾|教室|学童/;
+
+/**
+ * 仮定の言い方か。「〜たら」のあとが作った・作らなかったの過去の言い方で終わるなら、仮定ではなく、あったことの話
+ * （「バタバタしてたら作れなかった」「気づいたら寝てて作れなかった」「だらだらして作れなかった」）。
+ */
+function conditional(t: string): boolean {
+  const hits = [...t.matchAll(CONDITIONAL)];
+  const last = hits.at(-1);
+  if (!last || last.index === undefined) return false;
+  return !ENDS_IN_ANSWER.test(t.slice(last.index + last[0].length));
+}
+
+/** 夕食でない食事や用事の話か（夕食だけを指す言葉があれば夕食の話。宿題は「作る」ものではないので、作る・作れないの答えは夕食の話）。 */
+function notDinner(t: string): boolean {
+  if (DINNER_ONLY.test(t)) return false;
+  if (NOT_DINNER_MEAL.test(t)) return true;
+  return NOT_DINNER_TASK.test(t) && !/作|つく[っらりれ]/.test(t);
+}
+
+/** 家族の1人だけが外で食べた話（「パパは外食した」「パパが外で食べてきた」）。家族の夕食を作ったかどうかの答えにしない。 */
+function oneAteOut(s: AppState, t: string): boolean {
+  if (!/外食|がいしょく|外で|そとで|実家|じっか|食べてき|食べに行/.test(t)) return false;
+  return eatingMembers(s.household).length > 1 && namesSomeone(t, s.household.members);
+}
+
+/** 作る・作れないで終わる答えか（その前に置けるのは、文頭・助詞・理由・決まった副詞・料理の名前だけ）。 */
+function endsInCooking(t: string, catalog: Catalog): boolean {
+  const m = COOK_END.exec(t);
+  if (!m) return false;
+  const before = t.slice(0, m.index);
+  if (MADE_ELSEWHERE.test(before)) return false;
+  return COOK_LEAD.test(before) || COOK_ADVERB.test(before) || dishBefore(before, catalog);
+}
+
+/**
+ * 確認も日の言葉もないときに、今日の夕食の答えとして読むか：「作った」「作らなかった」だけの答え（あとにひとこと添えても）、
+ * 作る・作れないで終わる答え、料理の名前や「夕飯」の入った答え。
+ */
+function answersToday(t: string, catalog: Catalog): boolean {
+  const core = plainAnswer(t);
+  const head = core.split(/けど|けれど|[、,。!]/)[0];
+  return (
+    BARE_ANSWER.test(core) ||
+    BARE_ANSWER.test(head) ||
+    endsInCooking(core, catalog) ||
+    endsInCooking(head, catalog) ||
+    DINNER_WORDS.test(t) ||
+    mentionsDish(t, catalog)
+  );
+}
 
 /**
  * 前日（など）の「作りましたか？」への、日の言葉のない「無理だった」「外食した」「疲れて無理だった」。
@@ -688,33 +790,59 @@ const DAY_WORDS = /今日|きょう|今夜|今晩|こんや|こんばん|明日|
  * 有料版で直前が今日の配信（今日の［作った］）のときは、ここでは扱わない。
  */
 function answerCookedCheck(s: AppState, catalog: Catalog, text: string): boolean {
-  const last = [...s.chat].reverse().find((m) => m.from === 'bot');
-  const asked = last?.actions?.map((a) => a.action).find((a) => a.type === 'cooked' && a.date < s.today);
-  if (!asked || asked.type !== 'cooked') return false;
+  const askedDate = pendingPastCheck(s);
+  if (!askedDate) return false;
   const t = bodyOf(text);
-  if (t.length > 24 || /[?？]/.test(t) || CONDITIONAL.test(t) || NOT_DINNER.test(t) || DAY_WORDS.test(t)) return false;
+  const core = plainAnswer(t);
+  if (t.length > 24 || isQuestion(core) || conditional(core) || notDinner(t) || DAY_WORDS.test(t)) return false;
+  // 「まだ作ってない」（まだ作っていないだけ）、「パパは外食した」（1人だけの外食）は、その日の答えにしない。
+  if (NOT_YET.test(t) || oneAteOut(s, t)) return false;
   if (findDates(t, s.today).dates.length > 0) return false;
   if (!NOT_COOKED_WORDS.test(t) && !ATE_OUT.test(t)) return false;
-  const meal = mealOn(s, asked.date);
+  const meal = mealOn(s, askedDate);
   if (!meal || meal.dishIds.length === 0) return false;
-  notCooked(s, catalog, asked.date);
+  notCooked(s, catalog, askedDate);
   return true;
+}
+
+/**
+ * いちばん新しい「作りましたか？」（［作った］のボタン）が、まだ答えのない過ぎた日のものなら、その日。
+ * 直前の返事でなくてもよい（LINE では、前日の確認が、その日の最初の書き込みへの返事に、ほかの返事と一緒に届く。
+ * 「買い物リスト」のあとに「無理だった」と書いても、前日の答えにする）。
+ * いちばん新しい［作った］が今日以降のもの（有料版の今日の配信・今日の献立のカード）なら、なし（今日のことと読む）。
+ */
+function pendingPastCheck(s: AppState): ISODate | undefined {
+  for (let i = s.chat.length - 1; i >= 0; i--) {
+    const m = s.chat[i];
+    if (m.from !== 'bot' || !m.actions) continue;
+    const dates = m.actions.flatMap((a) => (a.action.type === 'cooked' ? [a.action.date] : []));
+    if (dates.length === 0) continue;
+    if (dates.some((d) => d >= s.today)) return undefined;
+    const d = [...dates].sort().at(-1)!;
+    return mealOn(s, d)?.status === 'unconfirmed' ? d : undefined;
+  }
+  return undefined;
 }
 
 function cookedReport(s: AppState, catalog: Catalog, text: string): { date: ISODate; cooked: boolean } | null {
   const t = bodyOf(text);
+  const core = plainAnswer(t);
   // 短い答えだけを読む（長い文や質問は、ほかの話のことが多い）。
-  if (t.length > 24 || /[?？]/.test(t)) return null;
+  if (t.length > 24 || isQuestion(core)) return null;
   // 仮定（「無理だったら」「外食なら」）や、夕食でない話（給食・おやつ・宿題）は、答えにしない。
-  if (CONDITIONAL.test(t) || NOT_DINNER.test(t)) return null;
+  if (conditional(core) || notDinner(t)) return null;
+  // まだ作っていないだけ（「夕飯まだ作ってない」）、1人だけの外食（「パパは外食した」）も、答えにしない。
+  if (NOT_YET.test(t) || oneAteOut(s, t)) return null;
   // これからの日の話（「明日は出前にする」「金曜は外食した」の書きまちがい）は、前日の確認への答えにしない（今日を記録しない）。
   if (findDates(t, s.today).dates.some((d) => d > s.today)) return null;
   const last = [...s.chat].reverse().find((m) => m.from === 'bot');
   const asked = last?.actions?.some((a) => a.action.type === 'cooked');
   const askedDate = last?.actions?.find((a) => a.action.type === 'cooked')?.action;
   const pastWord = /一昨日|おととい|昨日|きのう|昨晩|昨夜|ゆうべ/.test(t);
+  // 出前の予定（「今夜は出前にする」）：今日を作らない日にする（過ぎた日の答えにはしない。下で日を確かめる）。
+  const plan = DELIVERY_PLAN.test(t) && !NOT_COOKED_WORDS.test(t);
   let cooked: boolean | null = null;
-  if (NOT_COOKED_WORDS.test(t) || (pastWord && /無理|むり|外食|疲れ|休み|ぱす/.test(t))) cooked = false;
+  if (NOT_COOKED_WORDS.test(t) || ATE_OUT.test(t) || plan || (pastWord && /無理|むり|外食|疲れ|休み|ぱす/.test(t))) cooked = false;
   else if (COOKED_WORDS.test(t)) cooked = true;
   else if (asked && /^(はい|うん|ええ)$/.test(t)) cooked = true;
   else if (asked && /^(いいえ|ううん|いや)$/.test(t)) cooked = false;
@@ -723,21 +851,28 @@ function cookedReport(s: AppState, catalog: Catalog, text: string): { date: ISOD
     ? addDays(s.today, -2)
     : /昨日|きのう|昨晩|昨夜|ゆうべ/.test(t)
       ? addDays(s.today, -1)
-      : /今日|今夜|今晩/.test(t)
+      : /今日|きょう(?!だい)|本日|ほんじつ|今夜|今晩|こんや|こんばん(?!は)/.test(t)
         ? s.today
         : undefined;
   if (!date && askedDate && askedDate.type === 'cooked') date = askedDate.date;
   date ??= s.meals.filter((m) => m.date < s.today && m.status === 'unconfirmed').map((m) => m.date).sort().at(-1);
   if (!date) {
-    // 聞いている確認（［作った］のボタン・まだ答えのない日）も、日の言葉もない：「作った」「作らなかった」だけの答えか、
+    // 聞いている確認（［作った］のボタン・まだ答えのない日）も、日の言葉もない：「作った」「作らなかった」だけの答え
+    // （「作ったよ😊」「作った、みんな完食」も）、作る・作れないで終わる答え（「ママが作った」「しんどくて作れなかった」）、
     // 料理の名前や「夕飯」が入った答え（「さばの味噌煮作った」「夕飯作れなかった」）なら今日のこと。
     // ほかの文は、今日の夕食の記録にしない（読み取れない書き込みとして返す）。
-    if (!BARE_ANSWER.test(t) && !DINNER_WORDS.test(t) && !mentionsDish(t, catalog)) return null;
+    if (!answersToday(t, catalog)) return null;
     date = s.today;
   }
+  if (plan && date !== s.today) return null;
   const meal = mealOn(s, date);
   if (!meal || meal.dishIds.length === 0 || date > s.today) return null;
   return { date, cooked };
+}
+
+/** 日付のない「今日の献立を見る」だけの命令か（「夕飯作った」は「夕飯」で、これにも読める）。 */
+function viewsTodayOnly(commands: ParsedCommand[]): boolean {
+  return commands.length === 1 && commands[0].type === 'show_today' && !commands[0].date;
 }
 
 /** 日付の指定がない「別のに」の対象：今日の献立があれば今日、なければ次の献立の日（みんな外で食べる日は除く）。 */
@@ -947,7 +1082,8 @@ export function handleUserText(
   // 「昨日は無理だった」を今日の「今日は無理」と読みちがえて、今日の献立を変えることがある）。
   if (commands.length > 0 && cookedReport(s, catalog, text)) {
     const rules = parseMessage(text, { today: s.today, members: s.household.members, catalog, ...(senderId ? { senderId } : {}) });
-    if (rules.every((c) => c.type === 'unknown')) commands = [];
+    // ルールが「夕飯」で今日の献立を見る命令だけに読んだもの（「夕飯作れなかった」）も、下で答えとして読む（AI の今日は無理にしない）。
+    if (rules.every((c) => c.type === 'unknown') || viewsTodayOnly(rules)) commands = [];
   }
   // 日を決められない時期だけの書き込み（「来週は無理」「月末は外食」）も、ルールで読む（LLM が今日のことと読んで、
   // 今日をラク日にしたり今日の欠席にしたりしないように。日付を聞く）。
@@ -959,8 +1095,7 @@ export function handleUserText(
     commands = parseMessage(text, { today: s.today, members: s.household.members, catalog, ...(senderId ? { senderId } : {}) });
   }
   // 「夕飯作った」「晩ごはん作れなかった」は、「夕飯」で今日の献立を見る命令（show_today）にも読めるが、作った・作らなかったの答え。
-  const onlyViewToday = commands.length === 1 && commands[0].type === 'show_today' && !commands[0].date;
-  if ((commands.length === 1 && commands[0].type === 'unknown') || onlyViewToday) {
+  if ((commands.length === 1 && commands[0].type === 'unknown') || viewsTodayOnly(commands)) {
     // 「作った」「作らなかった」「昨日は無理だった」は、前日（など）の確認への答えとして扱う。
     const report = cookedReport(s, catalog, text);
     if (report) {
