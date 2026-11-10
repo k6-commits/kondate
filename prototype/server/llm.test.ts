@@ -538,6 +538,8 @@ describe('検証（validateCommands）とルールへの戻り', () => {
     expect(system).toContain('question＝true');
     expect(system).toContain('frozen＝true');
     expect(system).toContain('today_impossible・want_alternatives・absence を出しません');
+    // 日を決められない時期（「来週は無理」「月末は外食」）は今日のことにしない（ルールと同じ。エンジンも、ルールで読む）
+    expect(system).toContain('日を決められない時期だけを書いた用件（「来週は無理」「月末は外食」「来週の外食なくなった」）は、今日のことにしません。');
   });
 
   it('SYSTEM に、遅くなるだけ（塾・残業）・「かも」・人を書かない欠席では absence を出さない決まりが入る', () => {

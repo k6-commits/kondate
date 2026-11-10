@@ -2,7 +2,7 @@
 import type { Action, ActionButton, AppState, Catalog, ChatMessage, ISODate, ParsedCommand, Proposal, Reaction, StepResult } from './types';
 import { addDays, formatJa, isISODate, weekStartOf, weekdayOf } from './dates';
 import { eatingMembers, everyoneOut, findDishIn, ingredientsOf, mealOn } from './context';
-import { SELF_WORDS, dateAnswer, findDates, isReasonableDate, memberAnswer, parseMessage } from './parser';
+import { SELF_WORDS, dateAnswer, findDates, isReasonableDate, memberAnswer, mentionsDish, parseMessage } from './parser';
 import {
   absence,
   acceptProposal,
@@ -14,6 +14,7 @@ import {
   isAskWho,
   newTurn,
   outOfStock,
+  proposalProblem,
   regenerateWeek,
   rejectProposal,
   request,
@@ -344,12 +345,7 @@ function showUnknown(s: AppState, text = ''): void {
     return;
   }
   if (VAGUE_WHEN.test(t) && AWAY_PLAN.test(t) && !/(かった|だった|でした|ました)$/.test(t)) {
-    reshowOpen(
-      s,
-      'いつのことか、日付が分かりませんでした。献立はこのままです。',
-      'いつのことか、日付が分かりませんでした。献立はこのままです。\n「11/30は外食」「金曜はパパがいない」のように、日付か曜日で送ってください。',
-      [BTN_WEEK],
-    );
+    askDate(s, 'absence');
     return;
   }
   // 直前の返事の案が残っていれば、そのボタンをもう一度出す（読み取れなくても、案を選べるように）。
@@ -360,6 +356,19 @@ function showUnknown(s: AppState, text = ''): void {
     [BTN_TODAY, BTN_WEEK],
   );
 }
+
+/** 日を決められない時期だけを書いた用件（「来週はパパが出張」「月末の外食なくなった」「来週は無理」）：献立を変えずに、日付を聞く。 */
+function askDate(s: AppState, kind: 'absence' | 'other'): void {
+  const lead = 'いつのことか、日付が分かりませんでした。献立はこのままです。';
+  const how =
+    kind === 'absence'
+      ? '「11/30は外食」「金曜はパパがいない」のように、日付か曜日で送ってください。'
+      : '「水曜は」「11/30は」のように、日付か曜日を入れて送ってください。';
+  reshowOpen(s, lead, `${lead}\n${how}`, [BTN_WEEK]);
+}
+
+/** ほかの用件と一緒に書いた、日を決められない用件（「来週はパパが出張。鶏むねが安い」）。ほかの用件は進めて、これを1回だけ添える。 */
+const ASK_DATE_PART = 'いつのことか日付が分からないところは、献立を変えていません。日付か曜日を入れて、もう一度送ってください。';
 
 /**
  * 直前の返事の、まだ選べる案（「どちらにしますか？」のボタン、提案の［替える］［そのまま］）を、lead に続けて出し直す。
@@ -394,11 +403,40 @@ function reshowOpen(s: AppState, lead: string, none: string, actions: ActionButt
  * ボタンは最後の書き込みのあとの返事にしか出ない（LINE のクイックリプライも最後のメッセージだけ）ので、出し直さないと
  * もう片方の案をボタンで選べなくなる。
  */
-function reshowOtherProposals(s: AppState, others: Proposal[]): void {
-  const live = others.filter((p) => s.proposals.some((x) => x.id === p.id));
+function reshowOtherProposals(s: AppState, catalog: Catalog, others: Proposal[]): void {
+  const pending = others.filter((p) => s.proposals.some((x) => x.id === p.id));
+  // 片方を替えたことで使えなくなった案（同じ料理が7日以内に入る など）は、出し直さずに取り下げて、そう伝える
+  // （出し直した［替える］を押して「この案は使えません」にならないように）。
+  const live: Proposal[] = [];
+  for (const p of pending) {
+    const problem = proposalProblem(s, catalog, p);
+    if (!problem) {
+      live.push(p);
+      continue;
+    }
+    s.proposals = s.proposals.filter((x) => x.id !== p.id);
+    addBotMessage(s, `${dateLabel(s.today, p.date)}の案は、使えなくなりました（${problem}）。`);
+  }
   live.forEach((p, i) => {
     const lead = i > 0 ? [] : [live.length === 1 ? 'もう1つの案も、ボタンで選べます。' : 'ほかの案も、それぞれのボタンで選べます。'];
     addBotMessage(s, [...lead, p.text].join('\n'), { card: { kind: 'meal', date: p.date }, actions: proposalButtons(p.id) });
+  });
+}
+
+/**
+ * 同じ返事で出した「どちらにしますか？」の案（ほかの日の別の案）を出し直す（提案に答えたあと。ボタンは最後の返事にしか出ないため）。
+ * 答えた提案と同じ日の案、その日の献立がもう変えられない・みんな外で食べる日になったときは出さない。
+ */
+function reshowChoice(s: AppState, choice: ChatMessage | undefined, answeredDay?: ISODate): void {
+  const options = (choice?.actions ?? []).filter((a) => a.action.type === 'choose_alternative');
+  const first = options[0]?.action;
+  if (!choice || !first || first.type !== 'choose_alternative' || first.date === answeredDay) return;
+  const meal = mealOn(s, first.date);
+  if (!meal || meal.date < s.today || meal.status !== 'planned' || everyoneOut(s.household, meal)) return;
+  const n = options.length;
+  addBotMessage(s, `${dateLabel(s.today, first.date)}の別の案も、ボタンか「1」${n >= 3 ? '「2」「3」' : '「2」'}で選べます。`, {
+    card: choice.card,
+    actions: choice.actions,
   });
 }
 
@@ -601,15 +639,74 @@ function guardTentative(s: AppState, catalog: Catalog, text: string, commands: P
   return kept;
 }
 
+/**
+ * LLM の show_today・show_shopping に日付がないとき、ルール（rules）が同じ種類の命令を1つだけ、日付つきで読めていれば、
+ * その日付を足す。ルールが日付を決めかねた書き込み（「明日と明後日の夕飯は？」は週の献立）や、今日の分には足さない。
+ */
+function withRuleViewDates(commands: ParsedCommand[], rules: ParsedCommand[]): ParsedCommand[] {
+  return commands.map((c) => {
+    if ((c.type !== 'show_today' && c.type !== 'show_shopping') || c.date) return c;
+    const same = rules.filter((r) => r.type === c.type);
+    const r = same.length === 1 ? same[0] : undefined;
+    return r && (r.type === 'show_today' || r.type === 'show_shopping') && r.date ? { ...c, date: r.date } : c;
+  });
+}
+
 /** 前日（など）の献立を作ったかどうかの、文字での答え（「作った」「作らなかった」「昨日は無理だった」）。 */
 const COOKED_WORDS = /(作った|作りました|つくった|作れた|つくれた|できた|食べた|たべた|食べました)(?!い|く|ら|り|っけ)/;
 const NOT_COOKED_WORDS =
-  /作らなかった|つくらなかった|作れなかった|つくれなかった|作ってない|作っていない|つくってない|作れず|無理だった|むりだった|できなかった|外食(だった|した|にした|に行った|でした)|食べに行った|出前|でまえ|ぱすした|休んだ/;
+  /作らなかった|つくらなかった|作れなかった|つくれなかった|作ってない|作っていない|つくってない|作れず|作りませんでした|つくりませんでした|無理だった|むりだった|無理でした|むりでした|できなかった|できませんでした|外食(だった|した|にした|に行った|でした)|食べに行った|(出前|でまえ)(?!に?しよ|にする|取ろ|とろ|頼も|たのも)|ぱすした|休んだ/;
+/**
+ * 仮定の言い方（「無理だったら」「作れなかったら」「休んだら」「外食なら」「作ってないなら」「外食の場合は」）。
+ * 作った・作らなかったの答えにしない（「無理だったら別のにして」「外食だったら言うね」で、今日の夕食を記録しない）。
+ * 「たら」の前が文頭・助詞・記号なら、魚の「たら」（「たらこ」も）なので仮定にしない。
+ */
+const CONDITIONAL = /(?<!^|[のはがをともでにへやか、,・])[ただ]ら(?!こ)|なら(?![なずんべ])|場合|ばあい/;
+/**
+ * 「作った」「作らなかった」だけの答え（始めの「うん」、終わりの「よ」「です」「ー」は許す）。前日の確認も日の言葉もないときは、
+ * これだけを今日の夕食の答えにする（「はるとがおやつ食べた」「宿題できた」を、今日の夕食の記録にしない）。
+ */
+const BARE_ANSWER = new RegExp(
+  `^(?:はい|うん|ええ|いや|いいえ|ううん)?[、,]?(?:${COOKED_WORDS.source}|${NOT_COOKED_WORDS.source}|(?:出前|でまえ)(?:だった|でした|にした|にしました|を?(?:とった|取った|頼んだ|たのんだ)))(?:よ|ね|わ|です|ー)*$`,
+);
 
-function cookedReport(s: AppState, text: string): { date: ISODate; cooked: boolean } | null {
+/**
+ * 夕食でない食事や用事の話（「給食でカレー食べた」「はるとがおやつ食べた」「宿題できた」）。作った・作らなかったの答えにしない。
+ * bodyOf のあとの文に当てるので、カタカナはひらがなで書く（ランチ→らんち）。
+ */
+const NOT_DINNER = /給食|弁当|べんとう|おやつ|お菓子|間食|お昼|昼ごはん|昼ご飯|昼飯|昼食|らんち|朝ごはん|朝ご飯|朝飯|朝食|宿題|しゅくだい/;
+/** 夕食のことだとわかる言葉（「夕飯作った」「ごはんできた」）。 */
+const DINNER_WORDS = /夕飯|夕ご飯|夕ごはん|夕食|晩ご飯|晩ごはん|晩御飯|晩飯|夜ご飯|夜ごはん|ばんごはん|よるごはん|ゆうはん|ゆうごはん|ごはん|ご飯/;
+/** 前日の確認への、日の言葉のない「外で食べた」（NOT_COOKED_WORDS にない言い方）。 */
+const ATE_OUT = /外で食べ(た|ました|てきた)/;
+/** 日の言葉（あれば、answerCookedCheck ではなく、ふだんの読み方にまかせる）。 */
+const DAY_WORDS = /今日|きょう|今夜|今晩|こんや|こんばん|明日|あした|あす|明後日|あさって|昨日|きのう|一昨日|おととい|昨晩|昨夜|ゆうべ|今週|来週|曜/;
+
+/**
+ * 前日（など）の「作りましたか？」への、日の言葉のない「無理だった」「外食した」「疲れて無理だった」。
+ * 過ぎた日の確認が直前に出ているときは、その日の「作らなかった」にする（今日をラク日にしたり、今日をみんな外食の日にしたりしない）。
+ * 有料版で直前が今日の配信（今日の［作った］）のときは、ここでは扱わない。
+ */
+function answerCookedCheck(s: AppState, catalog: Catalog, text: string): boolean {
+  const last = [...s.chat].reverse().find((m) => m.from === 'bot');
+  const asked = last?.actions?.map((a) => a.action).find((a) => a.type === 'cooked' && a.date < s.today);
+  if (!asked || asked.type !== 'cooked') return false;
+  const t = bodyOf(text);
+  if (t.length > 24 || /[?？]/.test(t) || CONDITIONAL.test(t) || NOT_DINNER.test(t) || DAY_WORDS.test(t)) return false;
+  if (findDates(t, s.today).dates.length > 0) return false;
+  if (!NOT_COOKED_WORDS.test(t) && !ATE_OUT.test(t)) return false;
+  const meal = mealOn(s, asked.date);
+  if (!meal || meal.dishIds.length === 0) return false;
+  notCooked(s, catalog, asked.date);
+  return true;
+}
+
+function cookedReport(s: AppState, catalog: Catalog, text: string): { date: ISODate; cooked: boolean } | null {
   const t = bodyOf(text);
   // 短い答えだけを読む（長い文や質問は、ほかの話のことが多い）。
   if (t.length > 24 || /[?？]/.test(t)) return null;
+  // 仮定（「無理だったら」「外食なら」）や、夕食でない話（給食・おやつ・宿題）は、答えにしない。
+  if (CONDITIONAL.test(t) || NOT_DINNER.test(t)) return null;
   // これからの日の話（「明日は出前にする」「金曜は外食した」の書きまちがい）は、前日の確認への答えにしない（今日を記録しない）。
   if (findDates(t, s.today).dates.some((d) => d > s.today)) return null;
   const last = [...s.chat].reverse().find((m) => m.from === 'bot');
@@ -630,7 +727,14 @@ function cookedReport(s: AppState, text: string): { date: ISODate; cooked: boole
         ? s.today
         : undefined;
   if (!date && askedDate && askedDate.type === 'cooked') date = askedDate.date;
-  date ??= s.meals.filter((m) => m.date < s.today && m.status === 'unconfirmed').map((m) => m.date).sort().at(-1) ?? s.today;
+  date ??= s.meals.filter((m) => m.date < s.today && m.status === 'unconfirmed').map((m) => m.date).sort().at(-1);
+  if (!date) {
+    // 聞いている確認（［作った］のボタン・まだ答えのない日）も、日の言葉もない：「作った」「作らなかった」だけの答えか、
+    // 料理の名前や「夕飯」が入った答え（「さばの味噌煮作った」「夕飯作れなかった」）なら今日のこと。
+    // ほかの文は、今日の夕食の記録にしない（読み取れない書き込みとして返す）。
+    if (!BARE_ANSWER.test(t) && !DINNER_WORDS.test(t) && !mentionsDish(t, catalog)) return null;
+    date = s.today;
+  }
   const meal = mealOn(s, date);
   if (!meal || meal.dishIds.length === 0 || date > s.today) return null;
   return { date, cooked };
@@ -820,29 +924,45 @@ export function handleUserText(
   const senderId = s.household.members.some((m) => m.id === opts.senderId) ? opts.senderId : undefined;
   // 直前の提案への「はい」「替えて」「そのまま」は、ボタンを押したのと同じに扱う。
   // 「誰が食べませんか？」への名前だけの答え（「パパ」）は、聞いた日の欠席にする。
-  // どちらも直前の返事への答えなので、LLM の結果より先に見る（LLM は直前の返事を知らない）。
+  // 前日の「作りましたか？」への、日の言葉のない「無理だった」「外食した」は、その日の「作らなかった」にする。
+  // どれも直前の返事への答えなので、LLM の結果より先に見る（LLM は直前の返事を知らない）。
   if (
     answerProposal(s, catalog, text) ||
     answerChoice(s, catalog, text) ||
     answerWho(s, catalog, text, senderId) ||
-    answerWhichDay(s, catalog, text)
+    answerWhichDay(s, catalog, text) ||
+    answerCookedCheck(s, catalog, text)
   ) {
     return { state: s, replies: newBotMessages(s, before) };
   }
   let commands = parsed ? validateCommands(s, catalog, parsed) : [];
   if (commands.length > 0) commands = guardTentative(s, catalog, text, commands, senderId);
+  // 見るだけの命令で、LLM が日付を落とした・表にない形で書いた（検証で外れた）：ルールが同じ命令を1つだけ、日付つきで読めて
+  // いれば、その日付を使う（「明日の夕飯なに？」に今日の献立を返さない。画面の prepareAiCommands の withRuleDates と同じ）。
+  if (commands.some((c) => (c.type === 'show_today' || c.type === 'show_shopping') && !c.date)) {
+    const rules = parseMessage(text, { today: s.today, members: s.household.members, catalog, ...(senderId ? { senderId } : {}) });
+    commands = withRuleViewDates(commands, rules);
+  }
   // 前日の確認への答え（「作った」「昨日は無理だった」）は、ルールで読む（LLM は直前の確認を知らないので、
   // 「昨日は無理だった」を今日の「今日は無理」と読みちがえて、今日の献立を変えることがある）。
-  if (commands.length > 0 && cookedReport(s, text)) {
+  if (commands.length > 0 && cookedReport(s, catalog, text)) {
     const rules = parseMessage(text, { today: s.today, members: s.household.members, catalog, ...(senderId ? { senderId } : {}) });
     if (rules.every((c) => c.type === 'unknown')) commands = [];
+  }
+  // 日を決められない時期だけの書き込み（「来週は無理」「月末は外食」）も、ルールで読む（LLM が今日のことと読んで、
+  // 今日をラク日にしたり今日の欠席にしたりしないように。日付を聞く）。
+  if (commands.length > 0) {
+    const rules = parseMessage(text, { today: s.today, members: s.household.members, catalog, ...(senderId ? { senderId } : {}) });
+    if (rules.every((c) => c.type === 'unknown' && !!c.vague)) commands = [];
   }
   if (commands.length === 0) {
     commands = parseMessage(text, { today: s.today, members: s.household.members, catalog, ...(senderId ? { senderId } : {}) });
   }
-  if (commands.length === 1 && commands[0].type === 'unknown') {
+  // 「夕飯作った」「晩ごはん作れなかった」は、「夕飯」で今日の献立を見る命令（show_today）にも読めるが、作った・作らなかったの答え。
+  const onlyViewToday = commands.length === 1 && commands[0].type === 'show_today' && !commands[0].date;
+  if ((commands.length === 1 && commands[0].type === 'unknown') || onlyViewToday) {
     // 「作った」「作らなかった」「昨日は無理だった」は、前日（など）の確認への答えとして扱う。
-    const report = cookedReport(s, text);
+    const report = cookedReport(s, catalog, text);
     if (report) {
       if (report.cooked) cooked(s, catalog, report.date);
       else notCooked(s, catalog, report.date);
@@ -853,7 +973,18 @@ export function handleUserText(
   if (offDays.length > 0) {
     addBotMessage(s, `${offDays.map((d) => dateLabel(s.today, d)).join('・')}は献立の日ではありません。この日はそのままで大丈夫です。`);
   }
-  const { dates: unplanned, rest } = unplannedAbsences(s, rest0);
+  const { dates: unplanned, rest: rest1 } = unplannedAbsences(s, rest0);
+  // 日を決められない時期だけを書いた用件（parseMessage の vague）。それだけなら日付を聞く。ほかの用件があれば、
+  // ほかの用件を進めて、日付を聞く言葉を1回だけ添える（黙って捨てない）。
+  const vague = rest1.flatMap((c) => (c.type === 'unknown' && c.vague ? [c.vague] : []));
+  const rest = rest1.filter((c) => !(c.type === 'unknown' && c.vague));
+  if (vague.length > 0) {
+    if (rest.length === 0 && offDays.length === 0 && unplanned.length === 0) {
+      askDate(s, vague.includes('other') ? 'other' : 'absence');
+      return { state: s, replies: newBotMessages(s, before) };
+    }
+    addBotMessage(s, ASK_DATE_PART);
+  }
   // 同じ返事の中で、同じ日に2つ目の案を出さない（turn.offered）。書いた日（turn.written）は、取り消しの日の見分けに使う。
   const turn = newTurn(findDates(bodyOf(text), s.today).dates, bodyOf(text));
   for (const { cmd, refs, days } of groupAbsences(orderCommands(rest)).slice(0, 8)) runCommand(s, catalog, cmd, turn, refs, days);
@@ -1058,10 +1189,14 @@ export function applyAction(state: AppState, catalog: Catalog, action: Action): 
       addUserMessage(s, tappedLabel(s, action, '別のに'));
       requestAlternatives(s, catalog, action.date);
       break;
-    case 'choose_alternative':
+    case 'choose_alternative': {
       addUserMessage(s, namesLine(s, catalog, action.dishIds) || '別の案');
+      // 同じ返事のほかの日の提案（「明日のは別のにして。鶏むねが安い」）は、ボタンつきで出し直す。
+      const others = pendingProposals(s).filter((p) => p.date !== action.date);
       chooseAlternative(s, catalog, action.date, action.dishIds);
+      reshowOtherProposals(s, catalog, others);
       break;
+    }
     case 'today_impossible':
       addUserMessage(s, '今日は無理');
       if (action.date === s.today) todayImpossible(s, catalog, action.date);
@@ -1070,15 +1205,21 @@ export function applyAction(state: AppState, catalog: Catalog, action: Action): 
     case 'accept_proposal': {
       addUserMessage(s, '替える');
       const others = pendingProposals(s).filter((p) => p.id !== action.proposalId);
+      const choice = lastChoice(s);
+      const day = s.proposals.find((p) => p.id === action.proposalId)?.date;
       acceptProposal(s, catalog, action.proposalId);
-      reshowOtherProposals(s, others);
+      reshowOtherProposals(s, catalog, others);
+      reshowChoice(s, choice, day);
       break;
     }
     case 'reject_proposal': {
       addUserMessage(s, 'そのまま');
       const others = pendingProposals(s).filter((p) => p.id !== action.proposalId);
+      const choice = lastChoice(s);
+      const day = s.proposals.find((p) => p.id === action.proposalId)?.date;
       rejectProposal(s, action.proposalId);
-      reshowOtherProposals(s, others);
+      reshowOtherProposals(s, catalog, others);
+      reshowChoice(s, choice, day);
       break;
     }
     case 'react': {

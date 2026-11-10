@@ -335,7 +335,11 @@ export type ParsedCommand =
    */
   | { type: 'request'; date?: ISODate; dishId?: string; protein?: Protein; genre?: Genre; ingredientId?: string; dishIds?: string[] }
   | { type: 'help' }
-  | { type: 'unknown'; text: string };
+  /**
+   * vague：日を決められない時期（「来週」「月末」「お盆」など）だけを書いた、日で決まる用件（欠席・取り消し・「無理」）。
+   * 今日のことにせず、日付か曜日で送ってもらう（absence：欠席、other：取り消し・「無理」）。ルールベースの parseMessage だけが付ける。
+   */
+  | { type: 'unknown'; text: string; vague?: 'absence' | 'other' };
 
 export interface ParseContext {
   today: ISODate;

@@ -61,6 +61,7 @@ export { parseMessage } from './parser';
  * handleUserText(state, catalog, text, parsed?, opts?): StepResult
  *   利用者の書き込みを処理する。parsed を渡せばそれを使い（サーバーの LLM の結果など）、なければ parseMessage を使う。
  *   利用者の発言と bot の返事を state.chat に追加する。parsed は validateCommands で検証し、使えなければ parseMessage に戻る。
+ *   parsed の見るだけの命令（show_today・show_shopping）に日付がなければ、ルールで読んだ日付で補う（「明日の夕飯なに？」）。
  *   opts.senderId：書き込んだ人（member の id。画面の「送る人」）。人を書かない「明日飲み会」「今日はいらない」をこの人の欠席にする
  *   （なければ、誰の分かを聞き返す）。直前の提案への「はい」「そのまま」、聞き返しへの名前だけの答え（「パパ」）も、ここで読む。
  * applyAction(state, catalog, action): StepResult — ボタン（postback）の処理。

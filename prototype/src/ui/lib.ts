@@ -149,6 +149,21 @@ export function dayLabel(today: ISODate, date: ISODate): string {
   return formatJa(date);
 }
 
+/**
+ * 家族から外した人の発言の「送った人」（画面の覚え書き）。member の id の代わりに、外したときの名前を残す
+ * （id のままだと、外した人の発言が最初の大人の名前や、あとで同じ id で加えた人の名前で出てしまう）。
+ */
+const FORMER_SENDER = 'former:';
+
+export function formerSender(nickname: string): string {
+  return `${FORMER_SENDER}${nickname}`;
+}
+
+/** formerSender で残した名前（そうでなければ null）。 */
+export function formerSenderName(sender: string | undefined): string | null {
+  return sender && sender.startsWith(FORMER_SENDER) ? sender.slice(FORMER_SENDER.length) || null : null;
+}
+
 export function adultsOf(members: Member[]): Member[] {
   const adults = members.filter((m) => m.ageBand === 'adult');
   return adults.length > 0 ? adults : members;

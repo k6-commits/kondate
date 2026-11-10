@@ -226,7 +226,12 @@ export function SummaryBody({ weekStart, state, catalog }: { weekStart: ISODate;
       )}
       {s.skippedOrImpossible > 0 ? (
         <div>
-          <dt>予定どおり作れなかった日</dt>
+          {/* 長い見出しは、語の途中（「作れなか／った日」）でなく「予定どおり／作れなかった日」で折り返す（styles.css の keep-all）。 */}
+          <dt>
+            予定どおり
+            <wbr />
+            作れなかった日
+          </dt>
           <dd className="num">{s.skippedOrImpossible}日</dd>
         </div>
       ) : null}

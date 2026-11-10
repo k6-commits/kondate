@@ -2,7 +2,7 @@
 import type { AppState, Catalog, ISODate, Ingredient, ShoppingItem, ShoppingList, StockLevel, Unit } from './types';
 import { AISLE_ORDER, UNIT_LABEL } from './types';
 import { diffDays, formatJa, weekdayOf } from './dates';
-import { findDishIn, hasAllergenExclusion, ingredientsOf, shoppingDateFor } from './context';
+import { everyoneOut, findDishIn, hasAllergenExclusion, ingredientsOf, shoppingDateFor } from './context';
 import { compareJa } from './util';
 
 export const FREEZE_NOTE = '買ったら冷凍';
@@ -104,8 +104,10 @@ export function buildShoppingLists(state: AppState, catalog: Catalog): ShoppingL
   // 「切れた」と言われた常備品（在庫が none）は、最初に使う日の買い物リストに「買い足し」として載せる。
   const refills = new Map<string, { shopDate: ISODate; dates: ISODate[] }>();
   const outOfStock = (ingId: string) => state.inventory.some((i) => i.ingredientId === ingId && i.level === 'none');
+  // みんな外で食べる日（家で食べる人がいない日）は、人数が残っていても入れない（家族を外して、その日に家で食べる人が
+  // いなくなったときなど。作り直さずにリストだけを直す画面の道でも、夕食なしの日の分を買わせない）。
   const meals = state.meals
-    .filter((m) => m.date >= today && m.status === 'planned' && m.servings > 0)
+    .filter((m) => m.date >= today && m.status === 'planned' && m.servings > 0 && !everyoneOut(state.household, m))
     .sort((a, b) => (a.date < b.date ? -1 : 1));
   for (const meal of meals) {
     const shopDate = shoppingDateFor(settings, today, meal.date);

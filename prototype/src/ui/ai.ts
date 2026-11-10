@@ -275,10 +275,28 @@ const MEMBER_ID = /(?:member|メンバー)[\s_\-‐－ー・]*(\d+)/giu;
 const MEMBER_WORD = /member|メンバー/iu;
 
 /**
+ * 書いた人自身を指す語（エンジンの parser の SELF_WORDS と、そのかな書き）。AI は「id がない言い方は、その語をそのまま」
+ * memberRef に入れるので、「あさって俺おらん」は memberRef「俺」で返ってくる。
+ */
+const SELF_REFS = ['わたし', '私', 'あたし', 'わたくし', '自分', 'じぶん', '僕', 'ぼく', '俺', 'おれ'];
+
+/** 語の比べ方：NFKC・前後の空白なし・カタカナはひらがな（「ワタシ」「オレ」も同じ語）。 */
+function refKey(s: string): string {
+  return toHiragana(s.normalize('NFKC').trim());
+}
+
+/** memberRef が、書いた人自身を指す語か（「わたし」「俺」「自分」など。ほかの語を含まないとき）。 */
+function isSelfRef(memberRef: string): boolean {
+  const key = refKey(memberRef);
+  return SELF_REFS.some((w) => refKey(w) === key);
+}
+
+/**
  * 欠席の memberRef に書かれた member の id を確かめる。AI には名前の代わりに id だけを見せているので：
  * - 家族にいない id（member_9 など）は読みちがい。その欠席は使わない（そのまま渡すと、返事に「member_9」が出る）。
  *   書き方を変えた id（「member-9」「メンバー9」）や、数字のない「member」も同じ（見ている人は、この語を書いていない）。
  * - id がいくつか書かれていたら（「member_2とmember_3」）、1人ずつの欠席に分ける（エンジンは id を1つずつ読む）。
+ *   書いた人自身の語も一緒なら（「俺とmember_3」）、その語の欠席も残す（送る人の欠席にするのは withSender）。
  * id のない言い方（「夫」「みんな」など）は、そのままエンジンに渡す。
  */
 export function checkMemberRefs(commands: ParsedCommand[], members: Pick<Member, 'id'>[]): ParsedCommand[] {
@@ -289,8 +307,55 @@ export function checkMemberRefs(commands: ParsedCommand[], members: Pick<Member,
     const ids = [...new Set([...ref.matchAll(MEMBER_ID)].map((m) => `member_${m[1]}`))];
     if (ids.length === 0) return MEMBER_WORD.test(ref) ? [] : [c];
     if (ids.some((id) => !known.has(id))) return [];
-    return ids.map((id) => ({ ...c, memberRef: id }));
+    const self = ref
+      .replace(MEMBER_ID, ' ')
+      .split(/[\s、,・と&＆]+|および|及び/u)
+      .find((w) => w && isSelfRef(w));
+    return [...ids.map((id) => ({ ...c, memberRef: id })), ...(self ? [{ ...c, memberRef: self }] : [])];
   });
+}
+
+/**
+ * 書いた人自身の欠席（AI の memberRef が「わたし」「俺」「自分」など）を、送る人（画面の「送る人」）の欠席にする。
+ * ルール（parseMessage）と「誰が食べませんか？」への答えは、エンジンが送る人にしている。AI の結果をそのまま渡すと、
+ * エンジンは続柄が「わたし」の人（デモではママ）と読むので、パパが「あさって俺おらんわ」と書くとママの欠席になる。
+ * 送る人がわからない（空）ときは、そのまま（エンジンの決まり：続柄が「わたし」の人）。
+ */
+export function withSender(commands: ParsedCommand[], senderId: string | undefined): ParsedCommand[] {
+  if (!senderId) return commands;
+  return commands.map((c) => (c.type === 'absence' && isSelfRef(c.memberRef) ? { ...c, memberRef: senderId } : c));
+}
+
+/**
+ * AI の show_today・show_shopping に日付がない（AI が日付を落とした・表にない形で書いて検証で外れた）とき、ルールが同じ
+ * 書き込みを、同じ命令1つだけ、日付つきで読めていれば、その日付を使う（「明日の夕飯なに？」に今日の献立を返さない）。
+ * ルールが日付を決めかねた書き込み（「明日と明後日の夕飯は？」は週の献立）や、今日の分（日付なし）には足さない。
+ */
+export function withRuleDates(commands: ParsedCommand[], rules: ParsedCommand[]): ParsedCommand[] {
+  return commands.map((c) => {
+    if ((c.type !== 'show_today' && c.type !== 'show_shopping') || c.date) return c;
+    const same = rules.filter((r) => r.type === c.type);
+    const r = same.length === 1 ? same[0] : undefined;
+    return r && (r.type === 'show_today' || r.type === 'show_shopping') && r.date ? { ...c, date: r.date } : c;
+  });
+}
+
+/**
+ * AI の結果を、エンジン（handleUserText）に渡す前に、画面だけが知っていることで整える。
+ * 1. 送る人：書いた人自身の欠席は、送る人の欠席にする（withSender）。
+ * 2. 日付：見るだけの命令で AI が日付を落としたら、ルールの日付を使う（withRuleDates）。
+ * state は書き込みを処理する直前の状態、text は「@きめとく」つきの書き込み。
+ */
+export function prepareAiCommands(
+  state: AppState,
+  catalog: Catalog,
+  text: string,
+  commands: ParsedCommand[],
+  senderId?: string,
+): ParsedCommand[] {
+  const sender = senderId && state.household.members.some((m) => m.id === senderId) ? senderId : undefined;
+  const rules = parseMessage(text, { today: state.today, members: state.household.members, catalog, senderId: sender });
+  return withRuleDates(withSender(commands, sender), rules);
 }
 
 // ---------------------------------------------------------------------------
@@ -431,6 +496,7 @@ export function buildAiInstruction(maskedText: string, state: AppState, catalog:
     '- help：使い方を知りたい',
     '1つの書き込みに複数の命令があってもよい。当てはまるものがなければ {"commands":[]} を返す。',
     '過ぎたことを話しているだけの文（「昨日は無理だった」）、打ち消し（「今日は無理じゃない」）、仮定（「無理なら」）では、today_impossible・want_alternatives・absence を出さない。',
+    '「来週」「来月」「月末」「お盆」「連休」のように、日を決められない時期だけを書いた用件（「来週は無理」「月末は外食」「来週の外食なくなった」）は、今日のことにしない。その用件の命令は出さない（アプリが日付を聞く）。',
     '',
     `# たんぱく源（protein）：${proteins}`,
     `# 和洋中（genre）：${genres}`,

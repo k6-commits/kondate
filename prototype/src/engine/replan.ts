@@ -227,12 +227,14 @@ export function shortageText(before: AppState['shopping'], after: AppState['shop
     .filter((l) => l.date >= today)
     .flatMap((l) => l.items.filter((i) => !i.checked && (i.bought ?? 0) > 0 && was.get(`${l.date}|${i.ingredientId}`)?.checked));
   if (short.length === 0) return '';
-  const names = short.map((i) => i.name);
+  const names = uniq(short.map((i) => i.name));
   const first = short[0];
   const qty = first.label.slice(first.name.length).trim();
+  // 4つ以上なら、名前は3つまでにして数を添える（家族を加えたときなど。黙って落とさない）。
+  const who = names.length > 3 ? `${names.slice(0, 3).join('・')}など${names.length}品` : names.join('・');
   return short.length === 1
     ? `${first.name}は、買った分では足りなくなりました。買い物リストに「${qty}」と入れました。`
-    : `${names.slice(0, 3).join('・')}は、買った分では足りなくなりました。足りない分を買い物リストに入れました。`;
+    : `${who}は、買った分では足りなくなりました。足りない分を買い物リストに入れました。`;
 }
 
 /** 新しく買い物リストに入った物（作り直しの前後で比べる）。 */
@@ -436,8 +438,22 @@ export function dateOfDish(s: AppState, dishId: string): ISODate | undefined {
   return s.meals.find((m) => cookable(s, m) && m.dishIds.includes(dishId))?.date;
 }
 
+/** 献立の曜日で、まだ献立を作っていない、今日以降の日（来週の献立を作る前の来週の日など）。 */
+function notPlannedYet(s: AppState, date: ISODate): boolean {
+  return date >= s.today && !mealOn(s, date) && s.household.settings.dinnerWeekdays.includes(weekdayOf(date));
+}
+
+/** 献立がまだない日への頼み（「来週の水曜は無理」「来週の金曜は魚がいい」）。「献立の日ではありません」と言わない。 */
+function notPlannedYetReply(s: AppState, date: ISODate): void {
+  addBotMessage(s, `${label(s, date)}の献立はまだありません。献立ができたら、もう一度教えてください。`);
+}
+
 export function requestAlternatives(s: AppState, catalog: Catalog, date: ISODate, lead?: string, turn: Turn = newTurn()): void {
   const meal = mealOn(s, date);
+  if (notPlannedYet(s, date)) {
+    notPlannedYetReply(s, date);
+    return;
+  }
   if (!editable(s, meal)) {
     addBotMessage(s, meal ? `${label(s, date)}の献立は、もう変えられません。` : `${label(s, date)}は献立の日ではありません。`, {
       actions: [BTN_WEEK],
@@ -1385,6 +1401,10 @@ export function request(
       addBotMessage(s, offeredText(label(s, taken.date)));
       return;
     }
+    if (cmd.date && notPlannedYet(s, cmd.date)) {
+      notPlannedYetReply(s, cmd.date);
+      return;
+    }
     const when = cmd.date ? label(s, cmd.date) : 'この先';
     addBotMessage(s, `${when}は変えられる献立がありません。`, { actions: [BTN_WEEK] });
     return;
@@ -1614,6 +1634,22 @@ export function acceptProposal(s: AppState, catalog: Catalog, proposalId: string
   });
 }
 
+/**
+ * 提案を、今も［替える］でそのまま使えるか（acceptProposal と同じ確かめ方）。使えなければ、そのわけ（「酢豚が7日以内に入っています」）。
+ * 同じ返事のもう1つの案を出し直す前に使う（片方を替えたら、もう片方が同じ料理の7日以内の重なりになることがある）。
+ */
+export function proposalProblem(s: AppState, catalog: Catalog, p: Proposal): string | null {
+  const meal = mealOn(s, p.date);
+  if (!editable(s, meal) || meal.dishIds.join(',') !== p.fromDishIds.join(',')) return '献立が変わりました';
+  if (everyoneOut(s.household, meal)) return 'みんな外で食べる日です';
+  for (const id of p.toDishIds) {
+    const d = findDishIn(s.household, catalog, id);
+    if (!d) return 'その料理が見つかりません';
+    if (safetyProblem(s, catalog, d, meal.absentMemberIds)) return `${d.name}は今の家族に出せません`;
+  }
+  return p.kind === 'request' ? null : staleReason(s, catalog, p.date, p.toDishIds);
+}
+
 export function rejectProposal(s: AppState, proposalId: string): void {
   const p = s.proposals.find((x) => x.id === proposalId);
   s.proposals = s.proposals.filter((x) => x.id !== proposalId);
@@ -1647,9 +1683,14 @@ export function regenerateWeek(s: AppState, catalog: Catalog, weekStart: ISODate
       return !!d && inSeason(d, m.date) && !safetyProblem(s, catalog, d, m.absentMemberIds);
     });
   });
-  // 残す日も、人数・注意・メモは今の家族で計算し直す（みんな外で食べる日は、そのまま）。
+  // 残す日も、人数・注意・メモは今の家族で計算し直す（みんな外で食べる日は、献立はそのままで人数だけ直す：
+  // 家で食べていた人を家族から外すと、その日がみんな外で食べる日になる。人数を残すと、買い物リストに夕食なしの日の分が入る）。
   for (const m of kept) {
     replaceMeal(s, rebuildMeal(s, catalog, m.date, m.dishIds, { kind: m.kind, changedBy: m.changedBy, reasons: m.reasons }));
+  }
+  for (const m of outDays) {
+    const servings = servingsFor(s.household, m.absentMemberIds);
+    if (m.servings !== servings) replaceMeal(s, { ...m, servings });
   }
   // 家族が決めたラク日（今日は無理・自分で選んだラク日）は、料理が出せなくなっても、ラク日のまま料理だけを替える
   // （作り直しで、作るのが大変だと言った日に、ふつうの献立を入れない）。

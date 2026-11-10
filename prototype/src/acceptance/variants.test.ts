@@ -5,6 +5,7 @@ import {
   addDays,
   advanceDay,
   applyAction,
+  buildShoppingLists,
   checkDishSafety,
   createInitialState,
   findDish,
@@ -582,5 +583,352 @@ describe('献立がまだない日の欠席は、1つの返事にまとめる', 
     expect(r.replies.length).toBeLessThanOrEqual(5);
     // 1日だけなら、今までどおり
     expect(texts(say(start(), '来週の月曜はパパいない'))).toBe('11/16(月)の献立はまだありません。献立ができたら、もう一度教えてください。');
+  });
+});
+
+describe('L2 の別の場合：片方の案を選んだあとに出し直すのは、まだ使える案だけ', () => {
+  const proposalIds = (r: { replies: ChatMessage[] }) =>
+    r.replies.flatMap((m) => (m.actions ?? []).flatMap((a) => (a.action.type === 'accept_proposal' ? [a.action.proposalId] : [])));
+
+  it('「豚こまが安い。豚こま買った」：両方とも酢豚の案。片方を替えたら、もう片方は出し直さず、使えなくなったと伝える', () => {
+    const r = say(start(), '豚こまが安い。豚こま買った');
+    const shown = proposalIds(r);
+    expect(shown).toHaveLength(2);
+    for (const first of shown) {
+      const one = applyAction(r.state, catalog, { type: 'accept_proposal', proposalId: first });
+      expect(one.replies[0].text).toContain('を酢豚／');
+      expect(proposalIds(one)).toEqual([]);
+      expect(texts(one)).not.toContain('もう1つの案も、ボタンで選べます。');
+      expect(one.replies[one.replies.length - 1].text).toMatch(/^(明日|11\/12\(木\))の案は、使えなくなりました（酢豚が7日以内に入っています）。$/);
+      // 使えない案は取り下げる（文字の「はい」で、使えない案を選ばない）
+      expect(one.state.proposals).toEqual([]);
+      expect(texts(say(one.state, 'はい'))).not.toContain('使えません');
+    }
+    // 「そのまま」なら、もう片方はまだ使えるので出し直す
+    const kept = applyAction(r.state, catalog, { type: 'reject_proposal', proposalId: shown[0] });
+    expect(proposalIds(kept)).toEqual([shown[1]]);
+    expect(applyAction(kept.state, catalog, { type: 'accept_proposal', proposalId: shown[1] }).replies[0].text).toContain('に替えました');
+  });
+
+  it('出し直した［替える］は、押せばいつも替わる（特売・在庫・リクエストの組み合わせ、月〜水）', () => {
+    const messages = [
+      '鮭が安い。木曜は魚がいい',
+      '木曜は魚がいい。鮭が安い',
+      '豚こま買った。豚こまが安い',
+      '鶏ももが安い。水曜は和食がいい',
+      '鶏むねが安い。豚こまも安い。さばも安い',
+      '鶏むねが安い。豚こまも安い',
+    ];
+    for (const today of [MON, TUE, WED]) {
+      for (const text of messages) {
+        const r = say(start(today), text);
+        for (const first of proposalIds(r)) {
+          for (const type of ['accept_proposal', 'reject_proposal'] as const) {
+            const one = applyAction(r.state, catalog, { type, proposalId: first });
+            for (const again of proposalIds(one)) {
+              const two = applyAction(one.state, catalog, { type: 'accept_proposal', proposalId: again });
+              expect(two.replies[0].text, `${today} ${text} ${type}`).toContain('に替えました');
+            }
+          }
+        }
+      }
+    }
+  });
+});
+
+describe('L3 の別の場合：日を決められない時期の取り消し・「無理」・ほかの用件と一緒の書き込み', () => {
+  const parse = (text: string, today = MON) => parseMessage(text, { today, members: start().household.members, catalog });
+  const VAGUE_OTHER = 'いつのことか、日付が分かりませんでした。献立はこのままです。\n「水曜は」「11/30は」のように、日付か曜日を入れて送ってください。';
+  const VAGUE_PART = 'いつのことか日付が分からないところは、献立を変えていません。日付か曜日を入れて、もう一度送ってください。';
+
+  it('「来週の外食なくなった」「来週はパパいる」は、今日の欠席を取り消さない（今日のことにしない）', () => {
+    const out = say(start(TUE), '今日はみんな外食').state;
+    const papa = say(start(TUE), '今日はパパ飲み会').state;
+    for (const [s, t] of [
+      [out, '来週の外食なくなった'],
+      [out, '月末の外食なくなった'],
+      [out, '来週はみんないる'],
+      [out, '来週はやっぱり家で食べる'],
+      [papa, '来週はパパいる'],
+      [papa, '月末の飲み会なくなった'],
+    ] as const) {
+      const r = say(s, t);
+      expect(r.state.meals, t).toEqual(s.meals);
+      expect(r.replies.map((m) => m.text), t).toEqual([VAGUE_OTHER]);
+    }
+    // 日付があれば、今までどおり取り消す
+    expect(meal(say(out, '今日はみんないる').state, TUE).absentMemberIds).toEqual([]);
+    expect(meal(say(papa, '今日はパパいる').state, TUE).absentMemberIds).toEqual([]);
+  });
+
+  it('「来週は無理」「月末は無理」は、今日をラク日にしない（「今週は無理」は今までどおり今日のこと）', () => {
+    const s = start(TUE);
+    for (const t of ['来週は無理', '月末は無理', '来月は作れない', '来週は疲れそう', 'お盆は無理']) {
+      expect(parse(t, TUE).map((c) => c.type), t).not.toContain('today_impossible');
+      const r = say(s, t);
+      expect(r.state.meals, t).toEqual(s.meals);
+      expect(r.replies.map((m) => m.text), t).toEqual([VAGUE_OTHER]);
+    }
+    expect(parse('今週は無理', TUE)).toEqual([{ type: 'today_impossible' }]);
+    expect(parse('今週は疲れた', TUE)).toEqual([{ type: 'today_impossible' }]);
+    // 決まっていない話は、今までどおり「まだ決まっていないんですね」
+    expect(texts(say(s, '来週パパ飲み会かも'))).toContain('まだ決まっていないんですね');
+  });
+
+  it('ほかの用件と一緒に書いた、日を決められない欠席は、黙って捨てずに日付を聞く（ほかの用件は進める）', () => {
+    const s = start(TUE);
+    const sale = say(s, '来週はパパが出張。鶏むねが安い');
+    expect(sale.state.meals).toEqual(s.meals);
+    expect(sale.replies.map((m) => m.text)).toContain(VAGUE_PART);
+    expect(sale.state.proposals).toHaveLength(1);
+    const tired = say(s, '月末は外食。今日は無理');
+    expect(meal(tired.state, TUE).kind).toBe('raku');
+    expect(tired.replies.map((m) => m.text)).toContain(VAGUE_PART);
+    const both = say(s, 'お盆は実家、明日はパパいない');
+    expect(meal(both.state, WED).absentMemberIds).toEqual([PAPA]);
+    expect(both.replies.map((m) => m.text)).toContain(VAGUE_PART);
+    // 日を決められる書き込みだけなら、添えない
+    expect(texts(say(s, '明日はパパいない。鶏むねが安い'))).not.toContain('日付が分からない');
+  });
+});
+
+describe('「来週の水曜と木曜」：週を書いた曜日の並びは、どれもその週の曜日（今週の木曜にしない）', () => {
+  const parse = (text: string, today = MON) => parseMessage(text, { today, members: start().household.members, catalog });
+  it('来週・再来週・今週の曜日の並び（と・・・や）', () => {
+    expect(absenceDays('来週の水曜と木曜はパパいない', TUE)).toEqual([`${addDays(WED, 7)}:パパ`, `${addDays(THU, 7)}:パパ`]);
+    expect(absenceDays('来週の水曜と金曜はみんな外食', TUE)).toEqual([`${addDays(WED, 7)}:みんな`, `${addDays(FRI, 7)}:みんな`]);
+    expect(absenceDays('来週の月・水はパパいない', TUE)).toEqual([`${addDays(MON, 7)}:パパ`, `${addDays(WED, 7)}:パパ`]);
+    expect(absenceDays('再来週の月曜と火曜はパパいない', TUE)).toEqual([`${addDays(MON, 14)}:パパ`, `${addDays(TUE, 14)}:パパ`]);
+    expect(absenceDays('今週の水曜と金曜はパパいない', TUE)).toEqual([`${WED}:パパ`, `${FRI}:パパ`]);
+    // 今週の献立は変えない（献立がまだない日なので、そう伝える）
+    const s = start(TUE);
+    const r = say(s, '来週の水曜と木曜はパパいない');
+    expect(r.state.meals).toEqual(s.meals);
+    expect(texts(r)).toBe('11/18(水)から11/19(木)までの献立はまだありません。献立ができたら、もう一度教えてください。');
+    // 「来週から月曜は外食」を月曜に書いても、今日（今週の月曜）にしない
+    expect(absenceDays('来週から月曜は外食', MON)).toEqual([`${addDays(MON, 7)}:みんな`]);
+    expect(absenceDays('来週も水曜はパパいない', TUE)).toEqual([`${addDays(WED, 7)}:パパ`]);
+    expect(meal(say(start(MON), '来週から月曜は外食').state, MON).absentMemberIds).toEqual([]);
+    // 「、」で続けても同じ週（「来週の水曜、木曜」）
+    expect(absenceDays('来週の水曜、木曜はパパいない', TUE)).toEqual([`${addDays(WED, 7)}:パパ`, `${addDays(THU, 7)}:パパ`]);
+    expect(absenceDays('来週の月曜、水曜、金曜は外食', TUE)).toEqual([`${addDays(MON, 7)}:みんな`, `${addDays(WED, 7)}:みんな`, `${addDays(FRI, 7)}:みんな`]);
+    // 「来週の土日」は来週の週末（今週の土日にしない）
+    expect(absenceDays('来週の土日は外食', TUE)).toEqual([`${addDays(FRI, 8)}:みんな`, `${addDays(FRI, 9)}:みんな`]);
+    // 「来週の金がない」の金は、曜日にしない
+    expect(parse('来週の金がない', TUE).filter((c) => c.type === 'absence')).toEqual([]);
+    // 日付の言葉は、今までどおりその日（「来週の水曜とあさって」のあさっては今週）。範囲も今までどおり
+    expect(absenceDays('来週の水曜とあさってはパパいない', TUE)).toEqual([`${addDays(WED, 7)}:パパ`, `${THU}:パパ`]);
+    expect(absenceDays('来週の水曜から金曜までパパ出張', TUE)).toEqual([18, 19, 20].map((d) => `2026-11-${d}:パパ`));
+  });
+});
+
+describe('L6 の別の場合：家族を加えて、買ってあった物の多くが足りなくなったとき', () => {
+  it('足りなくなった物が4つ以上なら、名前は3つまでにして「など〇品」と数を添える（黙って落とさない）', () => {
+    let s = start(MON);
+    for (const l of s.shopping) {
+      for (const it of l.items) {
+        if (it.forDates.some((d) => d <= FRI)) s = applyAction(s, catalog, { type: 'check_item', shoppingDate: l.date, ingredientId: it.ingredientId, checked: true }).state;
+      }
+    }
+    const household = structuredClone(s.household);
+    household.members.push({ id: 'member_5', nickname: 'ばあば', ageBand: 'adult', role: 'other', exclusions: [] });
+    const r = applyAction({ ...s, household }, catalog, { type: 'regenerate_week', weekStart: MON, keepSafe: true });
+    const short = r.state.shopping.flatMap((l) => l.items.filter((i) => !i.checked && (i.bought ?? 0) > 0)).map((i) => i.name);
+    expect(new Set(short).size).toBeGreaterThan(3);
+    const line = r.replies[0].text.split('\n').find((x) => x.includes('買った分では足りなくなりました'));
+    expect(line).toBe(`${[...new Set(short)].slice(0, 3).join('・')}など${new Set(short).size}品は、買った分では足りなくなりました。足りない分を買い物リストに入れました。`);
+  });
+});
+
+describe('L6 の別の場合：家族を外して、その日に家で食べる人がいなくなったとき（keepSafe）', () => {
+  it('みんな外で食べる日になった日は、人数を0にして買い物リストから外す（献立はそのまま残す）', () => {
+    const s = say(start(TUE), '金曜はママとはるととゆいがいない').state;
+    expect(meal(s, FRI).servings).toBe(1);
+    // 画面と同じ：外した人の id を欠席から除いてから、keepSafe で作り直す
+    const household = { ...s.household, members: s.household.members.filter((m) => m.id !== PAPA) };
+    const meals = s.meals.map((m) => ({ ...m, absentMemberIds: m.absentMemberIds.filter((id) => id !== PAPA) }));
+    for (const keepSafe of [true, false]) {
+      const r = applyAction({ ...s, household, meals }, catalog, { type: 'regenerate_week', weekStart: MON, ...(keepSafe ? { keepSafe } : {}) });
+      const fri = meal(r.state, FRI);
+      expect(fri.dishIds, `keepSafe ${keepSafe}`).toEqual(meal(s, FRI).dishIds);
+      expect(fri.servings, `keepSafe ${keepSafe}`).toBe(0);
+      expect(r.state.shopping.flatMap((l) => l.items).filter((i) => i.forDates.includes(FRI)), `keepSafe ${keepSafe}`).toEqual([]);
+    }
+    // 作り直さずに買い物リストだけを直すとき（画面で、これからの日がみんな外で食べる日だけのとき）も、その日の分は入れない
+    const lists = buildShoppingLists({ ...s, household, meals }, catalog);
+    expect(lists.flatMap((l) => l.items).filter((i) => i.forDates.includes(FRI))).toEqual([]);
+  });
+});
+
+describe('L2 の別の場合：同じ返事に「どちらにしますか？」の案と、替える提案が出たとき', () => {
+  const proposalIds = (r: { replies: ChatMessage[] }) =>
+    r.replies.flatMap((m) => (m.actions ?? []).flatMap((a) => (a.action.type === 'accept_proposal' ? [a.action.proposalId] : [])));
+  const choices = (r: { replies: ChatMessage[] }) =>
+    r.replies.flatMap((m) => (m.actions ?? []).filter((a) => a.action.type === 'choose_alternative'));
+
+  it('「明日のは別のにして。鶏むねが安い」：案を選んだら替える提案を、提案に答えたら案を、ボタンつきで出し直す', () => {
+    // 月曜に始めて火曜に進めた週（明日の案が2つ、今日の鶏むねの提案が1つ出る）
+    const r = say(advanceDay(start(MON), catalog).state, '明日のは別のにして。鶏むねが安い');
+    const [option] = choices(r);
+    const [proposal] = proposalIds(r);
+    expect(option).toBeDefined();
+    expect(proposal).toBeDefined();
+    // 案を選ぶ → 提案を出し直す（押せば替わる）
+    const chose = applyAction(r.state, catalog, option.action);
+    expect(chose.replies[0].text).toContain('にしました');
+    expect(proposalIds(chose)).toEqual([proposal]);
+    expect(applyAction(chose.state, catalog, { type: 'accept_proposal', proposalId: proposal }).replies[0].text).toContain('に替えました');
+    expect(texts(say(chose.state, 'はい'))).toContain('に替えました');
+    // 提案に答える（替える・そのまま）→ 案を出し直す（押せば、その案になる。「1」でも選べる）
+    for (const type of ['accept_proposal', 'reject_proposal'] as const) {
+      const answered = applyAction(r.state, catalog, { type, proposalId: proposal });
+      const again = choices(answered);
+      expect(again.map((a) => a.label), type).toEqual(choices(r).map((a) => a.label));
+      expect(answered.replies[answered.replies.length - 1].text, type).toBe('明日の別の案も、ボタンか「1」「2」で選べます。');
+      expect(applyAction(answered.state, catalog, again[0].action).replies[0].text, type).toContain('にしました');
+      expect(texts(say(answered.state, '1')), type).toContain('にしました');
+    }
+  });
+});
+
+describe('L3 のあと：日付を入れて送り直したら、献立がまだない日には「まだありません」と返す', () => {
+  it('「来週の水曜は無理」「来週の金曜は魚がいい」：献立の曜日なら「献立の日ではありません」と言わない', () => {
+    const s = start(TUE);
+    for (const t of ['来週の水曜は無理', '11/30は無理', '来週の金曜は魚がいい', '来週の水曜はカレーがいい', '来週の月曜のは別のにして']) {
+      const r = say(s, t);
+      expect(r.state.meals, t).toEqual(s.meals);
+      expect(texts(r), t).toMatch(/^1[12]\/\d+\(.\)の献立はまだありません。献立ができたら、もう一度教えてください。$/);
+    }
+    // 献立を作らない曜日は、今までどおり
+    expect(texts(say(s, '来週の土曜は無理'))).toBe('11/21(土)は献立の日ではありません。');
+  });
+});
+
+describe('L3 の別の場合：AI（LLM）が、日を決められない書き込みを今日のことと読んだとき', () => {
+  it('ルールで日を決められない書き込みだけなら、AI の今日の命令を使わずに日付を聞く（今日を変えない）', () => {
+    const s = start(TUE);
+    const today = TUE;
+    for (const [text, parsed] of [
+      ['来週は無理', [{ type: 'today_impossible' }]],
+      ['月末は外食', [{ type: 'absence', date: today, memberRef: 'みんな' }]],
+      ['来週はパパが出張', [{ type: 'absence', date: today, memberRef: PAPA }]],
+      ['来週の外食なくなった', [{ type: 'absence', date: today, memberRef: 'みんな', cancel: true }]],
+    ] as [string, ParsedCommand[]][]) {
+      const r = say(s, text, parsed);
+      expect(r.state.meals, text).toEqual(s.meals);
+      expect(r.replies[0].text, text).toMatch(/^いつのことか、日付が分かりませんでした。献立はこのままです。/);
+    }
+    // 日を決められる書き込みは、今までどおり AI の命令を使う
+    const ok = say(s, '金曜はパパいない', [{ type: 'absence', date: FRI, memberRef: PAPA }]);
+    expect(meal(ok.state, FRI).absentMemberIds).toEqual([PAPA]);
+  });
+});
+
+describe('仮定の言い方（〜たら・〜だったら・〜なかったら・〜なら）は、作った・作らなかったの答えにしない', () => {
+  const CONDITIONALS = ['無理だったら別のにして', '今日無理だったら連絡する', '外食だったら言うね', '作れなかったらごめん', '作ってないなら言って', '出前なら楽だね'];
+
+  it('前日の確認がないとき：今日の夕食を記録せず、買い物リストも変えない', () => {
+    const s = start();
+    for (const t of CONDITIONALS) {
+      const r = say(s, t);
+      expect(r.state.meals, t).toEqual(s.meals);
+      expect(r.state.history, t).toEqual(s.history);
+      expect(r.state.shopping, t).toEqual(s.shopping);
+      expect(texts(r), t).not.toContain('記録しました');
+    }
+  });
+
+  it('前日の確認があっても、仮定では前日を記録しない（「作った」「作らなかった」「作りませんでした」の答えは今までどおり）', () => {
+    const s = advanceDay(start(), catalog).state; // 火曜。月曜の「作りましたか？」
+    for (const t of CONDITIONALS) {
+      const r = say(s, t);
+      expect(meal(r.state, MON).status, t).toBe('unconfirmed');
+      expect(meal(r.state, TUE), t).toEqual(meal(s, TUE));
+    }
+    expect(meal(say(s, '作った').state, MON).status).toBe('cooked');
+    expect(meal(say(s, '作らなかった').state, MON).status).toBe('skipped');
+    expect(meal(say(s, '作りませんでした').state, MON).status).toBe('skipped');
+  });
+
+  it('確認も日の言葉もないときは、「作った」「作らなかった」だけの答えを今日のことにする（ほかの文では今日を記録しない）', () => {
+    const s = start();
+    for (const t of ['はるとがおやつ食べた', '宿題できた', '出前にしよう']) {
+      const r = say(s, t);
+      expect(r.state.meals, t).toEqual(s.meals);
+      expect(r.state.history, t).toEqual(s.history);
+    }
+    expect(meal(say(s, '作った').state, MON).status).toBe('cooked');
+    expect(meal(say(s, '作ったよー').state, MON).status).toBe('cooked');
+    expect(meal(say(s, '作らなかった').state, MON).status).toBe('skipped');
+    expect(meal(say(s, '出前だった').state, MON).status).toBe('skipped');
+    expect(meal(say(s, '今日は出前').state, MON).status).toBe('skipped');
+  });
+});
+
+describe('見るだけの命令で、AI（LLM）が日付を落としたとき（画面・LINE で同じ）', () => {
+  it('「明日の夕飯なに？」「明日何買えばいい？」は、ルールで読んだ日付を使う（今日の分を返さない）', () => {
+    const s = start();
+    for (const [text, parsed, card] of [
+      ['明日の夕飯なに？', [{ type: 'show_today' }], { kind: 'meal', date: TUE }],
+      ['明日の夕飯なに？', [{ type: 'show_today', date: '2026-11-31' }], { kind: 'meal', date: TUE }],
+      ['水曜の夕飯なんだっけ', [{ type: 'show_today' }], { kind: 'meal', date: WED }],
+    ] as [string, ParsedCommand[], ChatMessage['card']][]) {
+      const r = say(s, text, parsed);
+      expect(r.replies[0].card, text).toEqual(card);
+      expect(r.replies[0].text, text).not.toMatch(/^今日は/);
+    }
+    const shop = say(s, '明日何買えばいい？', [{ type: 'show_shopping' }]);
+    expect(shop.replies[0].text).toMatch(/^明日は買い物の日ではありません。/);
+    // 今日の分と、ルールが日付を決めかねた書き込みは、今までどおり
+    expect(say(s, '今日のごはん', [{ type: 'show_today' }]).replies[0].card).toEqual({ kind: 'meal', date: MON });
+    expect(say(s, '明日と明後日の夕飯は？', [{ type: 'show_today' }]).replies[0].card).toEqual({ kind: 'meal', date: MON });
+    // AI が日付を書いていれば、その日付を使う
+    expect(say(s, '明日の夕飯なに？', [{ type: 'show_today', date: WED }]).replies[0].card).toEqual({ kind: 'meal', date: WED });
+  });
+});
+
+describe('作った・作らなかったを文字で答えるとき（前日の確認・料理の名前・夕食でない話）', () => {
+  it('前日の「作りましたか？」に、日の言葉のない「無理だった」「外食した」と答えたら、前日の作らなかったにする（今日は変えない）', () => {
+    const s = advanceDay(start(), catalog).state; // 火曜。月曜の「作りましたか？」
+    for (const t of ['無理だった', '疲れて無理だった', '外食した', '外食だった', '外で食べた']) {
+      const r = say(s, t);
+      expect(meal(r.state, MON).status, t).toBe('skipped');
+      expect(meal(r.state, TUE), t).toEqual(meal(s, TUE));
+      expect(r.state.shopping, t).toEqual(s.shopping);
+      expect(texts(r), t).toContain('記録しました');
+      expect(texts(r), t).not.toContain('ラクしましょう');
+      expect(texts(r), t).not.toContain('外で食べるんですね');
+    }
+  });
+
+  it('日の言葉があれば、今までどおりその日のこととして読む', () => {
+    const s = advanceDay(start(), catalog).state;
+    const r = say(s, '今日は無理');
+    expect(meal(r.state, TUE).kind).toBe('raku');
+    expect(meal(r.state, MON).status).toBe('unconfirmed');
+    expect(meal(say(s, '昨日は外食だった').state, MON).status).toBe('skipped');
+    expect(meal(say(s, '昨日は無理だった').state, MON).status).toBe('skipped');
+  });
+
+  it('確認がなくても、料理の名前や「夕飯」が入った答えは今日の記録にする（見るだけの言い方は、今日の献立を見せる）', () => {
+    const s = start();
+    for (const t of ['さばの味噌煮作った', 'カレー作ったよ', '夕飯作った', 'ごはんできたよ']) {
+      expect(meal(say(s, t).state, MON).status, t).toBe('cooked');
+    }
+    expect(meal(say(s, '晩ごはん作れなかった').state, MON).status).toBe('skipped');
+    for (const t of ['夕飯', '今日の夕飯なに？', '夕飯作らなきゃ']) {
+      const r = say(s, t);
+      expect(r.state.meals, t).toEqual(s.meals);
+      expect(r.replies[0].card, t).toEqual({ kind: 'meal', date: MON });
+    }
+  });
+
+  it('給食・お昼・おやつ・宿題の話は、作った・作らなかったの答えにしない（前日の確認があっても）', () => {
+    const s0 = start();
+    const s1 = advanceDay(start(), catalog).state;
+    for (const t of ['給食でカレー食べた', 'お昼食べた', 'はるとがおやつ食べた', '宿題できた', '宿題できなかった']) {
+      expect(say(s0, t).state.meals, t).toEqual(s0.meals);
+      expect(say(s1, t).state.meals, t).toEqual(s1.meals);
+    }
   });
 });

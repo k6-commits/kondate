@@ -254,6 +254,11 @@ function findSpans(t: string, terms: Term[]): (Span & { kind: Term['kind'] })[] 
   return found.sort((a, b) => a.start - b.start);
 }
 
+/** 料理の名前が書いてあるか（「さばの味噌煮作った」「カレー作ったよ」）。作った・作らなかったの答えの見分けに使う。 */
+export function mentionsDish(text: string, catalog: Catalog): boolean {
+  return findSpans(n(text), vocabOf(catalog).dishFirst).some((s) => s.kind === 'dish');
+}
+
 function mask(t: string, spans: Span[]): string {
   let out = t;
   for (const s of spans) out = out.slice(0, s.start) + '＿'.repeat(s.end - s.start) + out.slice(s.end);
@@ -280,11 +285,21 @@ export interface FoundDates {
   past: boolean;
   /** 「今週」「来週」だけで、どの日か分からない。 */
   vague: boolean;
+  /** vague のうち、今日を含まない時期（「来週」「月末」「お盆」など。「今週」は今日を含む）。 */
+  vagueLater: boolean;
   /** 日付の表現を伏せ字にした文。 */
   masked: string;
 }
 
 const wd = (x: number) => x as 0 | 1 | 2 | 3 | 4 | 5 | 6;
+
+/** 週を書いた曜日（の並び）のすぐ後の「、」と、続く曜日（「来週の水曜、木曜」）。 */
+const WEEK_WD_COMMA =
+  /((?:再来週|さらいしゅう|来週|らいしゅう|今週|こんしゅう)の?[月火水木金土日](?:曜日?)?(?:[・と][月火水木金土日](?:曜日?)?)*)[、,](?=[月火水木金土日](?:曜|[はにのも、,・と]))/g;
+
+/** 日を決められない、今日を含まない時期（「来週」「来月」「月末」「お盆」「連休」など）。 */
+const LATER_WHEN =
+  /来週|らいしゅう|再来週|来月|らいげつ|再来月|月末|げつまつ|年末|ねんまつ|月初|年始|年明け|お盆|おぼん|正月|しょうがつ|連休|れんきゅう|夏休み|冬休み|春休み/;
 
 /** 日付の表現（今日、明日、あさって、〇曜、来週・再来週の〇曜、週末、昨日、11/13、13日 など）をすべて拾う。 */
 export function findDates(t: string, today: ISODate): FoundDates {
@@ -309,10 +324,18 @@ export function findDates(t: string, today: ISODate): FoundDates {
     addDays(ws, 7 * (KANJI_NUM[m[1]] ?? Number(m[1])) + ((WD_KANJI[m[2]] + 6) % 7)),
   ]);
   take(AFTER_DAYS, (m) => [addDays(today, (KANJI_NUM[m[1]] ?? Number(m[1])) * (m[2] === '週間' ? 7 : 1))]);
-  take(/(再来週|さらいしゅう)の?([月火水木金土日])曜日?/, (m) => [addDays(ws, 14 + ((WD_KANJI[m[2]] + 6) % 7))]);
-  take(/(来週|らいしゅう|今週|こんしゅう)の?([月火水木金土日])曜日?/, (m) => [
-    addDays(ws, (/来週|らいしゅう/.test(m[1]) ? 7 : 0) + ((WD_KANJI[m[2]] + 6) % 7)),
-  ]);
+  // 「来週の水曜と木曜」「来週の月・水」：週を書いた曜日に続けた曜日も、その週の曜日（今週の木曜にしない）。
+  const inWeek = (offset: number, first: string, more: string) =>
+    [first, ...(more.match(/[月火水木金土日]/g) ?? [])].map((c) => addDays(ws, offset + ((WD_KANJI[c] + 6) % 7)));
+  // 最初の曜日は「曜」を書く（「来週の月・水」のように並べたときだけ省ける。「来週の金がない」の金は曜日にしない）。
+  const FIRST_WD = '([月火水木金土日])(?:曜日?|(?=(?:と|・|や|,)[月火水木金土日]))';
+  const MORE_WD = '((?:(?:と|・|や|,)[月火水木金土日](?:曜日?|(?=[はにのもと・や,]|まで|$)))*)';
+  // 「来週から月曜は外食」「来週も水曜は」：その週の曜日（月曜に書いても、今日の月曜にしない）。
+  const WEEK_JOIN = '(?:の|から|は|も)?(?:毎週|まいしゅう)?の?';
+  take(new RegExp(`(再来週|さらいしゅう)${WEEK_JOIN}${FIRST_WD}${MORE_WD}`), (m) => inWeek(14, m[2], m[3]));
+  take(new RegExp(`(来週|らいしゅう|今週|こんしゅう)${WEEK_JOIN}${FIRST_WD}${MORE_WD}`), (m) =>
+    inWeek(/来週|らいしゅう/.test(m[1]) ? 7 : 0, m[2], m[3]),
+  );
   // 「来月から月曜は外食」：来月の曜日は、どの日か分からない（今週の曜日にしない。vague）。
   take(/(再来月|来月|らいげつ)(から|は|の|も)?(毎週|まいしゅう)?の?([月火水木金土日])曜日?/, () => []);
   // 「月水金は」「金土日は」：曜を書かない曜日の並び（「土日」は下の週末で読む。「月日」は日付の言葉なので読まない）。
@@ -321,7 +344,7 @@ export function findDates(t: string, today: ISODate): FoundDates {
     if (m[1] === '月日' || m[1] === '土日' || new Set(chars).size !== chars.length) return null;
     return chars.map((c) => nextWeekday(today, wd(WD_KANJI[c])));
   });
-  take(/来週末|らいしゅうまつ/, () => weekend(addDays(ws, 7)));
+  take(/来週末|らいしゅうまつ|来週の?土日|らいしゅうの?どにち/, () => weekend(addDays(ws, 7)));
   take(/今週末|こんしゅうまつ|週末|しゅうまつ|土日|どにち/, () => {
     const ds = weekend(ws).filter((d) => d >= today);
     return ds.length > 0 ? ds : weekend(addDays(ws, 7));
@@ -407,11 +430,18 @@ export function findDates(t: string, today: ISODate): FoundDates {
   const returnOn = back && merged.every((h) => h === back || h.dates.every((d) => d < back.dates[0])) ? back.dates[0] : undefined;
   const past = dates.length > 0 ? dates.every((d) => d < today) : pastWord;
   // 日を決められない時期（「月末」「年末」「お盆」「連休」など）だけを書いたときも、今日のことにしない（vague）。
-  const vague =
-    dates.length === 0 &&
-    (/今週|こんしゅう|来週|らいしゅう|再来週|来月|らいげつ|再来月|月末|げつまつ|年末|ねんまつ|月初|年始|年明け|お盆|おぼん|正月|しょうがつ|連休|れんきゅう|夏休み|冬休み|春休み/.test(s) ||
-      hits.some((h) => h.dates.length === 0));
-  return { dates, past, vague, masked: s, ...(until ? { until } : {}), ...(returnOn ? { returnOn } : {}), ...(duration ? { duration } : {}) };
+  const later = dates.length === 0 && (LATER_WHEN.test(s) || hits.some((h) => h.dates.length === 0));
+  const vague = later || (dates.length === 0 && /今週|こんしゅう/.test(s));
+  return {
+    dates,
+    past,
+    vague,
+    vagueLater: later,
+    masked: s,
+    ...(until ? { until } : {}),
+    ...(returnOn ? { returnOn } : {}),
+    ...(duration ? { duration } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -575,6 +605,8 @@ interface Carry {
   duration?: FoundDates['duration'];
   past?: boolean;
   vague?: boolean;
+  /** 「来週」「月末」のように、今日を含まない時期だけを書いた（findDates の vagueLater）。 */
+  vagueLater?: boolean;
   /** 動詞のない節の食材（「卵、牛乳、豆腐買った」の卵・牛乳）。後ろの節の在庫・特売の語を当てる。 */
   pending: string[];
   memberRefs?: string[];
@@ -641,6 +673,7 @@ function parseClause(raw: string, ctx: ParseContext, carry: Carry): ParsedComman
     carry.duration = found.duration;
     carry.past = found.past;
     carry.vague = found.vague;
+    carry.vagueLater = found.vagueLater;
   }
   if (HELP.test(t)) return [{ type: 'help' }];
   const today = ctx.today;
@@ -683,8 +716,13 @@ function parseClause(raw: string, ctx: ParseContext, carry: Carry): ParsedComman
   const maybe = MAYBE.test(rest);
   const unsure = maybe ? { tentative: 'maybe' as const } : {};
   // 欠席の取り消し：「木曜のお泊まりなくなった」（欠席の語より先に見る。「お泊まり中止」を新しい欠席にしない）。
+  // 日を決められない時期だけを書いた（「来週はパパいる」「月末の外食なくなった」）：今日のことにせず、日付で送ってもらう。
+  const vagueOnly = !!carry.vague && dates.length === 0;
+  const vagueAsk = (kind: 'absence' | 'other'): ParsedCommand[] => [{ type: 'unknown', text: raw.trim(), vague: kind }];
   const cancel = (who: string[]): ParsedCommand[] =>
-    (dates.length > 0 ? dates : [today]).flatMap((d) => who.map((r) => ({ type: 'absence' as const, date: d, memberRef: r, cancel: true, ...unsure })));
+    vagueOnly && !maybe
+      ? vagueAsk('other')
+      : (dates.length > 0 ? dates : [today]).flatMap((d) => who.map((r) => ({ type: 'absence' as const, date: d, memberRef: r, cancel: true, ...unsure })));
   if (CANCEL_EVENT.test(rest) && !question && !hypo && !past) {
     return cancel(refs.length > 0 ? refs : carry.memberRefs ?? ['みんな']);
   }
@@ -726,8 +764,8 @@ function parseClause(raw: string, ctx: ParseContext, carry: Carry): ParsedComman
       }
     } else if (!hypo && !past && carry.vague && dates.length === 0) {
       // 「来週はパパが出張」「月末は外食」：どの日か分からない。今日の欠席にも、週の献立を見せる命令にもしない
-      // （読めない書き込みとして、日付か曜日で送ってもらう）。
-      return [];
+      // （日付か曜日で送ってもらう。ほかの用件と一緒に書いても、黙って捨てない）。「かも」は、決まっていない話として返す。
+      return maybe ? [] : vagueAsk('absence');
     }
   } else if (
     lateHit &&
@@ -791,6 +829,8 @@ function parseClause(raw: string, ctx: ParseContext, carry: Carry): ParsedComman
     if (negatedAfter(restImp, IMPOSSIBLE)) return [lookAt(firstDate)]; // 「今日は無理じゃない」→ そのまま
     if (question) return [lookAt(firstDate)];
     if (hypo || past) return []; // 「無理なら」「昨日は無理だった」は、今日を変えない
+    // 「来週は無理」「月末は無理」：今日をラク日にしない（日付か曜日で送ってもらう）。「今週は無理」は今日のこと。
+    if (dates.length === 0 && carry.vagueLater) return maybe ? [] : vagueAsk('other');
     const ds = dates.filter((d) => d >= today);
     if (ds.length === 0) return dates.length > 0 ? [] : [{ type: 'today_impossible' }];
     return uniq(ds).map((d) => (d === today ? { type: 'today_impossible' as const } : { type: 'want_alternatives' as const, date: d }));
@@ -918,6 +958,11 @@ export function dateAnswer(text: string, today: ISODate): ISODate[] | null {
 export function parseMessage(text: string, ctx: ParseContext): ParsedCommand[] {
   let cleaned = text.normalize('NFKC').replace(/@\s*(きめとく|キメトク|kimetoku)/gi, ' ');
   for (const [r, w] of EMOJI_WORDS) cleaned = cleaned.replace(r, w);
+  // 「来週の水曜、木曜はパパいない」：週を書いた曜日に「、」で続けた曜日は、同じ週の並び（節に分けると、木曜が今週になる）。
+  for (let prev = ''; prev !== cleaned; ) {
+    prev = cleaned;
+    cleaned = cleaned.replace(WEEK_WD_COMMA, '$1・');
+  }
   // 文の区切りの「？」は、質問の印として残す。
   const pieces = cleaned.split(/([。．.!！?？\n]+)/);
   const out: ParsedCommand[] = [];

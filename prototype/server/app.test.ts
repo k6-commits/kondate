@@ -552,6 +552,23 @@ describe('LLM での解釈（webhook）', () => {
     expect(messagesOf(t.replies()[1])[0].text).toContain('に替えました。');
   });
 
+  it('「明日の夕飯なに？」で LLM が日付を落としても（読めない日付でも）、ルールの日付で明日の献立を返す', async () => {
+    for (const result of [[{ type: 'show_today' }], [{ type: 'show_today', date: '2026-11-31' }]] as ParsedCommand[][]) {
+      const llm = fakeLlm(result);
+      const t = await setup({ llm });
+      await seedRecord(t.store, { key: 'Uuser0002', catalog: defaultCatalog, today: TODAY });
+      await t.webhook([textEvent(USER, '明日の夕飯なに？')]);
+      expect(llm.interpret).toHaveBeenCalledTimes(1);
+      const reply = messagesOf(t.replies()[0]);
+      expect(reply[0].text).toMatch(/^明日は/);
+      const shop = fakeLlm([{ type: 'show_shopping' }]);
+      const u = await setup({ llm: shop });
+      await seedRecord(u.store, { key: 'Uuser0002', catalog: defaultCatalog, today: TODAY });
+      await u.webhook([textEvent(USER, '明日何買えばいい？')]);
+      expect(messagesOf(u.replies()[0])[0].text).toMatch(/^明日は買い物の日ではありません。/);
+    }
+  });
+
   it('LLM が失敗したり、検証で全部落ちたりしたら、ルールで解釈する', async () => {
     const t = await setup({ llm: fakeLlm([{ type: 'sale', ingredientId: 'unicorn_meat' }]) });
     await t.webhook([textEvent(USER, '今日は無理')]);

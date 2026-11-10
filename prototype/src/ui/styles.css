@@ -1012,6 +1012,9 @@ h4 {
 .summary dt {
   color: var(--ink-soft);
   font-size: 13px;
+  /* 見出しは語の途中で折り返さない（「予定どおり<wbr>作れなかった日」の wbr で折り返す）。入りきらないときだけ、どこでも折り返す。 */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .summary dd {

@@ -722,6 +722,36 @@ describe('U1：みんな外で食べる日は「夕食なし」と出し、量�
     expect(visibleActions(s, buttons).map((b) => b.label)).toEqual(['作った', '作らなかった', '今日を別のに']);
   });
 
+  it('visibleActions：もうない提案（日が過ぎた・作り直しで片づいた）の［替える］［そのまま］は出さない。ある提案のボタンは出す', () => {
+    let s = createInitialState(DEMO_ONBOARDING, defaultCatalog, MONDAY);
+    const r = handleUserText(s, defaultCatalog, '@きめとく 鶏むねが安い');
+    const buttons = r.replies.flatMap((m) => m.actions ?? []).filter((b) => b.action.type === 'accept_proposal' || b.action.type === 'reject_proposal');
+    expect(buttons.map((b) => b.label)).toEqual(['替える', 'そのまま']);
+    s = r.state;
+    expect(visibleActions(s, buttons).map((b) => b.label)).toEqual(['替える', 'そのまま']);
+    // 提案の日（火曜）が過ぎると、エンジンは提案を片づける。押しても「その提案は、もう使えません。」になるだけなので出さない
+    const later = advanceDay(advanceDay(s, defaultCatalog).state, defaultCatalog).state;
+    expect(later.proposals).toEqual([]);
+    expect(visibleActions(later, buttons)).toEqual([]);
+    // 設定の作り直しで片づいた提案も同じ
+    const regen = applyAction(s, defaultCatalog, { type: 'regenerate_week', weekStart: MONDAY }).state;
+    expect(regen.proposals).toEqual([]);
+    expect(visibleActions(regen, buttons)).toEqual([]);
+  });
+
+  it('翌日へ進んで提案の日が過ぎたら、トークの［替える］［そのまま］は消える（作った・作らなかったは出す）', () => {
+    render(<App todayFn={todayFn} />);
+    sendText('鶏むねが安い');
+    const chips = () => [...talkLog().querySelectorAll('.chip--action')].map((b) => b.textContent);
+    expect(chips()).toEqual(expect.arrayContaining(['替える', 'そのまま']));
+    fireEvent.click(screen.getByRole('button', { name: '翌日へ進む' }));
+    fireEvent.click(screen.getByRole('button', { name: '翌日へ進む' }));
+    expect(saved().proposals).toEqual([]);
+    expect(chips()).not.toContain('替える');
+    expect(chips()).not.toContain('そのまま');
+    expect(chips()).toEqual(expect.arrayContaining(['11/10(火) 作った', '11/10(火) 作らなかった']));
+  });
+
   it('statusBadgeShown：みんな外で食べる日は状態の印を出さない（エンジンのカードの文・週の行と同じ）', () => {
     let s = createInitialState(DEMO_ONBOARDING, defaultCatalog, MONDAY);
     s = handleUserText(s, defaultCatalog, '金曜はみんな外食').state;
@@ -825,6 +855,45 @@ describe('U1：みんな外で食べる日は「夕食なし」と出し、量�
     const fromUi = pattern.exec(container.textContent ?? '');
     expect(fromEngine).not.toBeNull();
     expect(fromUi?.slice(1)).toEqual(fromEngine?.slice(1));
+  });
+
+  it('振り返りの「予定どおり作れなかった日」は、語の途中でなく「予定どおり／作れなかった日」で折り返す（エンジンの文と同じ言葉）', () => {
+    let s = createInitialState(DEMO_ONBOARDING, defaultCatalog, MONDAY);
+    s = handleUserText(s, defaultCatalog, '@きめとく 今日は無理').state;
+    s = advanceDay(s, defaultCatalog).state;
+    s = applyAction(s, defaultCatalog, { type: 'not_cooked', date: MONDAY }).state;
+    const engine = renderCardText(s, defaultCatalog, { kind: 'summary', weekStart: MONDAY });
+    expect(engine).toContain('予定どおり作れなかった日：1日');
+    const { container } = render(<SummaryBody weekStart={MONDAY} state={s} catalog={defaultCatalog} />);
+    const dt = [...container.querySelectorAll('dt')].find((d) => d.textContent === '予定どおり作れなかった日');
+    expect(dt).toBeTruthy();
+    // 折り返してよい所は wbr の1か所だけ（styles.css の .summary dt は keep-all）
+    expect(dt?.innerHTML).toBe('予定どおり<wbr>作れなかった日');
+  });
+
+  it('週の献立：記録のあとで家族が変わって夕食なしになった日（作った）には、状態の印も家族の反応も出さない', () => {
+    let s = createInitialState(DEMO_ONBOARDING, defaultCatalog, MONDAY);
+    s = applyAction(s, defaultCatalog, { type: 'cooked', date: MONDAY }).state;
+    s = advanceDay(s, defaultCatalog).state;
+    const props = { catalog: defaultCatalog, weekStart: null, onWeekChange: () => {}, onAction: () => {}, onBack: () => {} };
+    // 家で食べた日（作った）には、今までどおり印と反応を出す
+    const first = render(<WeekSheet state={s} {...props} />);
+    const before = first.container.querySelector(`[data-date="${MONDAY}"]`) as HTMLElement;
+    expect(before.querySelector('.day-head .badge--cooked')?.textContent).toBe('作った');
+    expect(before.querySelector('.reactions')).not.toBeNull();
+    first.unmount();
+    // 月曜はパパが欠席で作った。そのあとパパ以外を家族から外すと、月曜は家で食べる人がいない日になる
+    const out: AppState = {
+      ...s,
+      meals: s.meals.map((m) => (m.date === MONDAY ? { ...m, absentMemberIds: ['member_2'] } : m)),
+      household: { ...s.household, members: s.household.members.filter((m) => m.id === 'member_2') },
+    };
+    expect(nobodyEatsOn(out, MONDAY)).toBe(true);
+    const { container } = render(<WeekSheet state={out} {...props} />);
+    const mon = container.querySelector(`[data-date="${MONDAY}"]`) as HTMLElement;
+    expect(mon.textContent).toContain(NO_DINNER_TEXT);
+    expect(mon.querySelector('.day-head .badge')).toBeNull();
+    expect(mon.querySelector('.reactions')).toBeNull();
   });
 
   it('「金曜はみんないる」で戻すと、料理・量・［差し替え］が戻る', () => {

@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { advanceDay, createInitialState, handleUserText } from '../engine';
 import { DEMO_ONBOARDING, defaultCatalog } from '../data';
 import type { AppState } from '../engine';
+import type { ParsedCommand } from '../engine';
 import {
   AiReader,
   RULES_UNREAD_REPLY,
@@ -12,11 +13,14 @@ import {
   checkMemberRefs,
   dateTable,
   maskNames,
+  prepareAiCommands,
   readableByRules,
   toParsedCommands,
+  withRuleDates,
+  withSender,
 } from './ai';
 import { App } from './App';
-import { STORAGE_KEY } from './storage';
+import { STORAGE_KEY, UI_STORAGE_KEY } from './storage';
 
 const MONDAY = '2026-11-09';
 const NULLS = {
@@ -248,6 +252,81 @@ describe('送る前の下ごしらえ', () => {
     ]);
   });
 
+  it('withSender：書いた人自身の欠席（わたし・俺・自分、かな・カタカナ書きも）は、送る人の欠席にする', () => {
+    const selfRefs = ['わたし', '私', 'あたし', '自分', '僕', '俺', 'オレ', 'ワタシ', 'ぼく', ' じぶん '];
+    const cmds: ParsedCommand[] = selfRefs.map((memberRef) => ({ type: 'absence', date: '2026-11-11', memberRef }));
+    expect(withSender(cmds, 'member_2').map((c) => (c.type === 'absence' ? c.memberRef : ''))).toEqual(selfRefs.map(() => 'member_2'));
+    // 取り消し（やっぱり俺も食べる）も同じ
+    expect(withSender([{ type: 'absence', date: '2026-11-11', memberRef: '俺', cancel: true }], 'member_2')).toEqual([
+      { type: 'absence', date: '2026-11-11', memberRef: 'member_2', cancel: true },
+    ]);
+    // ほかの言い方（みんな・わたしたち・夫・id）と、ほかの命令はそのまま。送る人がわからなければ、そのまま
+    const others: ParsedCommand[] = [
+      { type: 'absence', date: '2026-11-11', memberRef: 'みんな' },
+      { type: 'absence', date: '2026-11-11', memberRef: 'わたしたち' },
+      { type: 'absence', date: '2026-11-11', memberRef: '夫' },
+      { type: 'absence', date: '2026-11-11', memberRef: 'member_3' },
+      { type: 'show_week' },
+    ];
+    expect(withSender(others, 'member_2')).toEqual(others);
+    expect(withSender(cmds, undefined)).toEqual(cmds);
+    expect(withSender(cmds, '')).toEqual(cmds);
+  });
+
+  it('checkMemberRefs：id と一緒に書いた「俺」「わたし」も欠席として残す（送る人の欠席にするため）', () => {
+    const ms = demo().household.members;
+    expect(
+      checkMemberRefs(
+        [
+          { type: 'absence', date: '2026-11-11', memberRef: '俺とmember_3' },
+          { type: 'absence', date: '2026-11-12', memberRef: 'member_4、わたし' },
+          { type: 'absence', date: '2026-11-13', memberRef: 'member_3とわたしたち' },
+        ],
+        ms,
+      ),
+    ).toEqual([
+      { type: 'absence', date: '2026-11-11', memberRef: 'member_3' },
+      { type: 'absence', date: '2026-11-11', memberRef: '俺' },
+      { type: 'absence', date: '2026-11-12', memberRef: 'member_4' },
+      { type: 'absence', date: '2026-11-12', memberRef: 'わたし' },
+      { type: 'absence', date: '2026-11-13', memberRef: 'member_3' },
+    ]);
+  });
+
+  it('withRuleDates：AI が見るだけの命令の日付を落としたら、ルールが1つだけ日付つきで読めたときに、その日付を使う', () => {
+    const tue = '2026-11-10';
+    expect(withRuleDates([{ type: 'show_today' }], [{ type: 'show_today', date: tue }])).toEqual([{ type: 'show_today', date: tue }]);
+    expect(withRuleDates([{ type: 'show_shopping' }], [{ type: 'show_shopping', date: tue }])).toEqual([{ type: 'show_shopping', date: tue }]);
+    // AI の日付があれば、そのまま。ルールが日付を決めかねた（週の献立）・今日の分（日付なし）・同じ命令が2つなら、足さない
+    expect(withRuleDates([{ type: 'show_today', date: '2026-11-12' }], [{ type: 'show_today', date: tue }])).toEqual([
+      { type: 'show_today', date: '2026-11-12' },
+    ]);
+    expect(withRuleDates([{ type: 'show_today' }], [{ type: 'show_week' }])).toEqual([{ type: 'show_today' }]);
+    expect(withRuleDates([{ type: 'show_today' }], [{ type: 'show_today' }])).toEqual([{ type: 'show_today' }]);
+    expect(
+      withRuleDates([{ type: 'show_today' }], [
+        { type: 'show_today', date: tue },
+        { type: 'show_today', date: '2026-11-12' },
+      ]),
+    ).toEqual([{ type: 'show_today' }]);
+    // ほかの命令には触らない
+    const other: ParsedCommand[] = [{ type: 'absence', date: tue, memberRef: 'member_2' }, { type: 'show_week' }];
+    expect(withRuleDates(other, [{ type: 'show_today', date: tue }])).toEqual(other);
+  });
+
+  it('prepareAiCommands：「明日の夕飯なに？」で AI が日付を落とした・崩した（検証で外れた）ら明日に。「俺」は送る人に', () => {
+    const s = demo();
+    const text = '@きめとく 明日の夕飯なに？';
+    expect(prepareAiCommands(s, defaultCatalog, text, [{ type: 'show_today' }], 'member_2')).toEqual([{ type: 'show_today', date: '2026-11-10' }]);
+    expect(prepareAiCommands(s, defaultCatalog, '@きめとく あさって俺おらん', [{ type: 'absence', date: '2026-11-11', memberRef: '俺' }], 'member_2')).toEqual([
+      { type: 'absence', date: '2026-11-11', memberRef: 'member_2' },
+    ]);
+    // 家族にいない送る人は使わない（エンジンの決まりのまま）
+    expect(prepareAiCommands(s, defaultCatalog, '@きめとく あさって俺おらん', [{ type: 'absence', date: '2026-11-11', memberRef: '俺' }], 'member_9')).toEqual([
+      { type: 'absence', date: '2026-11-11', memberRef: '俺' },
+    ]);
+  });
+
   it('エンジンの返事の書き出し（読めなかった・あいさつ）が、画面の判定と合っている', () => {
     const s = demo();
     expect(handleUserText(s, defaultCatalog, '@きめとく あのさー').replies[0].text.startsWith(RULES_UNREAD_REPLY)).toBe(true);
@@ -273,6 +352,16 @@ describe('送る前の下ごしらえ', () => {
     expect(next.chat.some((m) => m.from === 'user')).toBe(false);
   });
 
+  it('おまかせ：仮定の言い方（「無理だったら別のにして」「外食だったら言うね」）は前日の確認への答えではないので、AI に頼む', () => {
+    const s = demo();
+    const next = advanceDay(s, defaultCatalog).state;
+    const readable = (st: AppState, t: string) => readableByRules(st, defaultCatalog, `@きめとく ${t}`);
+    for (const t of ['無理だったら別のにして', '外食だったら言うね', '作れなかったらごめん', '今日無理だったら連絡する']) {
+      expect(readable(s, t), t).toBe(false);
+      expect(readable(next, t), t).toBe(false);
+    }
+  });
+
   it('「明日の夕飯なに？」のような、日付つきの見るだけの命令は、日付も渡す（サーバーの toParsedCommand と同じ）', () => {
     const cmds = toParsedCommands({
       commands: [
@@ -296,6 +385,8 @@ describe('送る前の下ごしらえ', () => {
     expect(text).toContain('「今日はいらない」は today_impossible にしない');
     expect(text).toContain('「金曜はみんないる」「金曜はやっぱり家で食べる」「金曜の外食なくなった」');
     expect(text).toContain('「明日の夕飯なに？」→ 明日');
+    // 日を決められない時期（「来週は無理」「月末は外食」）は今日のことにしない（サーバーの指示と同じ。エンジンも、ルールで読む）
+    expect(text).toContain('日を決められない時期だけを書いた用件（「来週は無理」「月末は外食」「来週の外食なくなった」）は、今日のことにしない。');
   });
 
   it('指示に、取り消し・質問・冷凍の項目と、過ぎたことでは献立を変えない決まりが入る', () => {
@@ -559,6 +650,36 @@ describe('画面での AI の読み取り', () => {
     await waitFor(() => expect(within(log()).getByText('ルールで読み取り')).toBeTruthy());
     expect(log().textContent).not.toMatch(/member|メンバー/i);
     expect(within(log()).getByText(/うまく読み取れませんでした/)).toBeTruthy();
+  });
+
+  it('AI が「俺」「わたし」を返しても、送る人（パパ）の欠席にする（続柄「わたし」のママにしない）', async () => {
+    const saved = () => JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null') as AppState;
+    for (const memberRef of ['俺', 'わたし']) {
+      window.localStorage.clear();
+      mockClaude(async () => ({ commands: [{ type: 'absence', ...NULLS, date: '2026-11-11', memberRef }] }));
+      const view = render(<App todayFn={() => MONDAY} />);
+      await waitFor(() => expect(form().getAttribute('data-ai-status')).toBe('claude'));
+      fireEvent.change(screen.getByLabelText('送る人'), { target: { value: 'member_2' } });
+      send('あさって俺おらんわ');
+      await waitFor(() => expect(within(log()).getByText('AIで読み取り')).toBeTruthy());
+      expect(saved().meals.find((m) => m.date === '2026-11-11')?.absentMemberIds).toEqual(['member_2']);
+      const reply = [...log().querySelectorAll('[data-from="bot"] .bubble--bot')].pop()?.textContent ?? '';
+      expect(reply).toContain('パパ');
+      expect(reply).not.toContain('ママ');
+      view.unmount();
+    }
+  });
+
+  it('いつも AI で、AI が「明日の夕飯なに？」の日付を落としても、明日の献立を出す（ルールの日付を使う）', async () => {
+    window.localStorage.setItem(UI_STORAGE_KEY, JSON.stringify({ aiMode: 'always' }));
+    const { json } = mockClaude(async () => ({ commands: [{ type: 'show_today', ...NULLS }] }));
+    render(<App todayFn={() => MONDAY} />);
+    await waitFor(() => expect(form().getAttribute('data-ai-status')).toBe('claude'));
+    send('明日の夕飯なに？');
+    await waitFor(() => expect(within(log()).getByText('AIで読み取り')).toBeTruthy());
+    expect(json).toHaveBeenCalledTimes(1);
+    const cards = [...log().querySelectorAll('[data-card="meal"]')];
+    expect(cards[cards.length - 1].getAttribute('aria-label')).toBe('11/10(火)の夕食');
   });
 
   it('「使わない」にすると AI を呼ばない', async () => {

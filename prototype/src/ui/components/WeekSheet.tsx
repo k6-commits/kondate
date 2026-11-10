@@ -185,7 +185,8 @@ function DayCard({ state, catalog, meal, onAction }: { state: AppState; catalog:
           </button>
         </div>
       ) : null}
-      {meal.status === 'cooked' ? <Reactions state={state} meal={meal} onAction={onAction} /> : null}
+      {/* みんな外で食べる日は、記録の印と同じく反応も出さない（夕食なしの日。振り返りにも数えない）。 */}
+      {meal.status === 'cooked' && !none ? <Reactions state={state} meal={meal} onAction={onAction} /> : null}
     </li>
   );
 }

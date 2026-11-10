@@ -4,7 +4,7 @@ import type { KeyboardEvent, ReactElement } from 'react';
 import type { Action, ActionButton, AppState, Card, Catalog, ChatMessage, ISODate, Member } from '../../engine';
 import { formatJa, weekStartOf } from '../../engine';
 import type { AiStatus } from '../ai';
-import { cls, nobodyEatsOn } from '../lib';
+import { cls, formerSenderName, nobodyEatsOn } from '../lib';
 import { ChatCard } from './ChatCard';
 import type { CardHandlers } from './ChatCard';
 import { Hanko, Icon } from './Icon';
@@ -147,12 +147,16 @@ const CHANGE_ACTIONS: ReadonlySet<Action['type']> = new Set<Action['type']>(['re
  * - みんな外で食べる日（家で食べる人がいない日）の、作る・替えるボタンは出さない。
  * - 過ぎた日の献立を替えるボタン（［別のに］［今日は無理］、別の案）は出さない（押しても「もう変えられません」になるだけ）。
  *   作った・作らなかったの記録のボタンは、過ぎた日にも出す。
+ * - もうない提案（日が過ぎた・作り直しで片づいた提案）の［替える］［そのまま］は出さない（押しても「その提案は、もう
+ *   使えません」になるだけ）。LINE のクイックリプライ（server/line.ts の isGoneProposal）と同じ。
  */
 export function visibleActions(state: AppState, actions: ActionButton[] | undefined): ActionButton[] {
   return (actions ?? []).filter((b) => {
-    if (!('date' in b.action)) return true;
-    if (DAY_ACTIONS.has(b.action.type) && nobodyEatsOn(state, b.action.date)) return false;
-    return !(CHANGE_ACTIONS.has(b.action.type) && b.action.date < state.today);
+    const a = b.action;
+    if (a.type === 'accept_proposal' || a.type === 'reject_proposal') return state.proposals.some((p) => p.id === a.proposalId);
+    if (!('date' in a)) return true;
+    if (DAY_ACTIONS.has(a.type) && nobodyEatsOn(state, a.date)) return false;
+    return !(CHANGE_ACTIONS.has(a.type) && a.date < state.today);
   });
 }
 
@@ -190,7 +194,7 @@ export function Talk(props: TalkProps) {
   const chat = state.chat;
   const lastUser = lastUserIndex(chat);
   const nameOf = (id: string | undefined) =>
-    (id && state.household.members.find((m) => m.id === id)?.nickname) || props.adults[0]?.nickname || 'わたし';
+    formerSenderName(id) || (id && state.household.members.find((m) => m.id === id)?.nickname) || props.adults[0]?.nickname || 'わたし';
 
   const innerRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);

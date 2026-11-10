@@ -15,9 +15,9 @@ import {
   weekdayOf,
 } from '../engine';
 import { DEMO_ONBOARDING, defaultCatalog } from '../data';
-import { AiReader, readableByRules } from './ai';
+import { AiReader, prepareAiCommands, readableByRules } from './ai';
 import type { AiMode, AiReading } from './ai';
-import { adultsOf, cls, firstLine, japanToday, nobodyEatsOn } from './lib';
+import { adultsOf, cls, firstLine, formerSender, japanToday, nobodyEatsOn } from './lib';
 import { clearStored, readStoredState, readUiPrefs, writeStoredState, writeUiPrefs } from './storage';
 import { AboutPanel } from './components/AboutPanel';
 import { HouseholdSheet } from './components/HouseholdSheet';
@@ -143,16 +143,30 @@ function keptChangedDays(before: AppState, after: AppState): ISODate[] {
 
 /**
  * 家族の変更で作り直した日（keepSafe の作り直しのあと、料理が変わった、今日以降の日）。
- * 知らせの文を、トークの返事「11/11(水)は、家族の変更に合わせて作り直しました。」とそろえるために使う。
+ * raku は、家族が決めたラク日（今日は無理・自分で選んだラク日）のまま料理だけを替えた日（エンジンの rakuRedone）。
  */
-function redoneDays(before: AppState, after: AppState): ISODate[] {
-  return after.meals
+function redoneDays(before: AppState, after: AppState): { redone: ISODate[]; raku: ISODate[] } {
+  const changed = after.meals
     .filter((m) => m.date >= after.today && m.status === 'planned')
     .filter((m) => {
       const old = before.meals.find((b) => b.date === m.date);
       return !old || old.dishIds.join('|') !== m.dishIds.join('|');
-    })
-    .map((m) => m.date);
+    });
+  const userRaku = (m: { kind: string; changedBy?: string } | undefined) => !!m && m.kind === 'raku' && m.changedBy === 'user';
+  const isRaku = (m: (typeof changed)[number]) => userRaku(m) && userRaku(before.meals.find((b) => b.date === m.date));
+  return { redone: changed.filter((m) => !isRaku(m)).map((m) => m.date), raku: changed.filter(isRaku).map((m) => m.date) };
+}
+
+/**
+ * 家族の変更の知らせの続き。トークの返事（エンジンの regenerate_week の keepSafe）の1行目と同じ言い方にする：
+ * 「11/11(水)は、家族の変更に合わせて作り直しました。11/9(月)は、ラク日のまま料理を替えました。ほかの日は、そのままです。」
+ * 週が2つ作り直されたときは、日をまとめて1つの文にする。
+ */
+function familyRedoText(redone: ISODate[], raku: ISODate[]): string {
+  if (redone.length === 0 && raku.length === 0) return '家族の変更に当たる料理はないので、献立はそのままです。人数と買い物リストは直しました。';
+  const a = redone.length > 0 ? `${redone.map(formatJa).join('・')}は、家族の変更に合わせて作り直しました。` : '';
+  const b = raku.length > 0 ? `${raku.map(formatJa).join('・')}は、ラク日のまま料理を替えました。` : '';
+  return `${a}${b}ほかの日は、そのままです。`;
 }
 
 /**
@@ -397,8 +411,10 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
       }
     }
     const prev = stateRef.current;
+    // AI の結果は、画面だけが知っていることで整える（「俺」「わたし」は送る人の欠席に、落とした日付はルールの日付に）。
+    const commands = reading.commands ? prepareAiCommands(prev, catalog, text, reading.commands, sender) : undefined;
     // 送る人を渡す：人を書かない「明日飲み会」「今日はいらない」は、送った人の欠席にする（エンジンの UserTextOptions）。
-    const r = handleUserText(prev, catalog, text, reading.commands ?? undefined, { senderId: sender || undefined });
+    const r = handleUserText(prev, catalog, text, commands, { senderId: sender || undefined });
     recordSenders(prev, r.state, sender);
     const last = r.replies[r.replies.length - 1];
     if (last) setMarks((m) => ({ ...m, [last.id]: reading.source }));
@@ -420,6 +436,16 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
     const removed = change.removedMemberIds ?? [];
     // 家族を外したら、読み取り中の結果は使わない（外した人の id が、あとで加えた人に使われることがあるため）。
     if (prev.household.members.some((m) => !next.members.some((n) => n.id === m.id))) epochRef.current += 1;
+    // 送る人を外したら、送る人の覚え書きも消す（最初の大人に戻す）。残すと、あとで加えた人が同じ id になったとき
+    // （いちばん大きい番号の人を外すと、次に加えた人が同じ番号になる）、黙ってその人が送る人になり、その人の欠席が記録される。
+    const goneMembers = prev.household.members.filter((m) => !next.members.some((n) => n.id === m.id));
+    const gone = goneMembers.map((m) => m.id);
+    if (gone.length > 0) {
+      setSenderPref((p) => (p && gone.includes(p) ? undefined : p));
+      // 外した人の発言は、外したときの名前で出し続ける（最初の大人や、同じ id で加えた人の名前にしない）。
+      const names = new Map(goneMembers.map((m) => [m.id, m.nickname]));
+      setSenders((cur) => Object.fromEntries(Object.entries(cur).map(([msg, who]) => [msg, names.has(who) ? formerSender(names.get(who) ?? '') : who])));
+    }
     if (removed.length > 0) {
       s = {
         ...s,
@@ -459,12 +485,8 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
       showToast(change.toast);
     } else if (change.keepSafe) {
       // トークの返事（エンジンの regenerate_week の keepSafe）と同じ言い方にする。
-      const redone = redoneDays(prev, s);
-      showToast(
-        redone.length > 0
-          ? `${change.toast}${redone.map(formatJa).join('・')}は、家族の変更に合わせて作り直しました。ほかの日は、そのままです。`
-          : `${change.toast}家族の変更に当たる料理はないので、献立はそのままです。人数と買い物リストは直しました。`,
-      );
+      const { redone, raku } = redoneDays(prev, s);
+      showToast(`${change.toast}${familyRedoText(redone, raku)}`);
     } else {
       const kept = keptChangedDays(prev, s);
       const keptText = kept.length > 0 ? `自分で替えた日（${kept.map(formatJa).join('・')}）は、そのままです。` : '';
@@ -611,6 +633,8 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
                       epochRef.current += 1;
                       setSenders({});
                       setMarks({});
+                      // 家族ごと入れ替わるので、送る人も読み込んだ家族の最初の大人にする（はじめからの設定と同じ）。
+                      setSenderPref(adultsOf(s.household.members)[0]?.id);
                       commit(s);
                       navigate('talk');
                       showToast('読み込みました。');

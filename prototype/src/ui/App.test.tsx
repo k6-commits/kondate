@@ -198,6 +198,37 @@ describe('トーク', () => {
     expect(reply).toContain('パパ');
   });
 
+  it('送る人を家族から外すと、送る人は最初の大人に戻る。同じ id で加えた人を、黙って送る人にしない。外した人の発言は、その人の名前のまま', () => {
+    // ママ・パパの2人の家族。パパはいちばん大きい番号なので、外したあとに加えた人は同じ member_2 になる
+    const s = createInitialState({ ...DEMO_ONBOARDING, members: DEMO_ONBOARDING.members.slice(0, 2) }, defaultCatalog, MONDAY);
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+    render(<App todayFn={todayFn} />);
+    const sender = () => screen.getByLabelText('送る人') as HTMLSelectElement;
+    fireEvent.change(sender(), { target: { value: 'member_2' } });
+    send('明日飲み会');
+    expect(saved().meals.find((m) => m.date === '2026-11-10')?.absentMemberIds).toEqual(['member_2']);
+
+    fireEvent.click(within(menu()).getByRole('button', { name: '家族と設定' }));
+    const papa = [...document.querySelectorAll('.member-card')].find((c) => c.querySelector('.member-name')?.textContent === 'パパ') as HTMLElement;
+    fireEvent.click(within(papa).getByRole('button', { name: '外す' }));
+    fireEvent.click(within(screen.getByRole('group', { name: 'パパを外すかの確認' })).getByRole('button', { name: '外す' }));
+    fireEvent.click(screen.getByRole('button', { name: '家族を加える' }));
+    const editor = document.querySelector('.member-card.is-editing') as HTMLElement;
+    fireEvent.change(within(editor).getByLabelText('ニックネーム'), { target: { value: 'じいじ' } });
+    fireEvent.click(within(editor).getByRole('radio', { name: '大人' }));
+    fireEvent.click(within(editor).getByRole('button', { name: '加える' }));
+    expect(saved().household.members.find((m) => m.nickname === 'じいじ')?.id).toBe('member_2');
+    fireEvent.click(screen.getByRole('button', { name: '戻る' }));
+
+    expect(sender().value).toBe('member_1');
+    expect(uiPrefs().sender).toBeUndefined();
+    // パパの発言は、パパの名前のまま（最初の大人のママや、同じ id のじいじにしない）
+    expect(talkLog().querySelector('[data-from="user"] .msg-name')?.textContent).toBe('パパ');
+    // 「明後日飲み会」は、選ばれている送る人（ママ）の欠席
+    send('明後日飲み会');
+    expect(saved().meals.find((m) => m.date === '2026-11-11')?.absentMemberIds).toEqual(['member_1']);
+  });
+
   it('ボタン（チップ）を押すと applyAction の返事が入る', () => {
     render(<App todayFn={todayFn} />);
     const chips = within(talkLog()).getAllByRole('button', { name: '今日のごはん' });
@@ -478,6 +509,27 @@ describe('家族と設定', () => {
     fireEvent.click(within(screen.getByRole('group', { name: 'ラク日の数' })).getByRole('button', { name: '0日' }));
     expect(screen.getByRole('status').textContent).toBe('ラク日を週0日にしました。');
     expect(saved().meals.find((m) => m.date === s.today)!.dishIds).toEqual(fri.dishIds);
+  });
+
+  it('家族の変更が今日は無理で決めたラク日に当たるときは、知らせもトークの返事と同じく「ラク日のまま料理を替えました」と言う', () => {
+    render(<App todayFn={todayFn} />);
+    send('今日は無理');
+    expect(saved().meals.find((m) => m.date === MONDAY)).toMatchObject({ kind: 'raku', changedBy: 'user' });
+    const bots = botCount();
+    fireEvent.click(within(menu()).getByRole('button', { name: '家族と設定' }));
+    const papa = [...document.querySelectorAll('.member-card')].find((c) => c.querySelector('.member-name')?.textContent === 'パパ') as HTMLElement;
+    fireEvent.click(within(papa).getByRole('button', { name: '直す' }));
+    // えび：今日のラク日（しらす丼）に当たる
+    fireEvent.click(screen.getByRole('button', { name: 'えび' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存する' }));
+    const mon = saved().meals.find((m) => m.date === MONDAY)!;
+    expect(mon).toMatchObject({ kind: 'raku', changedBy: 'user' });
+    const toast = screen.getByRole('status').textContent ?? '';
+    expect(toast).toBe('パパを直しました。11/9(月)は、ラク日のまま料理を替えました。ほかの日は、そのままです。');
+    // トークの返事（エンジンの regenerate_week の keepSafe）は1通だけ増え、その1行目と同じ
+    expect(botCount()).toBe(bots + 1);
+    const reply = [...talkLog().querySelectorAll('[data-from="bot"] .bubble--bot')].pop()?.textContent ?? '';
+    expect(toast).toBe(`パパを直しました。${reply.split('\n')[0]}`);
   });
 
   it('設定で作り直しても、自分で替えた日は残り、知らせでもそう言う', () => {
