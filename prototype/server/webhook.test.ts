@@ -17,6 +17,7 @@ const samples: { [K in Action['type']]: Extract<Action, { type: K }> } = {
   react: { type: 'react', date: '2026-11-09', memberId: 'household', reaction: 'great' },
   check_item: { type: 'check_item', shoppingDate: '2026-11-09', ingredientId: 'egg', checked: true },
   regenerate_week: { type: 'regenerate_week', weekStart: '2026-11-16' },
+  weekly_checkin: { type: 'weekly_checkin', weekStart: '2026-11-16', thoughtDays: 2 },
 };
 
 describe('parseAction（postback の data）', () => {

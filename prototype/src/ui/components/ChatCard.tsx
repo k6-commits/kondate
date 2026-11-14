@@ -1,6 +1,17 @@
 // トークのカード（Card）。カードは参照だけを持つので、中身は今の state から描く。
 import type { AppState, Card, Catalog, ISODate } from '../../engine';
-import { AISLE_LABEL, AISLE_ORDER, WEEKDAY_JA, addDays, findDish, formatJa, weekStartOf, weekdayOf, weeklySummary } from '../../engine';
+import {
+  AISLE_LABEL,
+  AISLE_ORDER,
+  CHECKIN_SUMMARY_LABEL,
+  WEEKDAY_JA,
+  addDays,
+  findDish,
+  formatJa,
+  weekStartOf,
+  weekdayOf,
+  weeklySummary,
+} from '../../engine';
 import { NO_DINNER_TEXT, cls, dishNames, leftCount, nobodyEats } from '../lib';
 import { Icon } from './Icon';
 import { MealDetails, RakuBadge, StatusBadge, statusBadgeShown } from './MealDetails';
@@ -202,9 +213,37 @@ function recordedDays(state: AppState, weekStart: ISODate, plannedDays: number, 
   return Math.max(0, plannedDays - unconfirmedDays - upcoming);
 }
 
+/**
+ * 週末の質問（自分で考えた夕食は何日？）の答えの1行。答えた週だけ出す（weeklySummary の checkin）。
+ * 「自分で考えた日（週末の質問）：2日／5日」と1行で読めるように、見出しと数を続けて出す（ほかの行の2列にしない）。
+ * 見出しはエンジンの CHECKIN_SUMMARY_LABEL（LINE の文・次の週の献立のメッセージと同じ言い方）。
+ */
+function CheckinLine({ checkin }: { checkin: { plannedDays: number; thoughtDays: number } }) {
+  return (
+    <div className="summary-line" data-testid="summary-checkin">
+      <dt>{CHECKIN_SUMMARY_LABEL}：</dt>
+      <dd className="num">
+        <strong>{checkin.thoughtDays}日</strong>／{checkin.plannedDays}日
+      </dd>
+    </div>
+  );
+}
+
 export function SummaryBody({ weekStart, state, catalog }: { weekStart: ISODate; state: AppState; catalog: Catalog }) {
   const s = weeklySummary(state, catalog, weekStart);
-  if (s.plannedDays === 0) return <p className="card-empty">この週の記録はありません。</p>;
+  if (s.plannedDays === 0) {
+    // 献立の日がない週（どの日もみんな外で食べた など）。答えがあれば、それだけは出す（エンジンの振り返りの文と同じ）。
+    return s.checkin ? (
+      <>
+        <p className="card-empty">この週の記録はありません。</p>
+        <dl className="summary">
+          <CheckinLine checkin={s.checkin} />
+        </dl>
+      </>
+    ) : (
+      <p className="card-empty">この週の記録はありません。</p>
+    );
+  }
   // 記録のない日は「分からない日」。0日とは言わない（記録が1日もなければ、数を出さない）。
   const unknown = s.unconfirmedDays ?? 0;
   const recorded = recordedDays(state, weekStart, s.plannedDays, unknown);
@@ -224,6 +263,7 @@ export function SummaryBody({ weekStart, state, catalog }: { weekStart: ISODate;
           <dd className="num">{s.plannedDays}日分（作った・作らなかったの記録はありません）</dd>
         </div>
       )}
+      {s.checkin ? <CheckinLine checkin={s.checkin} /> : null}
       {s.skippedOrImpossible > 0 ? (
         <div>
           {/* 長い見出しは、語の途中（「作れなか／った日」）でなく「予定どおり／作れなかった日」で折り返す（styles.css の keep-all）。 */}

@@ -90,3 +90,54 @@
 .card-fold[open] > summary .icon {
   transform: rotate(180deg);
 }
+
+/* ------------------------------------------------------------------ 試用モード（本物の日付で進める） */
+
+/* ［翌日へ進む］の代わりに出す、小さな添え書き。狭い画面では2行に折り返す（語の途中では折り返さない）。 */
+.clock-note {
+  flex: 1 1 8em;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+/* 初回設定の確認（⑤）の「本物の日付で進める（1週間の試用）」。選んだことが分かるように、枠で囲む。 */
+.toggle-row.trial-clock {
+  padding: 10px 12px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+/* チェックボックスの文（見出しと説明に分けない、1文だけのもの）。 */
+.toggle-text {
+  display: block;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* 試用の記録：送る文の欄は、中の長い1行（集計ページが読む数字）も折り返して、横に広げない。 */
+.trial-record .code-area {
+  min-height: 9em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 週末の質問のボタン（0日〜7日）。6〜7個でも、狭い画面で折り返して並ぶ。押せる所は 44px 以上。 */
+.chips--checkin .chip {
+  min-width: 52px;
+  justify-content: center;
+  text-align: center;
+}
+
+/* 振り返りの「自分で考えた日（週末の質問）：2日／5日」。見出しと数を1行に続けて出す（狭いときは「（」の前で折り返す）。 */
+.summary div.summary-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 4px;
+}

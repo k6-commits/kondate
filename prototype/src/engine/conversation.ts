@@ -49,6 +49,7 @@ import {
 } from './messages';
 import { dateLabel, dayWord, dishName, mealTitle, namesLine } from './text';
 import { addBotMessage, addUserMessage, chatIds, clone, newBotMessages, normalizeJa } from './util';
+import { answerCheckin, checkinFor, checkinQuestionWeek, checkinTotal, isCheckinReply, parseDayCount } from './checkin';
 
 const PROTEINS = ['chicken', 'pork', 'beef', 'ground', 'fish', 'seafood', 'egg', 'tofu', 'none'];
 const GENRES = ['wa', 'yo', 'chu', 'other'];
@@ -306,6 +307,12 @@ function bodyOf(text: string): string {
   return normalizeJa(text.normalize('NFKC').replace(/@\s*(きめとく|キメトク|kimetoku)/gi, ' ')).replace(/[!！。、.,\s〜~♪]+$/u, '');
 }
 
+/**
+ * 読み取れなかったときの返事の書き出し（showUnknown）。試用の記録（trial.ts）は、この返事のすぐ前の書き込みを
+ * 「読み取れなかった書き込み」に数える。画面が AI に頼むかを決めるときも、この書き出しで見分ける。
+ */
+export const UNREADABLE_REPLY = 'すみません、うまく読み取れませんでした。';
+
 function showUnknown(s: AppState, text = ''): void {
   // あいさつ・お礼には、短く返す（毎回「読み取れませんでした」と言わない）。
   const t = bodyOf(text);
@@ -361,8 +368,8 @@ function showUnknown(s: AppState, text = ''): void {
   // 直前の返事の案が残っていれば、そのボタンをもう一度出す（読み取れなくても、案を選べるように）。
   reshowOpen(
     s,
-    'すみません、うまく読み取れませんでした。',
-    ['すみません、うまく読み取れませんでした。たとえば、こう送ってください。', '・今日のごはん', '・今日は無理', '・卵切れた'].join('\n'),
+    UNREADABLE_REPLY,
+    [`${UNREADABLE_REPLY}たとえば、こう送ってください。`, '・今日のごはん', '・今日は無理', '・卵切れた'].join('\n'),
     [BTN_TODAY, BTN_WEEK],
   );
 }
@@ -627,6 +634,74 @@ function answerChoice(s: AppState, catalog: Catalog, text: string): boolean {
 }
 
 /**
+ * まだ答えを待っている、週末の質問ではない質問か（週末の質問より新しければ、数だけの書き込みはそちらの答えにする）：
+ * 今日の「どちらにしますか？」の案（まだどれも選んでいない）、まだ使える提案の［替える］［そのまま］、答えのない過ぎた日の
+ * 「作りましたか？」、直前の返事の「誰が食べませんか？」「どの日の予定がなくなりましたか？」。
+ * 家族の反応（◎○△）や、今日の献立のカードの［作った］は、数の答えを取り合わないので数えない。
+ */
+function waitsForAnswer(s: AppState, m: ChatMessage, bots: ChatMessage[]): boolean {
+  if (bots.includes(m) && (isAskWho(m.text) || isAskWhichDay(m.text))) return true;
+  const options = (m.actions ?? []).flatMap((a) => (a.action.type === 'choose_alternative' ? [a.action] : []));
+  if (options.length > 0 && m.at.startsWith(s.today)) {
+    const meal = mealOn(s, options[0].date);
+    const chosen = !!meal && options.some((o) => o.dishIds.join(',') === meal.dishIds.join(','));
+    if (meal && meal.status === 'planned' && options[0].date >= s.today && !chosen) return true;
+  }
+  return (m.actions ?? []).some(
+    ({ action: a }) =>
+      ((a.type === 'accept_proposal' || a.type === 'reject_proposal') && s.proposals.some((p) => p.id === a.proposalId)) ||
+      (a.type === 'cooked' && a.date < s.today && mealOn(s, a.date)?.status === 'unconfirmed'),
+  );
+}
+
+/**
+ * 週末の質問に答えたすぐあとか：いちばん新しい bot の返事が、記録の返事（読み取れなかった返事は飛ばす。
+ * 「やっぱりね、えーと」が読めなくても、続けて「3」で答え直せるように）。
+ */
+function justAnsweredCheckin(s: AppState): boolean {
+  for (let i = s.chat.length - 2; i >= 0; i--) {
+    const m = s.chat[i];
+    if (m.from !== 'bot') continue;
+    if (isCheckinReply(m)) return true;
+    if (!m.text.startsWith(UNREADABLE_REPLY)) return false;
+  }
+  return false;
+}
+
+/**
+ * 週末の質問が、いちばん新しい「答えを待っている質問」なら、その週の月曜。新しい順に bot のメッセージを見て、
+ * 週末の質問より先に、答えを待っているほかの質問（waitsForAnswer）があれば、なし（「2」は案の2つ目、「全部」は取り消しの答え）。
+ * 答えのある週の質問は、答えたすぐあと（justAnsweredCheckin）だけ、答え直しとして読む（「2日」を押してから「やっぱり3」）。
+ * 数だけの書き込みで答えられるのは、今週か先週の質問だけ（それより前の週は、ボタンで答える。返事に週を書かないため）。
+ */
+function pendingCheckin(s: AppState): ISODate | undefined {
+  const { bots } = previousTurn(s);
+  for (let i = s.chat.length - 2; i >= 0; i--) {
+    const m = s.chat[i];
+    if (m.from !== 'bot') continue;
+    const week = checkinQuestionWeek(m);
+    if (week) {
+      if (week < addDays(weekStartOf(s.today), -7)) return undefined;
+      return !checkinFor(s, week) || justAnsweredCheckin(s) ? week : undefined;
+    }
+    if (waitsForAnswer(s, m, bots)) return undefined;
+  }
+  return undefined;
+}
+
+/** 週末の質問への文字の答え（「2」「2日」「二日」「ふつか」「なし」「全部」）。ボタンと同じに記録する。扱ったら true。 */
+function answerCheckinText(s: AppState, text: string): boolean {
+  const week = pendingCheckin(s);
+  if (!week) return false;
+  const total = checkinTotal(s, week);
+  if (typeof total !== 'number') return false;
+  const days = parseDayCount(plainAnswer(bodyOf(text)), total);
+  if (days === null) return false;
+  answerCheckin(s, week, days);
+  return true;
+}
+
+/**
  * LLM の欠席の安全網：ルールで「遅くなるだけ」「まだ決まっていない」と読める人・日の欠席（LLM の結果）は使わない。
  * 欠席にすると、その人の除外（アレルギーなど）がゆるむため（「水曜ははるとが塾」で卵の料理を出さない）。かわりにルールの返事にする。
  */
@@ -824,6 +899,17 @@ function pendingPastCheck(s: AppState): ISODate | undefined {
   return undefined;
 }
 
+/**
+ * 直前の bot のメッセージ（「はい」「いいえ」を「作りましたか？」への答えとして読むかを決める）。
+ * 同じ返事の中で、週末の質問が「作りましたか？」のあとに続くとき（週の最後の献立の日の翌朝）は、週末の質問を飛ばす
+ * （週末の質問は「はい」では答えられないので、「はい」は前日の「作りましたか？」への答え）。
+ */
+function lastBotMessage(s: AppState): ChatMessage | undefined {
+  const { bots } = previousTurn(s);
+  if (bots.length === 0) return [...s.chat].reverse().find((m) => m.from === 'bot');
+  return bots.filter((m) => !checkinQuestionWeek(m)).at(-1) ?? bots.at(-1);
+}
+
 function cookedReport(s: AppState, catalog: Catalog, text: string): { date: ISODate; cooked: boolean } | null {
   const t = bodyOf(text);
   const core = plainAnswer(t);
@@ -835,7 +921,7 @@ function cookedReport(s: AppState, catalog: Catalog, text: string): { date: ISOD
   if (NOT_YET.test(t) || oneAteOut(s, t)) return null;
   // これからの日の話（「明日は出前にする」「金曜は外食した」の書きまちがい）は、前日の確認への答えにしない（今日を記録しない）。
   if (findDates(t, s.today).dates.some((d) => d > s.today)) return null;
-  const last = [...s.chat].reverse().find((m) => m.from === 'bot');
+  const last = lastBotMessage(s);
   const asked = last?.actions?.some((a) => a.action.type === 'cooked');
   const askedDate = last?.actions?.find((a) => a.action.type === 'cooked')?.action;
   const pastWord = /一昨日|おととい|昨日|きのう|昨晩|昨夜|ゆうべ/.test(t);
@@ -1060,8 +1146,11 @@ export function handleUserText(
   // 直前の提案への「はい」「替えて」「そのまま」は、ボタンを押したのと同じに扱う。
   // 「誰が食べませんか？」への名前だけの答え（「パパ」）は、聞いた日の欠席にする。
   // 前日の「作りましたか？」への、日の言葉のない「無理だった」「外食した」は、その日の「作らなかった」にする。
+  // 週末の質問への数だけの答え（「2」「2日」「全部」）は、週末の質問がいちばん新しい答え待ちの質問のときだけ記録する
+  // （「どちらにしますか？」の「2」や、「どの日の予定がなくなりましたか？」の「全部」を取らない。pendingCheckin）。
   // どれも直前の返事への答えなので、LLM の結果より先に見る（LLM は直前の返事を知らない）。
   if (
+    answerCheckinText(s, text) ||
     answerProposal(s, catalog, text) ||
     answerChoice(s, catalog, text) ||
     answerWho(s, catalog, text, senderId) ||
@@ -1295,37 +1384,42 @@ function tappedLabel(s: AppState, action: Action, fallback: string): string {
   return fallback;
 }
 
+/** 押したボタンの文言を、利用者の発言として残す（tap：書き込みではない。試用の記録で書き込みと分けて数える）。 */
+function echo(s: AppState, text: string): void {
+  addUserMessage(s, text, { tap: true });
+}
+
 /** 公開API：ボタン（postback）の処理。利用者の発言として、ボタンの文言も chat に残す（買い物のチェックは残さない）。 */
 export function applyAction(state: AppState, catalog: Catalog, action: Action): StepResult {
   const s = clone(state);
   const before = chatIds(s);
   switch (action.type) {
     case 'open_week':
-      addUserMessage(s, '今週の献立');
+      echo(s, '今週の献立');
       showWeek(s, catalog);
       break;
     case 'open_today':
-      addUserMessage(s, '今日のごはん');
+      echo(s, '今日のごはん');
       showToday(s, catalog);
       break;
     case 'open_shopping':
-      addUserMessage(s, '買い物リスト');
+      echo(s, '買い物リスト');
       showShopping(s);
       break;
     case 'cooked':
-      addUserMessage(s, '作った');
+      echo(s, '作った');
       cooked(s, catalog, action.date);
       break;
     case 'not_cooked':
-      addUserMessage(s, tappedLabel(s, action, action.date >= s.today ? '作らない日にする' : '作らなかった'));
+      echo(s, tappedLabel(s, action, action.date >= s.today ? '作らない日にする' : '作らなかった'));
       notCooked(s, catalog, action.date);
       break;
     case 'request_alternatives':
-      addUserMessage(s, tappedLabel(s, action, '別のに'));
+      echo(s, tappedLabel(s, action, '別のに'));
       requestAlternatives(s, catalog, action.date);
       break;
     case 'choose_alternative': {
-      addUserMessage(s, namesLine(s, catalog, action.dishIds) || '別の案');
+      echo(s, namesLine(s, catalog, action.dishIds) || '別の案');
       // 同じ返事のほかの日の提案（「明日のは別のにして。鶏むねが安い」）は、ボタンつきで出し直す。
       const others = pendingProposals(s).filter((p) => p.date !== action.date);
       chooseAlternative(s, catalog, action.date, action.dishIds);
@@ -1333,12 +1427,12 @@ export function applyAction(state: AppState, catalog: Catalog, action: Action): 
       break;
     }
     case 'today_impossible':
-      addUserMessage(s, '今日は無理');
+      echo(s, '今日は無理');
       if (action.date === s.today) todayImpossible(s, catalog, action.date);
       else requestAlternatives(s, catalog, action.date);
       break;
     case 'accept_proposal': {
-      addUserMessage(s, '替える');
+      echo(s, '替える');
       const others = pendingProposals(s).filter((p) => p.id !== action.proposalId);
       const choice = lastChoice(s);
       const day = s.proposals.find((p) => p.id === action.proposalId)?.date;
@@ -1348,7 +1442,7 @@ export function applyAction(state: AppState, catalog: Catalog, action: Action): 
       break;
     }
     case 'reject_proposal': {
-      addUserMessage(s, 'そのまま');
+      echo(s, 'そのまま');
       const others = pendingProposals(s).filter((p) => p.id !== action.proposalId);
       const choice = lastChoice(s);
       const day = s.proposals.find((p) => p.id === action.proposalId)?.date;
@@ -1359,7 +1453,7 @@ export function applyAction(state: AppState, catalog: Catalog, action: Action): 
     }
     case 'react': {
       const nick = action.memberId === 'household' ? '' : `${s.household.members.find((m) => m.id === action.memberId)?.nickname ?? ''} `;
-      addUserMessage(s, `${nick}${MARK[action.reaction]}`);
+      echo(s, `${nick}${MARK[action.reaction]}`);
       react(s, catalog, action.date, action.memberId, action.reaction);
       break;
     }
@@ -1367,8 +1461,13 @@ export function applyAction(state: AppState, catalog: Catalog, action: Action): 
       checkItem(s, catalog, action.shoppingDate, action.ingredientId, action.checked);
       break;
     case 'regenerate_week':
-      addUserMessage(s, '献立を作り直す');
+      echo(s, '献立を作り直す');
       regenerateWeek(s, catalog, action.weekStart, { keepSafe: action.keepSafe === true });
+      break;
+    case 'weekly_checkin':
+      // 週末の質問の［2日］：記録する（答え直しは置き換え。まだ終わっていない週・範囲の外は、記録せずに短く返す）。
+      echo(s, tappedLabel(s, action, `${action.thoughtDays}日`));
+      answerCheckin(s, action.weekStart, action.thoughtDays);
       break;
   }
   return { state: s, replies: newBotMessages(s, before) };

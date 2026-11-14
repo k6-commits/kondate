@@ -1,6 +1,7 @@
 // 画面で使う小さな道具（表示用の文言、日付、検索用の正規化など）。
 import type { AppState, Catalog, Dish, ISODate, MealStatus, Member, PlannedMeal, Reaction, ShoppingList, Weekday } from '../engine';
-import { SERVING_WEIGHT, WEEKDAY_JA, addDays, findDish, formatJa, isISODate } from '../engine';
+import { SERVING_WEIGHT, WEEKDAY_JA, addDays, advanceDay, findDish, formatJa, isISODate } from '../engine';
+import type { ClockMode } from './storage';
 
 export type MemberRole = NonNullable<Member['role']>;
 
@@ -56,6 +57,64 @@ export function japanToday(now: Date = new Date()): ISODate {
   }
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+// ---------------------------------------------------------------------------
+// 日付の進め方（試用モード：本物の日付で進める）
+// ---------------------------------------------------------------------------
+
+/** 1回の追いつきで進める日数の上限（長く開かなかったときも、画面を止めないように）。残りは次の機会に進める。 */
+export const MAX_CATCH_UP_DAYS = 31;
+
+/** 本物の日付に追いつくか確かめる間隔（画面を開いたまま日付が変わったとき）。 */
+export const CATCH_UP_INTERVAL_MS = 60_000;
+
+export interface CatchUp {
+  state: AppState;
+  /** 進めた日数（1以上）。 */
+  days: number;
+  /** 届いた配信（有料版）の数。 */
+  pushed: number;
+}
+
+/**
+ * 本物の今日（realToday）まで、advanceDay を1日ずつ繰り返して進める（最大 maxDays 日。純粋関数）。
+ * 記録の日付が本物の今日と同じか先なら、何もしない（null。日付は戻さない）。
+ */
+export function catchUpTo(state: AppState, catalog: Catalog, realToday: ISODate, maxDays = MAX_CATCH_UP_DAYS): CatchUp | null {
+  if (!isISODate(realToday) || !(state.today < realToday)) return null;
+  let s = state;
+  let days = 0;
+  let pushed = 0;
+  while (s.today < realToday && days < maxDays) {
+    const r = advanceDay(s, catalog);
+    s = r.state;
+    days += 1;
+    pushed += r.replies.filter((m) => m.push).length;
+  }
+  return { state: s, days, pushed };
+}
+
+/** 配信が届いたときの添え書き（［翌日へ進む］の知らせと同じ）。 */
+export function pushedText(pushed: number): string {
+  return pushed > 0 ? `配信が${pushed}件届きました。` : '';
+}
+
+/** 追いついたときの知らせ：1日なら「11/17(火)になりました。」、何日もなら「11/19(木)まで日付を進めました。」。 */
+export function catchUpText(c: Pick<CatchUp, 'days' | 'pushed'> & { today: ISODate }): string {
+  const head = c.days === 1 ? `${formatJa(c.today)}になりました。` : `${formatJa(c.today)}まで日付を進めました。`;
+  return `${head}${pushedText(c.pushed)}`;
+}
+
+/** 本物の日付で進める（試用）に切り替えられないときのわけ（記録の日付が、本物の今日より先）。 */
+export function clockAheadText(today: ISODate): string {
+  return `記録の日付（${formatJa(today)}）が今日より先に進んでいるので、切り替えられません。［はじめから設定する］で、今日から始め直してください。`;
+}
+
+/** プランを変えたときの知らせ。有料版の配信が届く時を、日付の進め方に合わせて言う。 */
+export function planToast(plan: 'free' | 'paid', clock: ClockMode): string {
+  if (plan === 'free') return '無料版にしました。';
+  return clock === 'calendar' ? '有料版にしました。次の日から、配信が届きます。' : '有料版にしました。翌日へ進むと、配信が届きます。';
 }
 
 /** 検索・照合用：NFKC、カタカナ→ひらがな、空白の除去、小文字化。 */

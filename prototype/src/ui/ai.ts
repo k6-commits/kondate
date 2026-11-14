@@ -8,6 +8,7 @@ import type { AppState, Catalog, Genre, ISODate, Member, ParsedCommand, Protein 
 import {
   GENRE_LABEL,
   PROTEIN_LABEL,
+  UNREADABLE_REPLY,
   WEEKDAY_JA,
   addDays,
   handleUserText,
@@ -226,8 +227,11 @@ export class AiReader {
 // おまかせ：ルールで読めたか
 // ---------------------------------------------------------------------------
 
-/** エンジンの返事（conversation.ts の showUnknown）の書き出し：ルールで読めなかったとき。 */
-export const RULES_UNREAD_REPLY = 'すみません、うまく読み取れませんでした';
+/**
+ * エンジンの返事（conversation.ts の showUnknown）の書き出し：ルールで読めなかったとき。エンジンの UNREADABLE_REPLY と同じもの
+ * （試用の記録が「読み取れなかった書き込み」を数えるときも、この書き出しで見分ける）。
+ */
+export const RULES_UNREAD_REPLY = UNREADABLE_REPLY;
 
 /** 同じく、あいさつ・お礼への短い返事の書き出し。 */
 export const SMALL_TALK_REPLIES = ['どういたしまして。', 'はい。献立はこのまま進めます。'];

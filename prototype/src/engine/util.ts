@@ -46,9 +46,11 @@ export function addBotMessage(s: AppState, text: string, opts: BotMessageOptions
   return msg;
 }
 
-export function addUserMessage(s: AppState, text: string): ChatMessage {
+/** 利用者の発言を足す。tap：ボタンを押したときの文言（書き込みではない。試用の記録で書き込みと分けて数える）。 */
+export function addUserMessage(s: AppState, text: string, opts: { tap?: boolean } = {}): ChatMessage {
   const id = nextId(s, 'msg');
   const msg: ChatMessage = { id, from: 'user', text, at: stamp(s) };
+  if (opts.tap) msg.tap = true;
   s.chat.push(msg);
   trimChat(s);
   return msg;

@@ -201,6 +201,12 @@ export interface PlannedMeal {
   status: MealStatus;
   newDishIds: string[]; // この世帯にとって新しい料理
   changedBy?: 'user' | 'replan' | 'sale' | 'absence';
+  /**
+   * その日が終わったとき（advanceDay で日付を進めたとき）の除外の確認：そのときの献立（dishIds）と、その日に食べる家族の
+   * 除外に当たる料理の数（excluded）。試用の記録（trialReport）の「除外の違反」は、過ぎた日をこれで数える（あとから家族や
+   * 除外を足しても、足す前に過ぎた日を違反にしない）。献立がそのあと変わっていれば使わない。前の版の状態にはない。
+   */
+  safetyAtDayEnd?: { dishIds: string[]; excluded: number };
 }
 
 export type Reaction = 'great' | 'ok' | 'meh'; // ◎○△
@@ -267,7 +273,9 @@ export type Action =
    * keepSafe：家族の変更（アレルギー・年齢・人の追加や削除）のとき。今の家族でも出せる日は残し、出せなくなった日だけを作り直す
    * （人数・注意・買い物リストは直す）。なければ、自分で替えた日・特売で替えた日だけを残して作り直す（献立の曜日やラク日の数を変えたとき）。
    */
-  | { type: 'regenerate_week'; weekStart: ISODate; keepSafe?: boolean };
+  | { type: 'regenerate_week'; weekStart: ISODate; keepSafe?: boolean }
+  /** 週末の質問（その週の夕食で、自分で献立を考えた日は何日か）への答え。state.checkins に記録する。 */
+  | { type: 'weekly_checkin'; weekStart: ISODate; thoughtDays: number };
 
 export interface ActionButton {
   label: string;
@@ -291,6 +299,11 @@ export interface ChatMessage {
   actions?: ActionButton[];
   /** 有料版の配信（push）として送ったもの。無料版では作らない。 */
   push?: boolean;
+  /**
+   * 利用者の発言のうち、ボタンを押して入ったもの（押したボタンの文言。書き込みではない）。applyAction が付ける。
+   * 試用の記録（trialReport）は、これのない利用者の発言だけを「トークの書き込み」に数える。
+   */
+  tap?: boolean;
 }
 
 export interface Proposal {
@@ -355,7 +368,7 @@ export interface ParseContext {
 
 export interface AppState {
   version: 1;
-  today: ISODate; // プロトタイプでは「翌日へ進む」で動かせる
+  today: ISODate; // プロトタイプでは「翌日へ進む」で動かせる（画面の試用モードでは、本物の日付に合わせて進める）
   household: Household;
   meals: PlannedMeal[]; // 日付順。今週と、作ってあれば来週
   history: MealRecord[];
@@ -364,6 +377,19 @@ export interface AppState {
   chat: ChatMessage[];
   proposals: Proposal[];
   seq: number; // id の採番
+  /** 週末の質問の答え（週ごとに1つ。答え直したら置き換える）。前の版の状態にはないので、ないときは空とみなす。 */
+  checkins?: WeeklyCheckin[];
+}
+
+/**
+ * 週末の質問（北極星）の答え：その週の夕食で、自分で献立を考えた日の数。
+ * 質問は、その週の最後の献立の日の翌日に advanceDay が1回だけ出す（src/engine/checkin.ts）。
+ */
+export interface WeeklyCheckin {
+  weekStart: ISODate; // その週の月曜
+  plannedDays: number; // 聞いたときの、その週の献立の日（料理のある日。みんな外で食べる日を除く。weeklySummary の plannedDays と同じ数え方）
+  thoughtDays: number; // 自分で献立を考えた日（0〜plannedDays）
+  answeredOn: ISODate; // 答えた日（state.today）
 }
 
 export interface StepResult {
@@ -399,4 +425,6 @@ export interface WeeklySummary {
   usedUpIngredientIds: string[];
   /** 過ぎた献立日のうち、「作った」「作らなかった」の記録がない日（分からない日。0日とは数えない）。 */
   unconfirmedDays?: number;
+  /** 週末の質問の答え（その週の答えがあるときだけ）。plannedDays は聞いたときの日数（みんな外で食べた日を除く）。 */
+  checkin?: { plannedDays: number; thoughtDays: number };
 }

@@ -3,6 +3,7 @@ import type { AppState, Card, Catalog, ISODate, WeeklySummary } from './types';
 import { AISLE_LABEL, AISLE_ORDER } from './types';
 import { addDays, formatJa, weekStartOf } from './dates';
 import { everyoneOut, findDishIn, ingredientsOf } from './context';
+import { checkinFor, checkinLine } from './checkin';
 import {
   NO_DINNER_TEXT,
   absentText,
@@ -65,6 +66,9 @@ export function weeklySummary(state: AppState, catalog: Catalog, weekStart: ISOD
   // 過ぎた献立日のうち、作った・作らなかったの記録がない日（「分からない」日。0日とは言わない）。
   const unconfirmedDays = [...plannedDates].filter((d) => d < state.today && !cookedDates.has(d) && !skipped.has(d)).length;
 
+  // 週末の質問の答え（その週の答えがあるときだけ）。
+  const checkin = checkinFor(state, weekStart);
+
   return {
     weekStart,
     plannedDays: plannedDates.size,
@@ -73,6 +77,7 @@ export function weeklySummary(state: AppState, catalog: Catalog, weekStart: ISOD
     topDishIds,
     usedUpIngredientIds,
     unconfirmedDays,
+    ...(checkin ? { checkin: { plannedDays: checkin.plannedDays, thoughtDays: checkin.thoughtDays } } : {}),
   };
 }
 
@@ -99,6 +104,7 @@ function recordedDays(state: AppState, summary: WeeklySummary): number {
 /**
  * 振り返りの一文。label は「今週」「先週」など。
  * 記録のない日は「分からない」として扱う：記録が1日もなければ数の文を出さない。一部だけなら「記録のあった〇日のうち」と言う。
+ * 週末の質問の答えがあれば、改行して1行添える（「自分で考えた日（週末の質問）：2日／5日」。次の週の献立のメッセージに入り、LINE でも同じ）。
  */
 export function summaryText(state: AppState, catalog: Catalog, summary: WeeklySummary, label: string): string {
   if (summary.plannedDays === 0) return '';
@@ -108,7 +114,7 @@ export function summaryText(state: AppState, catalog: Catalog, summary: WeeklySu
   else if (recorded < summary.plannedDays) parts.push(`${label}は記録のあった${recorded}日のうち${summary.decidedWithoutThinking}日、考えずに済みました。`);
   else parts.push(`${label}は${summary.plannedDays}日のうち${summary.decidedWithoutThinking}日、考えずに済みました。`);
   if (summary.topDishIds.length > 0) parts.push(`いちばん人気は${dishName(state, catalog, summary.topDishIds[0])}でした。`);
-  return parts.join('');
+  return summary.checkin ? `${parts.join('')}\n${checkinLine(summary.checkin)}` : parts.join('');
 }
 
 /** 振り返りの対象の週：今週の献立日がもう終わっていれば今週、そうでなければ先週。 */
@@ -185,6 +191,7 @@ export function renderCardText(state: AppState, catalog: Catalog, card: Card): s
       const lines = [`${formatJa(card.weekStart)}〜の振り返り`];
       if (s.plannedDays === 0) {
         lines.push('この週の記録はありません。');
+        if (s.checkin) lines.push(checkinLine(s.checkin));
         return lines.join('\n');
       }
       const unknown = s.unconfirmedDays ?? 0;
@@ -192,6 +199,8 @@ export function renderCardText(state: AppState, catalog: Catalog, card: Card): s
       if (recorded <= 0) lines.push(`${s.plannedDays}日分の献立でした（作った・作らなかったの記録はありません）。`);
       else if (recorded < s.plannedDays) lines.push(`記録のあった${recorded}日のうち${s.decidedWithoutThinking}日、考えずに済みました。`);
       else lines.push(`${s.plannedDays}日のうち${s.decidedWithoutThinking}日、考えずに済みました。`);
+      // 週末の質問の答え（家族が答えた、自分で献立を考えた日の数）。「考えずに済んだ日」の次に並べる。
+      if (s.checkin) lines.push(checkinLine(s.checkin));
       // 今日は無理（ラク日に替えた日）と作らなかった日。今日は無理でラク日を作った日は「考えずに済んだ日」にも入る。
       if (s.skippedOrImpossible > 0) lines.push(`予定どおり作れなかった日：${s.skippedOrImpossible}日`);
       if (unknown > 0 && recorded > 0) lines.push(`記録なし：${unknown}日`);

@@ -1,18 +1,25 @@
 // 案内パネル「このプロトタイプについて」。PC では左に、スマホでは「?」で開く。
 import { useEffect, useRef } from 'react';
 import type { AiMode, AiStatus } from '../ai';
+import type { ClockMode } from '../storage';
 import { aiStatusText } from './HouseholdSheet';
 import { Icon } from './Icon';
 
-/** 試してほしいこと。文は、デモの家族での実際の返事に合わせる（エンジンの動きが変わったら直す）。 */
-const TRY_THESE: { action: string; result: string }[] = [
-  { action: '「今日は無理」と送る', result: '今日がラク日になり、元の料理は後ろの日に回ります。' },
-  { action: '「鶏むねが安い」と送る', result: '鶏肉の日（なければほかの肉の日）を、鶏むねを使う料理に替える提案をします。' },
-  { action: '「水曜は夫が飲み会」と送る', result: '水曜の人数が減り、買い物リストの量も直ります。' },
-  { action: '［翌日へ進む］→［作った］→ ◎○△', result: '家族の反応が、次の週の献立に効きます。' },
-  { action: '買い物リストでチェックする', result: '買った物は在庫として覚えます。' },
-  { action: '有料に切り替えて［翌日へ進む］', result: '「今日はこれ」などの配信のメッセージが届きます。' },
-];
+/**
+ * 試してほしいこと。文は、デモの家族での実際の返事に合わせる（エンジンの動きが変わったら直す）。
+ * 本物の日付で進める（試用）ときは［翌日へ進む］がないので、日付を進める2つは「次の日」の言い方にする。
+ */
+function tryThese(clock: ClockMode): { action: string; result: string }[] {
+  const calendar = clock === 'calendar';
+  return [
+    { action: '「今日は無理」と送る', result: '今日がラク日になり、元の料理は後ろの日に回ります。' },
+    { action: '「鶏むねが安い」と送る', result: '鶏肉の日（なければほかの肉の日）を、鶏むねを使う料理に替える提案をします。' },
+    { action: '「水曜は夫が飲み会」と送る', result: '水曜の人数が減り、買い物リストの量も直ります。' },
+    { action: calendar ? '次の日に［作った］→ ◎○△' : '［翌日へ進む］→［作った］→ ◎○△', result: '家族の反応が、次の週の献立に効きます。' },
+    { action: '買い物リストでチェックする', result: '買った物は在庫として覚えます。' },
+    { action: calendar ? '有料に切り替えて、次の日を待つ' : '有料に切り替えて［翌日へ進む］', result: '「今日はこれ」などの配信のメッセージが届きます。' },
+  ];
+}
 
 /** AI の読み取りの説明（「家族と設定」の AI の読み取りの設定に合わせる）。 */
 function aiModeText(mode: AiMode): string {
@@ -30,11 +37,14 @@ function aiModeText(mode: AiMode): string {
 export function AboutPanel({
   aiStatus,
   aiMode = 'auto',
+  clock = 'demo',
   onStartOver,
   onClose,
 }: {
   aiStatus: AiStatus;
   aiMode?: AiMode;
+  /** 日付の進め方（本物の日付で進めるときは、［翌日へ進む］の案内を出さない）。 */
+  clock?: ClockMode;
   onStartOver: () => void;
   onClose?: () => void;
 }) {
@@ -74,16 +84,19 @@ export function AboutPanel({
             </button>
           </span>
         </li>
-        {TRY_THESE.map((t) => (
+        {tryThese(clock).map((t) => (
           <li key={t.action}>
             <span className="try-action">{t.action}</span>
             <span className="try-result">{t.result}</span>
           </li>
         ))}
       </ul>
-      <p className="hint">
-        「金曜はカレーがいい」は、アレルギーの判定を見る例です。卵アレルギーの家族がいるので、市販のルウ（銘柄で原材料が違います）を使うカレーライスは「要確認」として出さず、ルウを使わないキーマカレーを代わりに提案します。
-      </p>
+      {/* デモの家族（小学生の子が卵アレルギー）での動きの説明。本物の日付で試す家族は自分の家族なので出さない。 */}
+      {clock === 'calendar' ? null : (
+        <p className="hint">
+          「金曜はカレーがいい」は、アレルギーの判定を見る例です。卵アレルギーの家族がいるので、市販のルウ（銘柄で原材料が違います）を使うカレーライスは「要確認」として出さず、ルウを使わないキーマカレーを代わりに提案します。
+        </p>
+      )}
 
       <h3 className="about-sub">AI の読み取り</h3>
       <p data-testid="about-ai-mode">{aiModeText(aiMode)}</p>
@@ -93,7 +106,11 @@ export function AboutPanel({
       <ul className="about-notes">
         <li>アプリは除外の補助で、アレルギーの安全を保証するものではありません。重い食物アレルギーは対象外です。</li>
         <li>献立・分量・在庫は試作の計算です。消費期限を優先してください。</li>
-        <li>状態はこのブラウザの中だけに保存します。日付は［翌日へ進む］で動かします。</li>
+        <li>
+          {clock === 'calendar'
+            ? '状態はこのブラウザの中だけに保存します。日付は、本物の日付（日本時間）に合わせて進みます。'
+            : '状態はこのブラウザの中だけに保存します。日付は［翌日へ進む］で動かします。'}
+        </li>
       </ul>
     </div>
   );

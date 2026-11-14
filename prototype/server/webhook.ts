@@ -19,7 +19,7 @@ import {
 } from '../src/engine/index';
 import { WELCOME_BACK, jstToday, prepareRecord, serverMessage, type SourceRef } from './household';
 import { interpretWithLlm } from './interpret';
-import { LINE_LIMITS, isAddressedToBot, stripMentions, toLineMessages, type LineClient } from './line';
+import { LINE_LIMITS, isAddressedToBot, openQuestionMessages, stripMentions, toLineMessages, type LineClient } from './line';
 import type { LlmInterpreter } from './llm';
 import { errorKind, type Logger } from './log';
 import { nicknameIn } from './names';
@@ -51,6 +51,7 @@ export const ActionSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('check_item'), shoppingDate: isoDate, ingredientId: ref, checked: z.boolean() }),
   z.object({ type: z.literal('regenerate_week'), weekStart: isoDate, keepSafe: z.boolean().optional() }),
+  z.object({ type: z.literal('weekly_checkin'), weekStart: isoDate, thoughtDays: z.number().int().min(0).max(7) }),
 ]);
 
 /** postback の data を Action にする。JSON でない・形が違う・長すぎるものは null（無視する）。 */
@@ -173,7 +174,9 @@ export function createWebhookHandler(deps: WebhookDeps): (events: unknown[]) => 
       warnedNoToken = true;
       return;
     }
-    const messages = toLineMessages(out.state, catalog, out.messages);
+    // まだ答えのない質問（週末の質問・過ぎた日の「作りましたか？」）のボタンは、返信の最後に添え直す（クイックリプライは
+    // 次のメッセージで消えるため。入るときだけ）。
+    const messages = toLineMessages(out.state, catalog, out.messages, openQuestionMessages(out.state));
     if (messages.length > 0) await line.reply(replyToken, messages);
   }
 

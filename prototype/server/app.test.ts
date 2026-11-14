@@ -859,3 +859,153 @@ describe('POST /cron/evening', () => {
     expect((await t.store.get('Uuser0002'))?.pendingPush).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe('週末の質問（LINE）', () => {
+  const MON = '2026-11-09';
+  const SAT_NOON = new Date('2026-11-14T03:00:00Z'); // 日本時間 11/14(土) 12:00
+  const SAT_EVENING = new Date('2026-11-14T08:00:00Z'); // 17:00
+  const SUN_NOON = new Date('2026-11-15T03:00:00Z');
+  const MON_NOON = new Date('2026-11-16T03:00:00Z');
+  const HEAD = '11/9(月)〜11/13(金)の夕食で、自分で献立を考えた日は何日ありましたか？';
+  const cron = (t: Awaited<ReturnType<typeof setup>>) =>
+    t.app.request('/cron/evening', { method: 'POST', headers: { authorization: `Bearer ${CRON_SECRET}` } });
+  const checkinData = (thoughtDays: number) => JSON.stringify({ type: 'weekly_checkin', weekStart: MON, thoughtDays });
+  const actionsOf = (messages: LineTextMessage[]) =>
+    (messages.at(-1)!.quickReply?.items ?? []).map((i) => ({ label: i.action.label, action: JSON.parse(i.action.data) as Record<string, unknown> }));
+
+  it('無料版：金曜の翌日の最初の返信の先頭に「作りましたか？」と週末の質問を添え、［0日］〜［5日］をクイックリプライに出す', async () => {
+    const t = await setup({ now: SAT_NOON });
+    await seedRecord(t.store, { key: 'Uuser0002', catalog: defaultCatalog, today: MON });
+    await t.webhook([textEvent(USER, '今日のごはん')]);
+    const messages = messagesOf(t.replies()[0]);
+    expectWithinLimits(messages);
+    expect(messages[0].text).toMatch(/^昨日の.+は作りましたか？/);
+    expect(messages[1].text.split('\n').slice(0, 2)).toEqual([HEAD, 'アプリの献立どおりの日や、アプリで替えた日は数えません。']);
+    const actions = actionsOf(messages);
+    for (const n of [0, 1, 2, 3, 4, 5]) {
+      expect(actions).toContainEqual({ label: `${n}日`, action: { type: 'weekly_checkin', weekStart: MON, thoughtDays: n } });
+    }
+    expect(actions.map((a) => a.action.type)).toContain('cooked');
+    expect((await t.store.get('Uuser0002'))?.pendingReply).toEqual([]);
+  });
+
+  it('postback の［2日］で記録して返事をし、すぐあとの「3」で答え直せる（AI の解釈より先に読む）', async () => {
+    const llm = fakeLlm([{ type: 'show_today' }]);
+    const t = await setup({ now: SAT_NOON, llm });
+    await seedRecord(t.store, { key: 'Uuser0002', catalog: defaultCatalog, today: MON });
+    await t.webhook([textEvent(USER, '今日のごはん')]);
+    await t.webhook([postbackEvent(USER, checkinData(2))]);
+    expect(messagesOf(t.replies()[1]).map((m) => m.text)).toEqual(['ありがとうございます。記録しました（自分で考えた日：2日／5日）。']);
+    let saved = (await t.store.get('Uuser0002'))!;
+    expect(saved.state.checkins).toEqual([{ weekStart: MON, plannedDays: 5, thoughtDays: 2, answeredOn: '2026-11-14' }]);
+    // 押したボタンの文言は、ほかの発言と同じく原文を残さない（tap の印だけ残る）
+    expect(saved.state.chat.at(-2)).toMatchObject({ from: 'user', text: '', tap: true });
+
+    await t.webhook([textEvent(USER, '3')]);
+    expect(llm.interpret).toHaveBeenCalled();
+    expect(messagesOf(t.replies()[2]).map((m) => m.text)).toEqual(['答えを直しました（自分で考えた日：3日／5日。前の答えは2日）。']);
+    saved = (await t.store.get('Uuser0002'))!;
+    expect(saved.state.checkins?.map((c) => c.thoughtDays)).toEqual([3]);
+  });
+
+  it('範囲の外の postback（7日）は記録せずにボタンを出し直す。形の違う data（8日）は無視する', async () => {
+    const t = await setup({ now: SAT_NOON });
+    await seedRecord(t.store, { key: 'Uuser0002', catalog: defaultCatalog, today: MON });
+    await t.webhook([postbackEvent(USER, checkinData(7))]);
+    const messages = messagesOf(t.replies()[0]);
+    expectWithinLimits(messages);
+    expect(messages.at(-1)!.text).toBe('0日から5日までで答えてください。');
+    expect(actionsOf(messages).filter((a) => a.action.type === 'weekly_checkin')).toHaveLength(6);
+    expect((await t.store.get('Uuser0002'))?.state.checkins ?? []).toEqual([]);
+    await t.webhook([postbackEvent(USER, checkinData(8))]);
+    expect(t.replies()).toHaveLength(1);
+  });
+
+  it('有料版：書き込みがなければ、夕方の配信で「作りましたか？」のあとに週末の質問を送る', async () => {
+    const t = await setup({ now: SAT_EVENING });
+    await seedRecord(t.store, { key: 'Upaid', catalog: defaultCatalog, today: MON, plan: 'paid' });
+    expect(await (await cron(t)).json()).toEqual({ households: 1, pushed: 1 });
+    const pushed = messagesOf(t.pushes()[0]);
+    expectWithinLimits(pushed);
+    const qi = pushed.findIndex((m) => m.text.startsWith(HEAD));
+    expect(qi).toBeGreaterThan(0);
+    expect(pushed[qi - 1].text).toMatch(/^昨日の.+は作りましたか？/);
+    expect(actionsOf(pushed).filter((a) => a.action.type === 'weekly_checkin')).toHaveLength(6);
+    expect((await t.store.get('Upaid'))?.pendingReply).toEqual([]);
+  });
+
+  it('無料版：土曜に書き込みがなければ、週末の質問は次の書き込みの返信に添える（1回だけ。「作りましたか？」は添えない）', async () => {
+    const clock = { now: SAT_EVENING };
+    const t = await setup({ clock });
+    await seedRecord(t.store, { key: 'Uuser0002', catalog: defaultCatalog, today: MON });
+    expect(await (await cron(t)).json()).toEqual({ households: 1, pushed: 0 });
+
+    clock.now = SUN_NOON;
+    await t.webhook([textEvent(USER, '今週の献立')]);
+    const sunday = messagesOf(t.replies()[0]);
+    expectWithinLimits(sunday);
+    expect(sunday[0].text.startsWith(HEAD)).toBe(true);
+    expect(sunday.some((m) => /作りましたか？/.test(m.text))).toBe(false);
+    expect(actionsOf(sunday).filter((a) => a.action.type === 'weekly_checkin')).toHaveLength(6);
+
+    clock.now = MON_NOON;
+    await t.webhook([textEvent(USER, '今日のごはん')]);
+    expect(messagesOf(t.replies()[1]).some((m) => m.text.startsWith(HEAD))).toBe(false);
+  });
+
+  it('先に［作った］を押しても、返信の最後に週末の質問のボタンを日付つきで添え直す（答えたら添えない）', async () => {
+    const t = await setup({ now: SAT_NOON });
+    await seedRecord(t.store, { key: 'Uuser0002', catalog: defaultCatalog, today: MON });
+    await t.webhook([textEvent(USER, '今日のごはん')]);
+    // 金曜の「作りましたか？」に先に答える：返事は◎○△。クイックリプライは次のメッセージで消えるので、週末の質問を添え直す
+    await t.webhook([postbackEvent(USER, JSON.stringify({ type: 'cooked', date: '2026-11-13' }))]);
+    const cooked = messagesOf(t.replies()[1]);
+    expectWithinLimits(cooked);
+    expect(cooked).toHaveLength(1);
+    expect(cooked[0].text.startsWith('おつかれさまでした。家族の反応はどうでしたか？')).toBe(true);
+    const actions = actionsOf(cooked);
+    expect(actions.slice(0, 3).map((a) => a.action.type)).toEqual(['react', 'react', 'react']);
+    expect(actions.filter((a) => a.action.type === 'weekly_checkin')).toEqual(
+      [0, 1, 2, 3, 4, 5].map((n) => ({ label: `11/9(月) ${n}日`, action: { type: 'weekly_checkin', weekStart: MON, thoughtDays: n } })),
+    );
+    // 押したのは日付つきのボタンでも、記録と返事は同じ
+    await t.webhook([postbackEvent(USER, checkinData(3))]);
+    const answered = messagesOf(t.replies()[2]);
+    expect(answered.map((m) => m.text)).toEqual(['ありがとうございます。記録しました（自分で考えた日：3日／5日）。']);
+    expect(actionsOf(answered).filter((a) => a.action.type === 'weekly_checkin')).toEqual([]);
+    expect((await t.store.get('Uuser0002'))?.state.checkins?.map((c) => c.thoughtDays)).toEqual([3]);
+  });
+
+  it('過ぎた日の「作りましたか？」に答えないままほかの話をしても、その日の［作った］［作らなかった］を日付つきで添え直す', async () => {
+    const t = await setup({ now: SAT_NOON });
+    await seedRecord(t.store, { key: 'Uuser0002', catalog: defaultCatalog, today: MON });
+    await t.webhook([textEvent(USER, '今日のごはん')]);
+    await t.webhook([textEvent(USER, '卵切れた')]);
+    const later = messagesOf(t.replies()[1]);
+    expectWithinLimits(later);
+    expect(later.some((m) => /作りましたか？/.test(m.text))).toBe(false);
+    const labels = actionsOf(later).map((a) => a.label);
+    expect(labels).toEqual(expect.arrayContaining(['11/13(金) 作った', '11/13(金) 作らなかった', '11/9(月) 2日']));
+    // 日付つきのボタンで記録できる
+    await t.webhook([postbackEvent(USER, JSON.stringify({ type: 'not_cooked', date: '2026-11-13' }))]);
+    expect((await t.store.get('Uuser0002'))?.state.meals.find((m) => m.date === '2026-11-13')?.status).toBe('skipped');
+    const after = actionsOf(messagesOf(t.replies()[2])).map((a) => a.label);
+    expect(after.some((l) => l.startsWith('11/13(金)'))).toBe(false);
+  });
+
+  it('答えたあとは、次の書き込みに週末の質問を添えない', async () => {
+    const clock = { now: SAT_NOON };
+    const t = await setup({ clock });
+    await seedRecord(t.store, { key: 'Uuser0002', catalog: defaultCatalog, today: MON });
+    await t.webhook([textEvent(USER, '2')]);
+    // 書き込みの前に、同期で週末の質問が出ている：「2」はその答え
+    const first = messagesOf(t.replies()[0]);
+    expect(first.at(-1)!.text).toBe('ありがとうございます。記録しました（自分で考えた日：2日／5日）。');
+    expect((await t.store.get('Uuser0002'))?.state.checkins?.map((c) => c.thoughtDays)).toEqual([2]);
+    clock.now = SUN_NOON;
+    await t.webhook([textEvent(USER, '今週の献立')]);
+    expect(messagesOf(t.replies()[1]).some((m) => m.text.startsWith(HEAD))).toBe(false);
+  });
+});

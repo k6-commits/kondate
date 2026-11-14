@@ -1,11 +1,12 @@
 // 家族と設定。いちばん上に注意（householdNotices）を必ず出す。
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AppState, Catalog, Exclusion, Household, HouseholdSettings, Member } from '../../engine';
-import { checkDishSafety, findDish, householdNotices } from '../../engine';
+import { checkDishSafety, findDish, formatTrialReport, householdNotices, trialReport } from '../../engine';
 import type { AiMode, AiStatus } from '../ai';
 import { AI_MODES } from '../ai';
-import { SERVINGS_NOTE, SIDE_POLICY, cls, hasPartialServings, nextMemberId, normalizeForSearch } from '../lib';
+import { SERVINGS_NOTE, SIDE_POLICY, cls, hasPartialServings, nextMemberId, normalizeForSearch, planToast } from '../lib';
 import { parseImportedState } from '../storage';
+import type { ClockMode } from '../storage';
 import type { MemberDraft } from './Forms';
 import { MemberEditor, PlanPicker, Segmented, WeekdayPicker, emptyMemberDraft, exclusionLine, memberLine } from './Forms';
 import { Icon } from './Icon';
@@ -24,6 +25,16 @@ export interface HouseholdChange {
 }
 
 const MAX_MEMBERS = 6;
+
+/** 日付の進め方の選び方（家族と設定）。 */
+export const CLOCK_MODES: { id: ClockMode; label: string; note: string }[] = [
+  {
+    id: 'calendar',
+    label: '本物の日付で進める（試用）',
+    note: '日付は、日本時間の今日に合わせて毎日進みます。1週間の試用は、こちらを選んでください。',
+  },
+  { id: 'demo', label: '［翌日へ進む］で進める（デモ）', note: '画面の上の［翌日へ進む］を押すと、1日進みます。' },
+];
 
 export function aiStatusText(status: AiStatus): string {
   switch (status) {
@@ -91,6 +102,9 @@ export function HouseholdSheet({
   catalog,
   aiMode,
   aiStatus,
+  clock = 'demo',
+  saveFailed = false,
+  onClockChange = () => null,
   onAiModeChange,
   onHouseholdChange,
   onImport,
@@ -103,6 +117,12 @@ export function HouseholdSheet({
   catalog: Catalog;
   aiMode: AiMode;
   aiStatus: AiStatus;
+  /** 日付の進め方。 */
+  clock?: ClockMode;
+  /** このブラウザに記録を保存できなかったか（データの欄に、そう書く）。 */
+  saveFailed?: boolean;
+  /** 日付の進め方を切り替える。切り替えられなければ、わけを返す（その場で出す）。 */
+  onClockChange?: (mode: ClockMode) => string | null;
   onAiModeChange: (mode: AiMode) => void;
   onHouseholdChange: (next: Household, change: HouseholdChange) => void;
   onImport: (state: AppState) => void;
@@ -116,6 +136,9 @@ export function HouseholdSheet({
   const [editing, setEditing] = useState<{ id: string | null; draft: MemberDraft } | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [clockError, setClockError] = useState<string | null>(null);
+
+  const changeClock = (mode: ClockMode) => setClockError(onClockChange(mode));
 
   const setSettings = (patch: Partial<HouseholdSettings>, change: HouseholdChange) =>
     onHouseholdChange({ ...h, settings: { ...settings, ...patch } }, change);
@@ -367,16 +390,29 @@ export function HouseholdSheet({
           プラン
         </h3>
         <p className="field-note">試作なので、本物の課金はありません。有料の動きを試せます。</p>
-        <PlanPicker
-          name="settings-plan"
-          value={settings.plan}
-          onChange={(plan) =>
-            setSettings(
-              { plan },
-              { regenerate: false, toast: plan === 'paid' ? '有料版にしました。翌日へ進むと、配信が届きます。' : '無料版にしました。' },
-            )
-          }
-        />
+        <PlanPicker name="settings-plan" value={settings.plan} onChange={(plan) => setSettings({ plan }, { regenerate: false, toast: planToast(plan, clock) })} />
+      </section>
+
+      <section className="block" aria-labelledby="clock-title">
+        <h3 className="block-title" id="clock-title">
+          日付の進め方
+        </h3>
+        <div className="radio-list" role="radiogroup" aria-labelledby="clock-title">
+          {CLOCK_MODES.map((m) => (
+            <label key={m.id} className={cls('radio-card', clock === m.id && 'is-on')}>
+              <input type="radio" name="clock-mode" value={m.id} checked={clock === m.id} onChange={() => changeClock(m.id)} />
+              <span>
+                <span className="radio-title">{m.label}</span>
+                <span className="field-note">{m.note}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        {clockError ? (
+          <p className="form-error" role="alert">
+            {clockError}
+          </p>
+        ) : null}
       </section>
 
       <section className="block" aria-labelledby="ai-title">
@@ -400,7 +436,16 @@ export function HouseholdSheet({
         <p className="field-note">AI には家族の名前を送らず、「member_1」のような番号に置き換えます。</p>
       </section>
 
-      <DataTools state={state} onImport={onImport} onReset={onReset} onStartOver={onStartOver} onToast={onToast} />
+      <DataTools
+        state={state}
+        catalog={catalog}
+        clock={clock}
+        saveFailed={saveFailed}
+        onImport={onImport}
+        onReset={onReset}
+        onStartOver={onStartOver}
+        onToast={onToast}
+      />
     </Sheet>
   );
 }
@@ -449,14 +494,96 @@ function FavoritesBlock({ state, catalog }: { state: AppState; catalog: Catalog 
   );
 }
 
+/**
+ * テキスト欄の中身をクリップボードにコピーする（押したときの処理の中で書く）。使えないときは、テキスト欄を選択して
+ * 「選択してコピーしてください」と出す（何度失敗しても、そのたびに選択し直す）。
+ */
+function copyFromArea(area: HTMLTextAreaElement | null, text: string, onDone: () => void, onFail: () => void): void {
+  const fail = () => {
+    onFail();
+    if (!area) return;
+    try {
+      area.focus();
+      area.select();
+      area.setSelectionRange(0, area.value.length);
+    } catch {
+      // 選択できなくても、案内は出ている。
+    }
+  };
+  try {
+    const clip = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;
+    if (!clip || typeof clip.writeText !== 'function') {
+      fail();
+      return;
+    }
+    clip.writeText(text).then(onDone, fail);
+  } catch {
+    fail();
+  }
+}
+
+/**
+ * 試用の記録（1週間の試用のあとに、主催者に送る文）。名前は入らず、数だけ（エンジンの trialReport）。
+ * 家族と設定を開いたときに作る（トークの書き込みのたびには作らない）。
+ */
+function TrialRecord({ state, catalog, clock, onToast }: { state: AppState; catalog: Catalog; clock: ClockMode; onToast: (text: string) => void }) {
+  // 読み取れなかった書き込みの文は、送る人が選んだときだけ入れる（既定は入れない。エンジンの trialReport の既定と同じ）。
+  const [includeTexts, setIncludeTexts] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const areaRef = useRef<HTMLTextAreaElement>(null);
+  const text = useMemo(() => formatTrialReport(trialReport(state, catalog, { includeTexts, clock })), [state, catalog, includeTexts, clock]);
+
+  return (
+    <div className="data-tool trial-record" role="group" aria-labelledby="trial-title">
+      <p className="setting-name" id="trial-title">
+        試用の記録
+      </p>
+      <p className="field-note">1週間の試用のあとに、この記録を主催者に送ってください。名前は入らず、数だけをまとめています。LINE やメールに貼り付けて送れます。</p>
+      <label className="toggle-row" htmlFor="trial-texts">
+        <input id="trial-texts" type="checkbox" checked={includeTexts} onChange={(e) => setIncludeTexts(e.target.checked)} />
+        <span className="toggle-text">読み取れなかった書き込みの文も入れる（読み取りの改善に使います）</span>
+      </label>
+      <label className="sr-only" htmlFor="trial-text">
+        試用の記録（送る文）
+      </label>
+      <textarea id="trial-text" ref={areaRef} className="code-area" readOnly rows={8} value={text} />
+      {copyFailed ? <p className="hint">コピーできませんでした。テキストを選択してコピーしてください。</p> : null}
+      <button
+        type="button"
+        className="btn btn--small"
+        onClick={() =>
+          copyFromArea(
+            areaRef.current,
+            text,
+            () => {
+              setCopyFailed(false);
+              onToast('試用の記録をコピーしました');
+            },
+            () => setCopyFailed(true),
+          )
+        }
+      >
+        <Icon name="copy" size={16} />
+        コピー
+      </button>
+    </div>
+  );
+}
+
 function DataTools({
   state,
+  catalog,
+  clock,
+  saveFailed,
   onImport,
   onReset,
   onStartOver,
   onToast,
 }: {
   state: AppState;
+  catalog: Catalog;
+  clock: ClockMode;
+  saveFailed: boolean;
   onImport: (state: AppState) => void;
   onReset: () => void;
   onStartOver: () => void;
@@ -499,7 +626,15 @@ function DataTools({
       <h3 className="block-title" id="data-title">
         データ
       </h3>
-      <p className="field-note">状態は、このブラウザの中だけに保存しています。ほかの人や端末には届きません。</p>
+      {saveFailed ? (
+        <p className="field-note">
+          このブラウザには保存できていません。ページを閉じると、家族と記録が消えます。プライベートブラウズを使っていないか、サイトのデータを保存する設定になっているかを確かめてください。
+        </p>
+      ) : (
+        <p className="field-note">状態は、このブラウザの中だけに保存しています。ほかの人や端末には届きません。</p>
+      )}
+
+      <TrialRecord state={state} catalog={catalog} clock={clock} onToast={onToast} />
 
       <div className="data-tool">
         <p className="setting-name">書き出し</p>

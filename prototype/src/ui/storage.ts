@@ -1,8 +1,14 @@
 // 状態の保存（localStorage）。使えない環境（プライベートウィンドウ、プレビューなど）でも画面は動くように、
 // 読み書きはすべて try/catch で包む。
-import type { AppState } from '../engine';
+import type { AppState, TrialClock } from '../engine';
 import { AGE_BAND_LABEL, isISODate } from '../engine';
 import type { AiMode } from './ai';
+
+/**
+ * 日付の進め方（画面だけの設定）。calendar：本物の日付（日本時間）に合わせて進める（1週間の試用）。
+ * demo：画面の［翌日へ進む］で進める（デモの家族と、前からの使い方）。試用の記録（trialReport の clock）にも書く。
+ */
+export type ClockMode = Exclude<TrialClock, 'unknown'>;
 
 export const STORAGE_KEY = 'kimetoku:v1';
 /** 画面だけの覚え書き（送る人、AIの読み取りの設定、メニューの開閉など）。 */
@@ -37,8 +43,30 @@ function writeJson(key: string, value: unknown): boolean {
 }
 
 export function readStoredState(): AppState | null {
-  const data = readJson(STORAGE_KEY);
-  return data && checkAppState(data) === null ? (data as AppState) : null;
+  return parseStoredState(readStoredRaw());
+}
+
+/**
+ * 保存した状態の文字列そのもの（なければ・読めなければ null）。同じページを2つのタブで開いているとき、
+ * ほかのタブが保存したか（このタブが最後に保存した文字列と違うか）を見分けるために使う。
+ */
+export function readStoredRaw(): string | null {
+  try {
+    return storage()?.getItem(STORAGE_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** 保存した文字列から状態を読む（形が違えば null）。 */
+export function parseStoredState(raw: string | null): AppState | null {
+  if (!raw) return null;
+  try {
+    const data: unknown = JSON.parse(raw);
+    return data && checkAppState(data) === null ? (data as AppState) : null;
+  } catch {
+    return null;
+  }
 }
 
 export function writeStoredState(state: AppState): boolean {
@@ -64,6 +92,8 @@ export interface UiPrefs {
   senders?: Record<string, string>;
   /** 案内（このプロトタイプについて）を一度開いたか。開いたら、スマホ幅の「試し方を見る」を出さない。 */
   aboutSeen?: boolean;
+  /** 日付の進め方（なければ demo。デモの家族と、前から使っている人は［翌日へ進む］のまま）。 */
+  clock?: ClockMode;
 }
 
 export function readUiPrefs(): UiPrefs {
@@ -74,6 +104,7 @@ export function readUiPrefs(): UiPrefs {
   if (data.aiMode === 'auto' || data.aiMode === 'always' || data.aiMode === 'off') prefs.aiMode = data.aiMode;
   if (typeof data.menuOpen === 'boolean') prefs.menuOpen = data.menuOpen;
   if (typeof data.aboutSeen === 'boolean') prefs.aboutSeen = data.aboutSeen;
+  if (data.clock === 'calendar' || data.clock === 'demo') prefs.clock = data.clock;
   if (isRecord(data.senders)) {
     prefs.senders = Object.fromEntries(
       Object.entries(data.senders).filter((e): e is [string, string] => typeof e[1] === 'string'),

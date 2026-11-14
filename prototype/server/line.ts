@@ -2,8 +2,10 @@
 import { randomUUID } from 'node:crypto';
 import {
   SERVING_WEIGHT,
+  addDays,
   formatJa,
   renderCardText,
+  weekStartOf,
   type Action,
   type AppState,
   type Catalog,
@@ -149,6 +151,15 @@ function isGoneProposal(action: Action, state: AppState): boolean {
   return !state.proposals.some((p) => p.id === action.proposalId);
 }
 
+/**
+ * もう答えのある週の、週末の質問のボタン（［0日］…）か。押しても「もう記録してあります」か答え直しになるだけなので出さない
+ * （画面の visibleActions と同じ。答えた返事に、同じ返信で届けた質問のボタンが残らないように）。
+ */
+function isAnsweredCheckin(action: Action, state: AppState): boolean {
+  if (action.type !== 'weekly_checkin') return false;
+  return Array.isArray(state.checkins) && state.checkins.some((c) => c.weekStart === action.weekStart);
+}
+
 /** その日の献立を作る・替えるボタン（作った・作らなかった・別のに・案を選ぶ・今日は無理）。 */
 const DAY_ACTIONS: ReadonlySet<Action['type']> = new Set<Action['type']>([
   'cooked',
@@ -182,6 +193,7 @@ function actionDate(action: Action, state: AppState): ISODate | null {
     case 'check_item':
       return action.shoppingDate;
     case 'regenerate_week':
+    case 'weekly_checkin':
       return action.weekStart;
     case 'accept_proposal':
     case 'reject_proposal':
@@ -205,7 +217,7 @@ interface QuickButton {
  * - ラベルは20文字まで（超えたら「…」）。displayText はラベル。
  * - postback の data は JSON.stringify(action)。300文字を超えるものは入れない。同じ data は1つに（後ろのメッセージのものを残す）。
  *   もう state.proposals にない提案（片づいた提案など）の［替える］［そのまま］と、みんな外で食べる日の
- *   ［作った］［作らなかった］［別のに］［今日は無理］も入れない。
+ *   ［作った］［作らなかった］［別のに］［今日は無理］、もう答えのある週の週末の質問の［0日］…も入れない。
  * - 同じラベルのボタンが2つ以上のメッセージにあるときは、それらのメッセージの日付のあるボタンに日付を付けて見分ける
  *   （例：「11/8(日) 作った」「11/8(日) 作らなかった」、提案が2つなら「11/10(火) 替える」「11/12(木) 替える」）。
  *   今日のボタンには付けない（日付のないボタンは今日のこと）。見分けられないボタンは入れない。
@@ -220,7 +232,8 @@ export function quickReplyItems(messages: ChatMessage[], state: AppState): LineQ
       const label = button.label.trim();
       const data = JSON.stringify(button.action);
       if (label.length === 0 || data.length > LINE_LIMITS.postbackData || seenData.has(data)) continue;
-      if (isGoneProposal(button.action, state) || isNoDinnerDayAction(button.action, state)) continue;
+      const a = button.action;
+      if (isGoneProposal(a, state) || isNoDinnerDayAction(a, state) || isAnsweredCheckin(a, state)) continue;
       seenData.add(data);
       group.push({ label, data, date: actionDate(button.action, state) });
     }
@@ -265,17 +278,65 @@ export function quickReplyItems(messages: ChatMessage[], state: AppState): LineQ
 }
 
 /**
+ * 前の返信で聞いて、まだ答えのない質問のボタン（返信に添え直す分）。LINE のクイックリプライは次のメッセージで消えるので、
+ * ほかのボタン（［作った］の◎○△ など）を先に押したり、ほかの話を書いたりしても答えられるように、返信の最後に添え直す
+ * （画面の shownActions が、答えるまでボタンを残すのと同じ。添え直す分は、返信のボタンのあとに、入るときだけ入れる）。
+ * - 週末の質問（［0日］…）：答えのない週の、いちばん新しい質問のボタン。今週か先週の質問だけ（数だけの書き込みで答えられる
+ *   範囲と同じ）。
+ * - 過ぎた日の「作りましたか？」（［作った］［作らなかった］）：まだ記録のない日の、いちばん新しい質問のボタン。今日か
+ *   きのうに聞いたものだけ（同期で前の日の分は届けないので、何日も前の日のボタンは出し続けない）。
+ * どちらも、ほかの話の返信に添えるので、ラベルにはいつも日付を付ける（「11/17(火) 作った」「11/16(月) 2日」。週末の質問は
+ * その週の月曜）。今日の［作った］や、ほかの週の答えと取り違えないように。返すのは、ボタンだけを持つメッセージ（送らない）。
+ */
+export function openQuestionMessages(state: AppState): ChatMessage[] {
+  const today = state.today;
+  const answered = new Set((Array.isArray(state.checkins) ? state.checkins : []).map((c) => c.weekStart));
+  const oldestWeek = addDays(weekStartOf(today), -7);
+  const weeks = new Map<ISODate, ChatMessage>();
+  const days = new Map<ISODate, ChatMessage>();
+  for (const m of state.chat) {
+    if (m.from !== 'bot') continue;
+    for (const { action } of m.actions ?? []) {
+      if (action.type === 'weekly_checkin') weeks.set(action.weekStart, m);
+      else if ((action.type === 'cooked' || action.type === 'not_cooked') && action.date < today) days.set(action.date, m);
+    }
+  }
+  const dated = (m: ChatMessage, keep: (a: Action) => boolean, date: ISODate): ChatMessage => ({
+    ...m,
+    text: '',
+    card: undefined,
+    actions: (m.actions ?? []).filter((b) => keep(b.action)).map((b) => ({ ...b, label: `${formatJa(date)} ${b.label.trim()}` })),
+  });
+  const out: ChatMessage[] = [];
+  for (const [week, m] of weeks) {
+    if (answered.has(week) || week < oldestWeek) continue;
+    out.push(dated(m, (a) => a.type === 'weekly_checkin' && a.weekStart === week, week));
+  }
+  for (const [date, m] of days) {
+    if (m.at.slice(0, 10) < addDays(today, -1)) continue;
+    if (state.meals.find((meal) => meal.date === date)?.status !== 'unconfirmed') continue;
+    out.push(dated(m, (a) => (a.type === 'cooked' || a.type === 'not_cooked') && a.date === date, date));
+  }
+  // quickReplyItems は後ろのメッセージのボタンを先に入れる。週末の質問を先に入れたいので、後ろに置く。
+  return [...out.filter((m) => !checkinOnly(m)), ...out.filter(checkinOnly)];
+}
+
+const checkinOnly = (m: ChatMessage) => (m.actions ?? []).every((b) => b.action.type === 'weekly_checkin');
+
+/**
  * bot のメッセージを LINE のテキストメッセージにする。
  * 1件 → 1件。5件を超えるときは、5件目以降を1つにまとめる。本文は5000文字で切る。
- * ボタンは最後のメッセージのクイックリプライにする。
+ * ボタンは最後のメッセージのクイックリプライにする。reattach（openQuestionMessages。返信のときだけ）のボタンは、
+ * 返信のメッセージのボタンのあとに、13個に収まるときだけ添える（同じボタンが返信にあれば、返信のほうだけ）。
  */
-export function toLineMessages(state: AppState, catalog: Catalog, messages: ChatMessage[]): LineTextMessage[] {
+export function toLineMessages(state: AppState, catalog: Catalog, messages: ChatMessage[], reattach: ChatMessage[] = []): LineTextMessage[] {
   const texts = messages.map((m) => chatMessageText(state, catalog, m)).filter((t) => t.length > 0);
   if (texts.length === 0) return [];
   const max = LINE_LIMITS.messagesPerRequest;
   const merged = texts.length > max ? [...texts.slice(0, max - 1), texts.slice(max - 1).join('\n\n')] : texts;
   const out: LineTextMessage[] = merged.map((text) => ({ type: 'text', text: truncateText(text, LINE_LIMITS.textLength) }));
-  const items = quickReplyItems(messages, state);
+  // quickReplyItems は後ろのメッセージから入れるので、添え直す分は前に置く（返信のボタンを先にする）。
+  const items = quickReplyItems([...reattach, ...messages], state);
   if (items.length > 0) out[out.length - 1].quickReply = { items };
   return out;
 }

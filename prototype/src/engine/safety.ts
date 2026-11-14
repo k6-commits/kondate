@@ -1,5 +1,5 @@
 // 安全（DESIGN.md 3-4）。除外とアレルゲンの判定はコードで行い、わからない物は「要確認」で止める。
-import type { AllergenId, Catalog, Dish, Exclusion, Household, Ingredient, IngredientKind, Member, Notice, SafetyResult } from './types';
+import type { AllergenId, Catalog, Dish, Exclusion, Household, Ingredient, IngredientKind, Member, Notice, PlannedMeal, SafetyResult } from './types';
 import {
   TEXT_SEPARATORS,
   allergenName,
@@ -7,6 +7,7 @@ import {
   allergensOfText,
   eatingMembers,
   effectiveExclusions,
+  findDishIn,
   ingredientsOf,
   textCategoryOf,
   textNameKey,
@@ -198,6 +199,21 @@ export function textExclusionTargets(text: string, catalog: Catalog): TextExclus
 /** 世帯全体（乳児を除く全員）で判定する。 */
 export function checkDishSafety(dish: Dish, household: Household, catalog: Catalog): SafetyResult {
   return checkDishSafetyFor(dish, eatingMembers(household), household, catalog);
+}
+
+/**
+ * その日の献立のうち、その日に食べる家族（欠席の人を除く）の除外に当たる料理の数。みんな外で食べる日・料理のない日は 0。
+ * 試用の記録の「除外の違反」に使う（advanceDay が、日の終わりに PlannedMeal.safetyAtDayEnd に残す）。
+ */
+export function excludedDishCount(household: Household, catalog: Catalog, meal: Pick<PlannedMeal, 'dishIds' | 'absentMemberIds'>): number {
+  const eaters = eatingMembers(household, meal.absentMemberIds);
+  if (eaters.length === 0) return 0;
+  let count = 0;
+  for (const id of meal.dishIds) {
+    const dish = findDishIn(household, catalog, id);
+    if (dish && checkDishSafetyFor(dish, eaters, household, catalog).status === 'excluded') count += 1;
+  }
+  return count;
 }
 
 /** 献立に出してよいか。'uncertain' は設定で許したときだけ。 */

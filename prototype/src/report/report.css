@@ -1,0 +1,816 @@
+/*
+ * 試用の集計ページ（report.html）の見た目。styles.css（アプリ）のあとに読む。
+ * 色はアプリのトークン（styles.css の :root と、暗いテーマの2つのブロック）だけを使う。ここでは新しい色を作らない。
+ * 字・ボタン（.btn）・入力欄（.text-input）・確認（.confirm）・印（.badge）も、アプリのものをそのまま使う。
+ * 配置：冷蔵庫の扉（地）に、集計のメモ紙を1枚貼る。狭い画面では紙を画面いっぱいにして、表の幅を広く取る。
+ */
+
+/* アプリは画面いっぱいの1枚（#root の高さ 100%）。このページは縦に長く伸びる。 */
+#root {
+  height: auto;
+  min-height: 100%;
+}
+
+body {
+  background: var(--paper);
+}
+
+/* 横の余白はここで1回だけ（安全領域も含める）。 */
+.r-page {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding-block: 20px 40px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+
+.r-paper {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+@media (min-width: 720px) {
+  body {
+    background: var(--door);
+  }
+  .r-page {
+    padding-block: 32px 56px;
+  }
+  .r-paper {
+    padding: 28px 32px 36px;
+    background: var(--paper);
+    border: 1px solid var(--rule-strong);
+    border-radius: 16px;
+    box-shadow: 0 12px 32px -14px var(--shadow);
+  }
+}
+
+/* ------------------------------------------------------------------ 見出し */
+
+.r-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.r-kicker {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--kaki-strong);
+}
+
+.r-h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.r-lead {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 15px;
+}
+
+.r-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.r-section + .r-section {
+  padding-top: 24px;
+  border-top: 1px solid var(--rule);
+}
+
+.r-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.r-subtitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.r-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.r-text {
+  margin: 0;
+  max-width: 70ch;
+}
+
+.r-muted {
+  color: var(--ink-soft);
+}
+
+.r-strong {
+  font-weight: 700;
+}
+
+.r-fine {
+  margin: 0;
+  max-width: 70ch;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.r-status {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.r-nowrap {
+  white-space: nowrap;
+}
+
+.r-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.r-icon {
+  flex: none;
+}
+
+/* ------------------------------------------------------------------ 貼り付け */
+
+.r-paste {
+  width: 100%;
+  min-height: 11em;
+  padding: 10px 12px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 10px;
+  background: var(--paper-raised);
+  color: var(--ink);
+  font-family: var(--font-code);
+  /* iPhone で入力欄が拡大されないように 16px（広い画面では小さくする） */
+  font-size: 16px;
+  line-height: 1.5;
+  resize: vertical;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 720px) {
+  .r-paste {
+    min-height: 14em;
+    font-size: 13px;
+  }
+}
+
+.r-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--shu);
+  border-radius: 10px;
+  background: var(--shu-wash);
+  color: var(--ink);
+}
+
+.r-errors-title {
+  margin: 0;
+  font-weight: 700;
+  color: var(--shu-ink);
+}
+
+.r-errors ul {
+  margin: 0;
+  padding-left: 1.3em;
+}
+
+.r-family-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.r-family-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.r-family-item--out {
+  border-style: dashed;
+  background: var(--paper-sunk);
+}
+
+.r-family-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.r-family-label {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.r-family-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.r-family-meta {
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.r-family-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.r-family-controls .text-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.r-family-controls .btn {
+  flex: none;
+  white-space: nowrap;
+}
+
+.r-family-controls--end {
+  justify-content: flex-end;
+}
+
+@media (min-width: 720px) {
+  .r-family-item {
+    grid-template-columns: minmax(0, 1fr) minmax(15rem, 22rem);
+    align-items: center;
+  }
+}
+
+.r-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.r-confirm {
+  max-width: 34rem;
+}
+
+/* 見本・注意の帯 */
+.r-banner,
+.r-callout {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--yama);
+  border-radius: 10px;
+  background: var(--yama-wash);
+  color: var(--ink);
+}
+
+.r-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.r-banner p {
+  margin: 0;
+  flex: 1 1 16em;
+  min-width: 0;
+}
+
+.r-callout {
+  max-width: 70ch;
+  font-size: 14px;
+}
+
+.r-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 16px;
+  border: 1px dashed var(--rule-strong);
+  border-radius: 12px;
+  background: var(--paper-sunk);
+}
+
+.r-empty p {
+  margin: 0;
+}
+
+/* ------------------------------------------------------------------ 表 */
+
+/* 表がはみ出すときは、ページではなく、この入れ物の中で横にスクロールする。 */
+.r-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--paper-raised);
+}
+
+.r-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.r-table th,
+.r-table td {
+  padding: 9px 10px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--rule);
+}
+
+.r-table thead th {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  background: var(--paper-sunk);
+}
+
+.r-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.r-table tfoot > tr > * {
+  border-top: 1px solid var(--rule-strong);
+  border-bottom: 0;
+  background: var(--paper-sunk);
+  font-weight: 700;
+}
+
+.r-table tbody th {
+  font-weight: 700;
+}
+
+.r-sub {
+  display: block;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-soft);
+  white-space: normal;
+}
+
+.r-big {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+}
+
+.r-cell-warn {
+  background: var(--shu-wash);
+  color: var(--shu-ink);
+  font-weight: 700;
+}
+
+.r-cell-warn .r-sub {
+  color: var(--shu-ink);
+}
+
+/* 続行の目安：広い画面でも、目で追える幅にする。 */
+.r-scroll--criteria {
+  max-width: 54rem;
+}
+
+/* 続行の目安：文は折り返す。判定の印は「まだ／分からない」「届いて／いない」の所でだけ折り返す。 */
+.r-criteria th[scope="row"] {
+  min-width: 6.5em;
+}
+
+.r-criteria .r-pill {
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+
+.r-target-inline {
+  display: none;
+}
+
+/* 狭い画面では「目標」の列を目安の下に移して、3列で収める（判定を横にスクロールしないと見えない、をなくす）。 */
+@media (max-width: 559.98px) {
+  .r-criteria .r-col-target {
+    display: none;
+  }
+  .r-target-inline {
+    display: block;
+  }
+  .r-criteria th,
+  .r-criteria td {
+    padding-inline: 8px;
+  }
+  .r-criteria .r-pill {
+    gap: 2px;
+    padding: 2px 8px 2px 5px;
+    font-size: 12px;
+  }
+}
+
+/* 家族ごとの表：数は折り返さない。期間・家族構成などは区切りの所（Breakable）でだけ折り返し、添え書き（.r-sub）は
+   5.5em 以上の幅で折り返す。それでも入らなければ、入れ物の中で横にスクロールする。左の「家族」の列は、横にスクロールしても残す。 */
+.r-families th,
+.r-families td {
+  white-space: nowrap;
+}
+
+.r-families .r-wrap {
+  white-space: normal;
+}
+
+.r-families .r-sub {
+  min-width: 5.5em;
+}
+
+.r-families th,
+.r-families td {
+  padding-inline: 8px;
+}
+
+.r-families thead th {
+  min-width: 4.5em;
+  max-width: 9em;
+  white-space: normal;
+}
+
+.r-families tbody th,
+.r-families thead th:first-child,
+.r-families tfoot th {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  box-shadow: inset -1px 0 0 var(--rule);
+}
+
+.r-families tbody th {
+  background: var(--paper-raised);
+}
+
+/* 見本の印は、家族の下に置く（「家族」の列を広げない）。 */
+.r-families tbody th .badge {
+  display: block;
+  width: fit-content;
+  margin-top: 2px;
+}
+
+.r-families tbody th .r-family-name {
+  display: block;
+  max-width: 8em;
+  font-size: 12px;
+  white-space: normal;
+}
+
+/* 判定の印（文字と形で伝える：色だけにしない） */
+.r-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.r-pill--reached {
+  background: var(--matsu-wash);
+  border-color: var(--matsu);
+  color: var(--matsu);
+}
+
+.r-pill--missed {
+  background: var(--shu-wash);
+  border-color: var(--shu);
+  color: var(--shu-ink);
+}
+
+.r-pill--caution {
+  background: var(--yama-wash);
+  border-color: var(--yama);
+  color: var(--yama);
+}
+
+.r-pill--unknown {
+  background: var(--paper-sunk);
+  border-color: var(--rule-strong);
+  border-style: dashed;
+  color: var(--ink-soft);
+}
+
+/* ------------------------------------------------------------------ 北極星 */
+
+.r-star {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--paper-sunk);
+}
+
+.r-star-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+}
+
+.r-star-top p {
+  margin: 0;
+}
+
+.r-star-label {
+  flex: 1 0 100%;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
+.r-star-value {
+  font-family: var(--font-display);
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.r-star-detail {
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+.r-star-top .r-pill {
+  align-self: center;
+}
+
+.r-meter {
+  position: relative;
+}
+
+.r-meter-bar {
+  position: relative;
+  height: 8px;
+}
+
+.r-meter--big .r-meter-bar {
+  height: 14px;
+}
+
+.r-meter-track {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--rule);
+}
+
+.r-meter-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--ink-faint);
+}
+
+.r-meter--reached .r-meter-track {
+  background: var(--matsu-wash);
+  box-shadow: inset 0 0 0 1px var(--matsu);
+}
+
+.r-meter--reached .r-meter-fill {
+  background: var(--matsu);
+}
+
+.r-meter--caution .r-meter-track {
+  background: var(--yama-wash);
+  box-shadow: inset 0 0 0 1px var(--yama);
+}
+
+.r-meter--caution .r-meter-fill {
+  background: var(--yama);
+}
+
+.r-meter--missed .r-meter-track {
+  background: var(--shu-wash);
+  box-shadow: inset 0 0 0 1px var(--shu);
+}
+
+.r-meter--missed .r-meter-fill {
+  background: var(--shu);
+}
+
+.r-meter-tick {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--ink-soft);
+}
+
+.r-meter-scale {
+  position: relative;
+  height: 1.6em;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.r-meter-scale span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.r-star-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+@media (min-width: 720px) {
+  .r-star-list {
+    grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+    gap: 14px 28px;
+  }
+}
+
+.r-star-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.r-star-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 12px;
+  font-size: 14px;
+}
+
+.r-star-who {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------------ 気をつけること・読み取れなかった書き込み */
+
+.r-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.r-flags {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 左に家族（名前を付けたら、その下に名前）、右に文。名前が長くても、左の列は 4割まで（折り返す）。 */
+.r-flag {
+  display: grid;
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 8px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+  font-size: 14px;
+}
+
+.r-flag-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-weight: 700;
+}
+
+.r-flag-name {
+  font-size: 12px;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.r-flag--violation,
+.r-flag--demo {
+  border-color: var(--shu);
+  background: var(--shu-wash);
+}
+
+.r-flag--sample {
+  border-style: dashed;
+  border-color: var(--yama);
+  background: var(--yama-wash);
+}
+
+.r-unreadable {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.r-unreadable > li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.r-unreadable-head {
+  margin: 0;
+  font-weight: 700;
+}
+
+.r-unreadable-head .r-muted {
+  font-weight: 400;
+  font-size: 13px;
+}
+
+.r-quotes {
+  margin: 0;
+  padding-left: 1.3em;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------ 共有 */
+
+.r-share {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.r-fallback {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* コピーできなかったときの文の欄（選んでコピーする）。iPhone で拡大されないように、狭い画面では 16px。 */
+.r-summary-area {
+  min-height: 14em;
+  font-size: 16px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 720px) {
+  .r-summary-area {
+    font-size: 13px;
+  }
+}

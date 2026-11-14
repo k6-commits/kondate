@@ -5,6 +5,7 @@ import {
   addDays,
   advanceDay,
   applyAction,
+  checkinQuestionWeek,
   createInitialState,
   diffDays,
   type AgeBand,
@@ -107,10 +108,19 @@ const onDate = (today: ISODate) => (m: ChatMessage) => dayOf(m) === today;
 const deliverable = (today: ISODate) => (m: ChatMessage) =>
   dayOf(m) === today || (m.card?.kind === 'week' && dayOf(m) < today && addDays(m.card.weekStart, 6) >= today);
 
+/** まだ答えのない週末の質問（［0日］…のボタンのあるメッセージ）か。 */
+const openCheckinQuestion = (state: AppState) => (m: ChatMessage) => {
+  const week = checkinQuestionWeek(m);
+  return !!week && !(Array.isArray(state.checkins) && state.checkins.some((c) => c.weekStart === week));
+};
+
 /**
  * state.today が今日より前なら、今日まで advanceDay を繰り返す。
  * - 同期でできた bot のメッセージのうち push でないもの（「昨日の〇〇は作りましたか？」など）は、
  *   最後の1日分だけを pendingReply に入れる（次の返信の先頭に添える）。今日の日付のものだけを残す。
+ * - ただし週末の質問（「11/9(月)〜11/13(金)の夕食で、自分で献立を考えた日は…」）は、日付を書いて聞くので、
+ *   出た日に届けられなかったら（その日に書き込みがなかった無料版など）、まだ答えがなければ次の返信の先頭に添える。
+ *   届けるのは、まだ届けていない、いちばん新しい1つだけ（届けたら pendingReply から消えるので、くり返さない）。
  * - push のもの（有料版の配信）は pendingPush にためる。今日の日付のものと、届けそびれた週の献立（その週が終わるまで）を残す。
  *   文面は送るときに今の state で作り直す（pushesToSend）。
  * MAX_SYNC_DAYS より古ければ null（呼ぶ側で作り直す）。
@@ -121,17 +131,21 @@ export function syncRecord(record: StoredRecord, catalog: Catalog, today: ISODat
   let state = record.state;
   let lastDay: ChatMessage[] | null = null;
   const pushed: ChatMessage[] = [];
+  const asked: ChatMessage[] = [];
   for (let i = 0; i < gap; i++) {
     const step = advanceDay(state, catalog);
     state = step.state;
     lastDay = step.replies.filter((m) => !m.push);
     pushed.push(...step.replies.filter((m) => m.push));
+    asked.push(...lastDay.filter((m) => checkinQuestionWeek(m) !== undefined));
   }
+  const reply = (lastDay ?? record.pendingReply).filter(onDate(today));
+  const question = [...record.pendingReply, ...asked].filter(openCheckinQuestion(state)).at(-1);
   return {
     ...record,
     state,
     pendingPush: [...record.pendingPush, ...pushed].filter(deliverable(today)),
-    pendingReply: (lastDay ?? record.pendingReply).filter(onDate(today)),
+    pendingReply: question && !reply.some((m) => m.id === question.id) ? [question, ...reply] : reply,
   };
 }
 

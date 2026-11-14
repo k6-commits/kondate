@@ -18,10 +18,11 @@ import { seedFrom } from './rng';
 import { dinnerDatesOfWeek, everyoneOut, findDishIn, ingredientsOf, mealOn, sortMeals } from './context';
 import { planWeek } from './planner';
 import { buildShoppingLists, FREEZE_NOTE } from './shopping';
-import { householdNotices } from './safety';
+import { excludedDishCount, householdNotices } from './safety';
 import { addBotMessage, chatIds, clone, newBotMessages, normalizeJa, uniq } from './util';
 import { addMealMessage, addWeekMessage, BTN_SHOPPING, BTN_TODAY, lastWeekSummaryText } from './messages';
 import { mealTitle } from './text';
+import { askCheckinIfDue } from './checkin';
 
 export function defaultSettings(input: Pick<OnboardingInput, 'plan' | 'shoppingWeekdays'>): HouseholdSettings {
   return {
@@ -267,6 +268,10 @@ export function advanceDay(state: AppState, catalog: Catalog): StepResult {
   const s = clone(state);
   const before = chatIds(s);
   const yesterday = s.today;
+  // 終わる日の除外の確認を残す（試用の記録の「除外の違反」は、過ぎた日をこのときの家族で数える。あとから家族や除外を
+  // 足しても、足す前に過ぎた日を違反にしない）。
+  const ending = mealOn(s, yesterday);
+  if (ending) ending.safetyAtDayEnd = { dishIds: [...ending.dishIds], excluded: excludedDishCount(s.household, catalog, ending) };
   s.today = addDays(s.today, 1);
   const paid = s.household.settings.plan === 'paid';
 
@@ -294,6 +299,10 @@ export function advanceDay(state: AppState, catalog: Catalog): StepResult {
       ],
     });
   }
+
+  // 週末の質問（北極星「自分で考えた夕食は何日？」）：その週の最後の献立の日の翌日に1回だけ。「作りましたか？」のあと、
+  // 配信の前に置く。有料版も配信ではなく、「作りましたか？」と同じふつうのメッセージ（LINE では同じ道で届く）。
+  askCheckinIfDue(s, yesterday);
 
   if (paid) {
     // 作った週を配信する（今週の分が週の中で作られる設定でも、来週の分でも）。振り返りは最初の1通にだけ添える。

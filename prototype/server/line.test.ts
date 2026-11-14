@@ -8,12 +8,14 @@ import {
   handleUserText,
   renderCardText,
   type ActionButton,
+  type AppState,
   type ChatMessage,
 } from '../src/engine/index';
 import {
   LINE_LIMITS,
   createLineClient,
   isAddressedToBot,
+  openQuestionMessages,
   quickReplyItems,
   stripMentions,
   toLineMessages,
@@ -198,6 +200,30 @@ describe('toLineMessages', () => {
     expect(quickReplyItems([yesterday], state).map((i) => i.action.label)).toEqual(['作った', '作らなかった']);
   });
 
+  it('週末の質問が2週分あると、［0日］…に週の月曜の日付を付けて見分ける（1週分なら付けない）', () => {
+    const question = (weekStart: string) =>
+      msg('自分で献立を考えた日は何日ありましたか？', {
+        actions: [0, 1, 2].map((n) => ({ label: `${n}日`, action: { type: 'weekly_checkin' as const, weekStart, thoughtDays: n } })),
+      });
+    const older = question('2026-10-26');
+    const newer = question('2026-11-02');
+    const items = quickReplyItems([older, newer], state);
+    expect(items.map((i) => i.action.label)).toEqual([
+      '11/2(月) 0日', '11/2(月) 1日', '11/2(月) 2日', '10/26(月) 0日', '10/26(月) 1日', '10/26(月) 2日',
+    ]);
+    expect(JSON.parse(items[4].action.data)).toEqual({ type: 'weekly_checkin', weekStart: '2026-10-26', thoughtDays: 1 });
+    expect(quickReplyItems([newer], state).map((i) => i.action.label)).toEqual(['0日', '1日', '2日']);
+  });
+
+  it('答えのある週の［0日］…は出さない（画面の visibleActions と同じ）', () => {
+    const question = msg('自分で献立を考えた日は何日ありましたか？', {
+      actions: [0, 1].map((n) => ({ label: `${n}日`, action: { type: 'weekly_checkin' as const, weekStart: '2026-11-02', thoughtDays: n } })),
+    });
+    const answered = { ...state, checkins: [{ weekStart: '2026-11-02', plannedDays: 1, thoughtDays: 0, answeredOn: TODAY }] };
+    expect(quickReplyItems([question], answered)).toEqual([]);
+    expect(quickReplyItems([question], state)).toHaveLength(2);
+  });
+
   it('1つの返信に提案が2つあると、どちらの［替える］［そのまま］も、提案の日付つきで出る', () => {
     const r = handleUserText(state, catalog, '鶏むねが安い。豚こまも安い');
     const withProposal = r.replies.filter((m) => m.actions?.some((a) => a.action.type === 'accept_proposal'));
@@ -329,6 +355,100 @@ describe('toLineMessages', () => {
     expect(labels).toContain('ゆい △');
     expect(labels).not.toContain('ママ ◎');
     expect(labels.length).toBeLessThanOrEqual(LINE_LIMITS.quickReplyItems);
+  });
+});
+
+describe('まだ答えのない質問のボタンを、返信に添え直す（openQuestionMessages）', () => {
+  // デモの家族で 11/9(月) から始めて、何も答えずに 11/14(土) まで進めた状態：木・金の「作りましたか？」と、週末の質問が残っている。
+  const MON = '2026-11-09';
+  const advance = (from: AppState, days: number) => {
+    let s = from;
+    for (let i = 0; i < days; i++) s = advanceDay(s, catalog).state;
+    return s;
+  };
+  const sat = advance(createInitialState(DEMO_ONBOARDING, catalog, MON), 5);
+  const weekLabels = (week: string) => [0, 1, 2, 3, 4, 5].map((d) => `${week} ${d}日`);
+  const labelsOf = (items: ReturnType<typeof quickReplyItems>) => items.map((i) => i.action.label);
+  const reattached = (s: AppState) => openQuestionMessages(s).flatMap((m) => (m.actions ?? []).map((b) => b.label));
+
+  it('答えのない週末の質問と、今日・きのうに聞いた「作りましたか？」のボタンを、日付つきで返す（週末の質問を先に入れる）', () => {
+    expect(sat.today).toBe('2026-11-14');
+    expect(reattached(sat)).toEqual([
+      '11/12(木) 作った',
+      '11/12(木) 作らなかった',
+      '11/13(金) 作った',
+      '11/13(金) 作らなかった',
+      ...weekLabels('11/9(月)'),
+    ]);
+    const reply = msg('卵を「なし」にしました。');
+    expect(labelsOf(quickReplyItems([...openQuestionMessages(sat), reply], sat))).toEqual([
+      ...weekLabels('11/9(月)'),
+      '11/13(金) 作った',
+      '11/13(金) 作らなかった',
+      '11/12(木) 作った',
+      '11/12(木) 作らなかった',
+    ]);
+    // 添え直す分は、送るメッセージにはならない（本文はいつもの返信だけ）
+    expect(toLineMessages(sat, catalog, [reply], openQuestionMessages(sat)).map((m) => m.text)).toEqual(['卵を「なし」にしました。']);
+  });
+
+  it('先に［作った］を押した返事（◎○△）にも週末の質問のボタンを添える。答えた週・記録した日の分は添えない', () => {
+    const cooked = applyAction(sat, catalog, { type: 'cooked', date: '2026-11-13' });
+    const items = toLineMessages(cooked.state, catalog, cooked.replies, openQuestionMessages(cooked.state)).at(-1)!.quickReply!.items;
+    const actions = items.map((i) => JSON.parse(i.action.data) as { type: string; date?: string });
+    expect(actions.slice(0, 3).map((a) => a.type)).toEqual(['react', 'react', 'react']);
+    expect(labelsOf(items).slice(3, 9)).toEqual(weekLabels('11/9(月)'));
+    expect(JSON.parse(items[5].action.data)).toEqual({ type: 'weekly_checkin', weekStart: MON, thoughtDays: 2 });
+    expect(actions.filter((a) => a.type === 'cooked').map((a) => a.date)).toEqual(['2026-11-12']);
+    const answered = applyAction(cooked.state, catalog, { type: 'weekly_checkin', weekStart: MON, thoughtDays: 2 }).state;
+    expect(reattached(answered)).toEqual(['11/12(木) 作った', '11/12(木) 作らなかった']);
+  });
+
+  it('返信に質問そのもの（同期で添えた分）があれば、そちらのボタンだけを出す（日付つきの重複を出さない）', () => {
+    const asked = sat.chat.filter((m) => m.from === 'bot' && m.at.startsWith('2026-11-14'));
+    expect(asked.map((m) => m.text.split('\n')[0])).toEqual([
+      expect.stringMatching(/^昨日の.+は作りましたか？/),
+      '11/9(月)〜11/13(金)の夕食で、自分で献立を考えた日は何日ありましたか？',
+    ]);
+    expect(labelsOf(quickReplyItems([...openQuestionMessages(sat), ...asked], sat))).toEqual([
+      '0日',
+      '1日',
+      '2日',
+      '3日',
+      '4日',
+      '5日',
+      '作った',
+      '作らなかった',
+      '11/12(木) 作った',
+      '11/12(木) 作らなかった',
+    ]);
+  });
+
+  it('13個に入らない分は添えない（返信のボタンが先。入る組だけ入れる）', () => {
+    const many = msg('どれにしますか？', {
+      actions: Array.from({ length: 9 }, (_, i) => ({
+        label: `案${i + 1}`,
+        action: { type: 'choose_alternative' as const, date: '2026-11-16', dishIds: [`dish_${i}`] },
+      })),
+    });
+    const labels = labelsOf(quickReplyItems([...openQuestionMessages(sat), many], sat));
+    expect(labels).toHaveLength(13);
+    expect(labels.slice(0, 9)).toEqual(Array.from({ length: 9 }, (_, i) => `案${i + 1}`));
+    // 週末の質問（6個）は入らないので、次の組（金曜の2個）、その次の組（木曜の2個）を入れる
+    expect(labels.slice(9)).toEqual(['11/13(金) 作った', '11/13(金) 作らなかった', '11/12(木) 作った', '11/12(木) 作らなかった']);
+  });
+
+  it('「作りましたか？」は今日かきのうに聞いたものだけ、週末の質問は今週か先週の分だけ添え直す', () => {
+    const sun = advance(sat, 1);
+    expect(reattached(sun)).toEqual(['11/13(金) 作った', '11/13(金) 作らなかった', ...weekLabels('11/9(月)')]);
+    const mon = advance(sat, 2);
+    expect(mon.today).toBe('2026-11-16');
+    expect(reattached(mon)).toEqual(weekLabels('11/9(月)'));
+    const nextMon = advance(sat, 9);
+    expect(nextMon.today).toBe('2026-11-23');
+    const later = reattached(nextMon);
+    expect(later.some((l) => l.startsWith('11/9(月)'))).toBe(false);
+    expect(later.filter((l) => l.startsWith('11/16(月)'))).toEqual(weekLabels('11/16(月)'));
   });
 });
 

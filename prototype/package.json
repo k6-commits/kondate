@@ -13,7 +13,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build:artifact": "vite build --mode single && node scripts/make-artifact.mjs",
-    "check": "npm run typecheck && npm test && npm run build && npm run build:artifact"
+    "build:report": "vite build --mode report && node scripts/make-report.mjs",
+    "check": "npm run typecheck && npm test && npm run build && npm run build:artifact && npm run build:report"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.6.0",

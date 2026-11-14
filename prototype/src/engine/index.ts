@@ -17,7 +17,8 @@ export { createRng, seedFrom } from './rng';
  * createInitialState(input, catalog, today): AppState
  *   初回の質問の答えから状態を作り、今日以降の今週分の献立と買い物リストを作る。最初のあいさつも chat に入れる。
  * advanceDay(state, catalog): StepResult
- *   1日進める。前日の献立の確認、来週の献立の作成（最初の買い物日の前日）、有料版の配信メッセージなどを行う。
+ *   1日進める。前日の献立の確認、週末の質問（その週の最後の献立の日の翌日に1回。下の「1週間の試用」）、
+ *   来週の献立の作成（最初の買い物日の前日）、有料版の配信メッセージなどを行う。
  */
 export { createInitialState, advanceDay } from './state';
 
@@ -69,6 +70,44 @@ export { parseMessage } from './parser';
  */
 export { handleUserText, applyAction, validateCommands } from './conversation';
 export type { UserTextOptions } from './conversation';
+/**
+ * UNREADABLE_REPLY — 読み取れなかったときの返事の書き出し（「すみません、うまく読み取れませんでした。」）。
+ * 試用の記録は、この返事のすぐ前の書き込みを「読み取れなかった書き込み」に数える。画面が AI に頼むかを決めるときも、これで見分ける。
+ */
+export { UNREADABLE_REPLY } from './conversation';
+
+// ----- 1週間の試用 -----
+
+/**
+ * 週末の質問（北極星「自分で考えた夕食は何日？」）は、advanceDay がその週の最後の献立の日の翌日に1回だけ出す
+ * （［0日］…［N日］のボタン＝ weekly_checkin。N はみんな外で食べた日を除いた献立の日）。答えは applyAction の weekly_checkin と、
+ * handleUserText の数だけの書き込み（「2」「2日」「全部」など。週末の質問がいちばん新しい答え待ちの質問のとき）で state.checkins に
+ * 記録する。weeklySummary の checkin と、振り返りの文（「自分で考えた日（週末の質問）：2日／5日」）にも出る。
+ *
+ * trialReport(state, catalog, opts?): TrialReport — 試用の記録（名前を入れずに数える。opts.includeTexts で読み取れなかった
+ *   書き込みの文を入れるか（既定 false。入れるときも呼び名は「〇〇」）、opts.clock で日付の進め方を記す）。数え方と weeklySummary
+ *   との関係は trial.ts の先頭。
+ * formatTrialReport(report): string — 家族が送る文（読める行 + 集計ページが読む「きめとく試用データ:{JSON}」の1行。
+ *   TRIAL_MAX_REPORT_LENGTH（4500字）まで。超えるときは古い書き込みの文から外す）。
+ * parseTrialReports(text): { reports, errors } — 貼り付けた文から記録をすべて取り出す（集計ページで使う。途中の改行も読む）。
+ * checkTrialReport(value): string | null — 記録の形を確かめる（使えなければ、わけ）。
+ * checkinQuestionWeek(message): ISODate | undefined — 週末の質問のメッセージ（［0日］…のボタンつき）なら、その週の月曜。
+ * CHECKIN_SUMMARY_LABEL — 振り返りの見出し「自分で考えた日（週末の質問）」（画面の振り返りも、この言い方で出す）。
+ */
+export { checkinQuestionWeek, CHECKIN_SUMMARY_LABEL } from './checkin';
+export {
+  trialReport,
+  formatTrialReport,
+  parseTrialReports,
+  checkTrialReport,
+  TRIAL_REPORT_VERSION,
+  TRIAL_REPORT_MARKER,
+  TRIAL_MAX_TEXTS,
+  TRIAL_MAX_TEXT_LENGTH,
+  TRIAL_MAX_REPORT_LENGTH,
+  TRIAL_MAX_CHECKINS,
+} from './trial';
+export type { TrialReport, TrialReportOptions, TrialClock } from './trial';
 
 // ----- 振り返り -----
 

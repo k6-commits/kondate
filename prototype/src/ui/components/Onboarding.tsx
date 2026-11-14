@@ -1,8 +1,10 @@
 // 初回設定（DESIGN.md 4章の①〜④）。最後に注意を見せてから始める。
+// 確認（⑤）で、日付の進め方を選ぶ：本物の日付で進める（1週間の試用。既定）か、［翌日へ進む］で進めるデモか。
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Catalog, Household, ISODate, OnboardingInput, Weekday } from '../../engine';
 import { WEEKDAY_JA, householdNotices } from '../../engine';
 import { cls, normalizeForSearch } from '../lib';
+import type { ClockMode } from '../storage';
 import type { MemberDraft } from './Forms';
 import { DishPicker, MemberEditor, PLAN_INFO, PlanPicker, WeekdayPicker, emptyMemberDraft, exclusionLine, memberLine } from './Forms';
 import { Icon } from './Icon';
@@ -22,11 +24,14 @@ export function Onboarding({
 }: {
   catalog: Catalog;
   today: ISODate;
-  onStart: (input: OnboardingInput) => void;
+  /** clock：日付の進め方（確認の画面のチェックで選ぶ。デモの家族で始めるときは、いつも demo）。 */
+  onStart: (input: OnboardingInput, clock: ClockMode) => void;
   onDemo: () => void;
   onCancel?: () => void;
 }) {
   const [step, setStep] = useState(0);
+  /** 本物の日付で進める（1週間の試用）。自分の家族で試す人のための既定。 */
+  const [calendar, setCalendar] = useState(true);
   const [members, setMembers] = useState<MemberDraft[]>(() => [emptyMemberDraft(0)]);
   // 今の状態から開いたとき（onCancel がある）は、デモで始め直す前にページの中で確かめる（リセットと同じ）。
   const [demoConfirm, setDemoConfirm] = useState(false);
@@ -94,18 +99,21 @@ export function Onboarding({
       setStep(0);
       return;
     }
-    onStart({
-      members: members.map((m) => ({
-        nickname: m.nickname.trim(),
-        ageBand: m.ageBand,
-        ...(m.role ? { role: m.role } : {}),
-        exclusions: m.exclusions,
-      })),
-      shoppingWeekdays,
-      favoriteDishIds,
-      customFavoriteNames: customNames,
-      plan,
-    });
+    onStart(
+      {
+        members: members.map((m) => ({
+          nickname: m.nickname.trim(),
+          ageBand: m.ageBand,
+          ...(m.role ? { role: m.role } : {}),
+          exclusions: m.exclusions,
+        })),
+        shoppingWeekdays,
+        favoriteDishIds,
+        customFavoriteNames: customNames,
+        plan,
+      },
+      calendar ? 'calendar' : 'demo',
+    );
   };
 
   const notices = householdNotices(draft);
@@ -314,6 +322,14 @@ export function Onboarding({
                 <dd>{PLAN_INFO.find((p) => p.id === plan)?.title}</dd>
               </div>
             </dl>
+            {/* 行のどこを押しても切り替わるように、行全体を label にする（家族と設定の「要確認の料理も出す」と同じ）。 */}
+            <label className="toggle-row trial-clock" htmlFor="ob-calendar">
+              <input id="ob-calendar" type="checkbox" checked={calendar} onChange={(e) => setCalendar(e.target.checked)} />
+              <span>
+                <span className="setting-name">本物の日付で進める（1週間の試用）</span>
+                <span className="field-note">印を外すと、画面の［翌日へ進む］で日付を進めるデモになります。</span>
+              </span>
+            </label>
             <div className="ob-notices" role="note" aria-label="始める前の注意">
               <p className="warn-label">
                 <Icon name="alert" size={16} />

@@ -1,4 +1,5 @@
-// きめとく（仮）プロトタイプの画面。状態は localStorage（使えなくても動く）、日付は「翌日へ進む」で動かす。
+// きめとく（仮）プロトタイプの画面。状態は localStorage（使えなくても動く）。日付は［翌日へ進む］で動かす（デモ）か、
+// 試用モード（本物の日付で進める）では、日本時間の今日に合わせて進める（開いたとき・画面に戻ったとき・1分ごと）。
 // エンジンとマスタは src/engine/index.ts と src/data/index.ts からだけ使う。
 import { Component, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
@@ -17,8 +18,23 @@ import {
 import { DEMO_ONBOARDING, defaultCatalog } from '../data';
 import { AiReader, prepareAiCommands, readableByRules } from './ai';
 import type { AiMode, AiReading } from './ai';
-import { adultsOf, cls, firstLine, formerSender, japanToday, nobodyEatsOn } from './lib';
-import { clearStored, readStoredState, readUiPrefs, writeStoredState, writeUiPrefs } from './storage';
+import {
+  CATCH_UP_INTERVAL_MS,
+  adultsOf,
+  catchUpText,
+  catchUpTo,
+  clockAheadText,
+  cls,
+  firstLine,
+  formerSender,
+  japanToday,
+  nobodyEats,
+  nobodyEatsOn,
+  planToast,
+  pushedText,
+} from './lib';
+import { STORAGE_KEY, clearStored, parseStoredState, readStoredRaw, readUiPrefs, writeStoredState, writeUiPrefs } from './storage';
+import type { ClockMode } from './storage';
 import { AboutPanel } from './components/AboutPanel';
 import { HouseholdSheet } from './components/HouseholdSheet';
 import type { HouseholdChange } from './components/HouseholdSheet';
@@ -45,6 +61,9 @@ function readRoute(): Route {
 export function demoState(catalog: Catalog, today: ISODate): AppState {
   return createInitialState(DEMO_ONBOARDING, catalog, weekStartOf(today));
 }
+
+/** このブラウザに記録を保存できないときの知らせ（本物の日付で試しているときに、一度だけ）。 */
+export const SAVE_FAILED_TOAST = 'このブラウザには保存できません。ページを閉じると、家族と記録が消えます。';
 
 /** 案内を左に常に出す広い画面（styles.css の @media (min-width: 900px) と同じ幅）。 */
 export const WIDE_QUERY = '(min-width: 900px)';
@@ -212,9 +231,25 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
   const ai = aiRef.current;
   const aiStatus = useSyncExternalStore(ai.subscribe, ai.getSnapshot, ai.getSnapshot);
 
-  const [state, setState] = useState<AppState>(() => readStoredState() ?? demoState(catalog, todayFn()));
+  const [initial] = useState(() => {
+    const raw = readStoredRaw();
+    const stored = parseStoredState(raw);
+    const prefs = readUiPrefs();
+    // 本物の日付で進めるのは、保存した記録から再開するときだけ（記録がなくデモで始めるときは、［翌日へ進む］のデモ）。
+    const clock: ClockMode = stored && prefs.clock === 'calendar' ? 'calendar' : 'demo';
+    return { state: stored ?? demoState(catalog, todayFn()), prefs, clock, raw: stored ? raw : null };
+  });
+  const [state, setState] = useState<AppState>(initial.state);
   const stateRef = useRef(state);
-  const [initialPrefs] = useState(readUiPrefs);
+  /**
+   * このタブが最後に読んだ・保存した記録の文字列。保存されている文字列がこれと違えば、同じページを開いたほかのタブが
+   * あとから保存したということ（adoptStored で読み直す）。
+   */
+  const savedRaw = useRef<string | null>(initial.raw);
+  const initialPrefs = initial.prefs;
+  /** 日付の進め方。ref は、イベント（画面に戻った・1分ごと）の中で今の値を読むため（setClock で両方を変える）。 */
+  const [clock, setClockState] = useState<ClockMode>(initial.clock);
+  const clockRef = useRef<ClockMode>(initial.clock);
   const [senders, setSenders] = useState<Record<string, string>>(() => initialPrefs.senders ?? {});
   const [senderPref, setSenderPref] = useState<string | undefined>(initialPrefs.sender);
   const [aiMode, setAiMode] = useState<AiMode>(initialPrefs.aiMode ?? 'auto');
@@ -255,15 +290,25 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
     ai.start();
   }, [ai]);
 
+  /** 記録をこのブラウザに保存できなかったか（サイトのデータを止めている・プライベートブラウズ など）。 */
+  const [saveFailed, setSaveFailed] = useState(false);
+  const saveWarned = useRef(false);
   useEffect(() => {
-    writeStoredState(state);
+    const ok = writeStoredState(state);
+    savedRaw.current = readStoredRaw();
+    setSaveFailed(!ok);
+    // 本物の日付で試している家族には、一度だけ知らせる（ページを閉じると、1週間の家族と記録が消えるため）。
+    if (!ok && clockRef.current === 'calendar' && !saveWarned.current) {
+      saveWarned.current = true;
+      showToast(SAVE_FAILED_TOAST);
+    }
   }, [state]);
 
   useEffect(() => {
     const ids = new Set(state.chat.map((m) => m.id));
     const kept = Object.fromEntries(Object.entries(senders).filter(([id]) => ids.has(id)));
-    writeUiPrefs({ sender: senderPref, aiMode, menuOpen, senders: kept, aboutSeen });
-  }, [state.chat, senders, senderPref, aiMode, menuOpen, aboutSeen]);
+    writeUiPrefs({ sender: senderPref, aiMode, menuOpen, senders: kept, aboutSeen, clock });
+  }, [state.chat, senders, senderPref, aiMode, menuOpen, aboutSeen, clock]);
 
   useEffect(() => {
     const onHash = () => setRoute(readRoute());
@@ -285,6 +330,90 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
   const showToast = useCallback((text: string) => {
     toastSeq.current += 1;
     setToast({ id: toastSeq.current, text });
+  }, []);
+
+  const setClock = useCallback((next: ClockMode) => {
+    clockRef.current = next;
+    setClockState(next);
+  }, []);
+
+  /** AI の読み取り中で、追いつくのを見送ったか（読み取りが終わったら、すぐにもう一度試す）。 */
+  const catchUpLater = useRef(false);
+
+  /**
+   * 試用モード（本物の日付で進める）で、記録の日付が日本時間の今日より前なら、今日まで1日ずつ進める（まとめて1回だけ保存する）。
+   * AI の読み取り中は進めない（「明日」などを、送ったときの日付で読んでいるため）。読み取りが終わったら、もう一度試す。
+   * 記録の日付が今日より先なら、何もしない（日付は戻さない）。lead は、知らせの前に付ける文（切り替え・読み込みのとき）。
+   */
+  const catchUp = (lead = ''): void => {
+    if (clockRef.current !== 'calendar') return;
+    if (busyRef.current) {
+      catchUpLater.current = true;
+      if (lead) showToast(lead);
+      return;
+    }
+    const r = catchUpTo(stateRef.current, catalog, todayFn());
+    if (!r) {
+      if (lead) showToast(lead);
+      return;
+    }
+    commit(r.state);
+    showToast(`${lead}${catchUpText({ days: r.days, pushed: r.pushed, today: r.state.today })}`);
+  };
+  const catchUpRef = useRef(catchUp);
+  catchUpRef.current = catchUp;
+
+  /**
+   * 同じページを開いたほかのタブ（LINE のリンクから開き直した、など）が、あとから記録を保存していたら、それを読み直す。
+   * 読み直さないと、古いタブが日付を進めるとき（画面に戻った・1分ごと）に古い記録で上書きして、ほかのタブで答えた記録が消える。
+   * 日付の進め方と、送った人の覚え書きも、ほかのタブが保存したものにそろえる。読み取り中の AI の結果は使わない（epoch）。
+   * 読み直したら true。
+   */
+  const adoptStored = (): boolean => {
+    const raw = readStoredRaw();
+    if (raw === null || raw === savedRaw.current) return false;
+    const next = parseStoredState(raw);
+    if (!next) return false;
+    savedRaw.current = raw;
+    epochRef.current += 1;
+    const prefs = readUiPrefs();
+    if (prefs.clock) setClock(prefs.clock);
+    if (prefs.senders) setSenders((cur) => ({ ...cur, ...prefs.senders }));
+    // 「AIで読み取り」の印は、同じ id で同じ文のメッセージにだけ残す（ほかのタブで始め直すと、id がまた1から振られる）。
+    const before = new Map(stateRef.current.chat.map((m) => [m.id, m.text]));
+    const same = new Set(next.chat.filter((m) => before.get(m.id) === m.text).map((m) => m.id));
+    setMarks((cur) => Object.fromEntries(Object.entries(cur).filter(([id]) => same.has(id))));
+    commit(next);
+    return true;
+  };
+  const adoptRef = useRef(adoptStored);
+  adoptRef.current = adoptStored;
+
+  // 開いたとき・画面に戻ったとき（別のアプリやタブから）・ウィンドウに戻ったとき・1分ごとに、本物の日付に追いつく
+  // （ほかのタブが保存した記録があれば、先に読み直す）。
+  useEffect(() => {
+    const run = () => {
+      adoptRef.current();
+      catchUpRef.current();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState !== 'hidden') run();
+    };
+    // ほかのタブが保存した（このタブが開いたままでも届く）。localStorage.clear() のときは key が null。
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === null || e.key === STORAGE_KEY) run();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', run);
+    window.addEventListener('storage', onStorage);
+    const timer = window.setInterval(run, CATCH_UP_INTERVAL_MS);
+    run();
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', run);
+      window.removeEventListener('storage', onStorage);
+      window.clearInterval(timer);
+    };
   }, []);
 
   const navigate = useCallback((r: Route) => {
@@ -401,6 +530,11 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
         } finally {
           busyRef.current = false;
           setPendingText(null);
+          // 読み取り中に日付が変わっていたら（試用モード）、この書き込みの返事を入れてから追いつく。
+          if (catchUpLater.current) {
+            catchUpLater.current = false;
+            window.setTimeout(() => catchUpRef.current(), 0);
+          }
         }
         if (epochRef.current !== epoch) {
           // 読み取りのあいだに家族や記録が入れ替わった。前の状態で読んだ結果（member の id や日付）は、新しい状態に入れない。
@@ -427,7 +561,25 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
     const r = advanceDay(stateRef.current, catalog);
     commit(r.state);
     const pushed = r.replies.filter((m) => m.push).length;
-    showToast(`${formatJa(r.state.today)}になりました。${pushed > 0 ? `配信が${pushed}件届きました。` : ''}`);
+    showToast(`${formatJa(r.state.today)}になりました。${pushedText(pushed)}`);
+  };
+
+  /**
+   * 日付の進め方を切り替える（家族と設定）。本物の日付に切り替えるときに、記録の日付が今日より先なら切り替えず、
+   * わけを返す（その場で出す）。今日より前なら、すぐに追いつく。
+   */
+  const changeClock = (next: ClockMode): string | null => {
+    if (next === clockRef.current) return null;
+    if (next === 'demo') {
+      setClock('demo');
+      showToast('［翌日へ進む］で日付を進めます。');
+      return null;
+    }
+    const cur = stateRef.current;
+    if (cur.today > todayFn()) return clockAheadText(cur.today);
+    setClock('calendar');
+    catchUp('本物の日付で進めます。');
+    return null;
   };
 
   const changeHousehold = (next: Household, change: HouseholdChange) => {
@@ -452,6 +604,19 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
         meals: s.meals.map((m) =>
           m.absentMemberIds.some((id) => removed.includes(id))
             ? { ...m, absentMemberIds: m.absentMemberIds.filter((id) => !removed.includes(id)) }
+            : m,
+        ),
+      };
+    }
+    // 家族を加えたとき、加える前に過ぎた「みんな外で食べた日」は、加えた人も家で食べなかった日にしておく。振り返りと試用の記録は
+    // 過ぎた日も今の家族で数えるので、そのままでは、その日が「記録なし」の献立の日に変わってしまう（作りましたか？も聞いていない）。
+    const added = next.members.filter((m) => !prev.household.members.some((p) => p.id === m.id)).map((m) => m.id);
+    if (added.length > 0) {
+      s = {
+        ...s,
+        meals: s.meals.map((m) =>
+          m.date < s.today && m.dishIds.length > 0 && nobodyEats(prev, m)
+            ? { ...m, absentMemberIds: [...m.absentMemberIds, ...added.filter((id) => !m.absentMemberIds.includes(id))] }
             : m,
         ),
       };
@@ -494,27 +659,42 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
     }
   };
 
-  const startWith = (input: OnboardingInput, today: ISODate, message: string) => {
+  /** mode：日付の進め方。本物の日付（calendar）で始めるときは、today を日本時間の今日にする。 */
+  const startWith = (input: OnboardingInput, today: ISODate, message: string, mode: ClockMode) => {
     const s = createInitialState(input, catalog, today);
     epochRef.current += 1;
     setSenders({});
     setMarks({});
     setSenderPref(adultsOf(s.household.members)[0]?.id);
+    setClock(mode);
     commit(s);
     navigate('talk');
     showToast(message);
   };
 
+  /** デモの家族は、いつも［翌日へ進む］で進める（今週の月曜から始まるので、本物の日付とは合わない）。 */
   const startDemo = (message = 'デモの家族で始めました。') =>
-    startWith(DEMO_ONBOARDING, weekStartOf(todayFn()), message);
+    startWith(DEMO_ONBOARDING, weekStartOf(todayFn()), message, 'demo');
+
+  /** 書き出したデータを読み込んだあと、日付の進め方が記録の日付と合うようにする。 */
+  const afterImport = (s: AppState) => {
+    if (clockRef.current !== 'calendar') {
+      showToast('読み込みました。');
+      return;
+    }
+    if (s.today > todayFn()) {
+      // 本物の日付より先の記録は、本物の日付では進められない（戻さない）ので、［翌日へ進む］のデモにする。
+      setClock('demo');
+      showToast(`読み込みました。記録の日付（${formatJa(s.today)}）が今日より先なので、［翌日へ進む］で進めるデモにしました。`);
+      return;
+    }
+    catchUp('読み込みました。');
+  };
 
   const setPlan = (plan: 'free' | 'paid') => {
     const h = stateRef.current.household;
     if (h.settings.plan === plan) return;
-    changeHousehold(
-      { ...h, settings: { ...h.settings, plan } },
-      { regenerate: false, toast: plan === 'paid' ? '有料版にしました。翌日へ進むと、配信が届きます。' : '無料版にしました。' },
-    );
+    changeHousehold({ ...h, settings: { ...h.settings, plan } }, { regenerate: false, toast: planToast(plan, clockRef.current) });
   };
 
   const cardHandlers = {
@@ -541,14 +721,14 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
   return (
     <div className="shell">
       <aside className="about-col" aria-labelledby="about-title">
-        <AboutPanel aiStatus={aiStatus} aiMode={aiMode} onStartOver={() => navigate('start')} />
+        <AboutPanel aiStatus={aiStatus} aiMode={aiMode} clock={clock} onStartOver={() => navigate('start')} />
       </aside>
       <main className="phone" aria-label="きめとく（試作）">
         {route === 'start' ? (
           <Onboarding
             catalog={catalog}
             today={todayFn()}
-            onStart={(input) => startWith(input, todayFn(), '設定しました。献立はトークに届いています。')}
+            onStart={(input, mode) => startWith(input, todayFn(), '設定しました。献立はトークに届いています。', mode)}
             onDemo={() => startDemo()}
             onCancel={() => navigate('talk')}
           />
@@ -556,6 +736,7 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
           <>
             <DemoBar
               today={state.today}
+              clock={clock}
               plan={state.household.settings.plan}
               busy={busy}
               showHint={!aboutSeen}
@@ -593,6 +774,7 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
                   menuOpen={menuOpen}
                   onMenuToggle={() => setMenuOpen((o) => !o)}
                   visible={!sheetOpen}
+                  showTimes={clock !== 'calendar'}
                 />
               </div>
               {/* 案内を重ねて開いているあいだは、シートにもフォーカスが出ないようにする（display: contents の入れ物）。 */}
@@ -624,6 +806,9 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
                     catalog={catalog}
                     aiMode={aiMode}
                     aiStatus={aiStatus}
+                    clock={clock}
+                    saveFailed={saveFailed}
+                    onClockChange={changeClock}
                     onAiModeChange={(mode) => {
                       setAiMode(mode);
                       showToast(aiModeToast(mode));
@@ -637,7 +822,7 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
                       setSenderPref(adultsOf(s.household.members)[0]?.id);
                       commit(s);
                       navigate('talk');
-                      showToast('読み込みました。');
+                      afterImport(s);
                     }}
                     onReset={() => {
                       clearStored();
@@ -658,6 +843,7 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
                   <AboutPanel
                     aiStatus={aiStatus}
                     aiMode={aiMode}
+                    clock={clock}
                     onStartOver={() => navigate('start')}
                     onClose={() => setAboutOpen(false)}
                   />
@@ -680,6 +866,7 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
 
 function DemoBar({
   today,
+  clock,
   plan,
   busy,
   showHint,
@@ -689,6 +876,8 @@ function DemoBar({
   onHelp,
 }: {
   today: ISODate;
+  /** 本物の日付で進める（試用）ときは、［翌日へ進む］の代わりに、そう書いた小さな添え書きを出す。 */
+  clock: ClockMode;
   plan: 'free' | 'paid';
   /** AI の読み取り中。日付を進めない。 */
   busy: boolean;
@@ -700,10 +889,11 @@ function DemoBar({
   onPlanChange: (plan: 'free' | 'paid') => void;
   onHelp: () => void;
 }) {
+  const calendar = clock === 'calendar';
   return (
-    <div className="demo-bar" role="region" aria-label="デモの操作" inert={inert}>
+    <div className="demo-bar" role="region" aria-label={calendar ? '日付とプラン' : 'デモの操作'} inert={inert} data-clock={clock}>
       <p className={cls('demo-today', showHint && 'has-hint')}>
-        <span className="demo-label">今日（デモ）</span>
+        <span className="demo-label">{calendar ? '今日' : '今日（デモ）'}</span>
         <strong className="demo-date num" data-testid="demo-today">
           {formatJa(today)}
         </strong>
@@ -714,10 +904,20 @@ function DemoBar({
           </button>
         ) : null}
       </p>
-      <button type="button" className="btn btn--small btn--demo" disabled={busy} onClick={onAdvance}>
-        翌日へ進む
-        <Icon name="next" size={16} />
-      </button>
+      {calendar ? (
+        <p className="clock-note" data-testid="clock-note">
+          本物の日付で
+          <wbr />
+          進めています
+          <wbr />
+          （試用）
+        </p>
+      ) : (
+        <button type="button" className="btn btn--small btn--demo" disabled={busy} onClick={onAdvance}>
+          翌日へ進む
+          <Icon name="next" size={16} />
+        </button>
+      )}
       <div className="seg seg--small" role="group" aria-label="プラン（デモ）">
         <button type="button" className="seg-btn" aria-pressed={plan === 'free'} onClick={() => onPlanChange('free')}>
           無料
