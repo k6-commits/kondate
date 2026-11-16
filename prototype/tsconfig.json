@@ -12,8 +12,9 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "allowImportingTsExtensions": true,
     "types": ["node", "vitest/globals"],
     "noEmit": true
   },
-  "include": ["src", "server", "vite.config.ts"]
+  "include": ["src", "server", "vite.config.ts", "vite.pwa.ts"]
 }

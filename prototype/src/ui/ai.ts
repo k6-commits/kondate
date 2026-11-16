@@ -60,7 +60,15 @@ export interface AiReaderOptions {
   parseApi?: string;
   /** window.claude を返す（テスト用に差し替えられる）。 */
   host?: () => ClaudeHost | undefined;
+  /**
+   * AI を使わない（ホーム画面に置く版。claude.ai の外なので Claude がなく、サーバーも使わない）。
+   * はじめから 'none' にして、確かめもしない（「確かめています」を一度も出さない）。
+   */
+  rulesOnly?: boolean;
 }
+
+/** AI を使わない版（ホーム画面に置く版）で、AI の読み取りの説明に出す文。家族と設定と案内で同じ文にする。 */
+export const RULES_ONLY_TEXT = 'この版では AI を使いません。書き込みは、ルールだけで読み取ります。';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -76,9 +84,12 @@ function defaultHost(): ClaudeHost | undefined {
   return isRecord(claude) || typeof claude === 'function' ? (claude as ClaudeHost) : undefined;
 }
 
-/** 開発用のサーバー。Artifact 用の1枚の HTML（--mode single）では使わない（外部へ通信しない）。 */
+/**
+ * 開発用のサーバー。Artifact 用の1枚の HTML（--mode single）と、ホーム画面に置く版（--mode pwa）では使わない
+ * （外部へ通信しない。サーバーの URL もビルドに入れない）。
+ */
 export function devParseApi(): string | undefined {
-  if (import.meta.env.MODE === 'single') return undefined;
+  if (import.meta.env.MODE === 'single' || import.meta.env.MODE === 'pwa') return undefined;
   const url = import.meta.env.VITE_PARSE_API;
   return typeof url === 'string' && url.trim() ? url.trim() : undefined;
 }
@@ -92,11 +103,13 @@ export class AiReader {
   private readonly listeners = new Set<() => void>();
   private readonly parseApi: string | undefined;
   private readonly host: () => ClaudeHost | undefined;
+  private readonly rulesOnly: boolean;
 
   constructor(options: AiReaderOptions = {}) {
-    this.parseApi = options.parseApi ?? devParseApi();
+    this.rulesOnly = options.rulesOnly === true;
+    this.parseApi = this.rulesOnly ? undefined : (options.parseApi ?? devParseApi());
     this.host = options.host ?? defaultHost;
-    this.statusValue = 'checking';
+    this.statusValue = this.rulesOnly ? 'none' : 'checking';
   }
 
   get status(): AiStatus {
@@ -131,6 +144,7 @@ export class AiReader {
   start(): void {
     if (this.started) return;
     this.started = true;
+    if (this.rulesOnly) return;
     const host = this.host();
     if (!host || typeof host.use !== 'function') {
       this.setStatus(this.fallbackStatus());

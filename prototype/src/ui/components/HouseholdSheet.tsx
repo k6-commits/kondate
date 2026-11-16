@@ -2,8 +2,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AppState, Catalog, Exclusion, Household, HouseholdSettings, Member } from '../../engine';
 import { checkDishSafety, findDish, formatTrialReport, householdNotices, trialReport } from '../../engine';
+import type { AppTarget } from '../../pwa';
 import type { AiMode, AiStatus } from '../ai';
-import { AI_MODES } from '../ai';
+import { AI_MODES, RULES_ONLY_TEXT } from '../ai';
 import { SERVINGS_NOTE, SIDE_POLICY, cls, hasPartialServings, nextMemberId, normalizeForSearch, planToast } from '../lib';
 import { parseImportedState } from '../storage';
 import type { ClockMode } from '../storage';
@@ -35,6 +36,65 @@ export const CLOCK_MODES: { id: ClockMode; label: string; note: string }[] = [
   },
   { id: 'demo', label: '［翌日へ進む］で進める（デモ）', note: '画面の上の［翌日へ進む］を押すと、1日進みます。' },
 ];
+
+/**
+ * データの欄などの文のうち、ホーム画面に置く版（pwa）で言い方を変えるもの（ブラウザ・ページの言い方を、この端末・
+ * このアプリの言い方にする）。
+ */
+export const DATA_TEXT = {
+  stored: {
+    web: '状態は、このブラウザの中だけに保存しています。ほかの人や端末には届きません。',
+    pwa: '家族と記録は、この端末のこのアプリの中だけに保存しています。ほかの人や端末には届きません。',
+  },
+  saveFailed: {
+    web: 'このブラウザには保存できていません。ページを閉じると、家族と記録が消えます。プライベートブラウズを使っていないか、サイトのデータを保存する設定になっているかを確かめてください。',
+    pwa: 'この端末に保存できていません。アプリを閉じると、家族と記録が消えます。プライベートブラウズを使っていないか、サイトのデータを保存する設定になっているかを確かめてください。',
+  },
+  reset: {
+    web: '保存した内容を消して、デモの家族で始め直します。元には戻せません。',
+    pwa: '保存した内容を消して、はじめの画面に戻ります。元には戻せません。',
+  },
+} as const;
+
+/** 試用の記録を送るときの題（navigator.share の title）。 */
+export const SHARE_TITLE = 'きめとく 試用の記録';
+/** ［LINE などで送る］で送れなかったとき（閉じただけのときは出さない）。 */
+export const SHARE_FAILED_TOAST = '送れませんでした。［コピー］を押して、LINE などに貼り付けて送ってください。';
+
+/** 試用の記録の説明。［LINE などで送る］があるときは、その送り方も書く。 */
+export const TRIAL_NOTE = {
+  copy: '1週間の試用のあとに、この記録を主催者に送ってください。名前は入らず、数だけをまとめています。LINE やメールに貼り付けて送れます。',
+  share: '1週間の試用のあとに、この記録を主催者に送ってください。名前は入らず、数だけをまとめています。［LINE などで送る］で送るか、［コピー］して LINE やメールに貼り付けてください。',
+} as const;
+
+/** 端末の共有の画面（navigator.share）が使えるか。 */
+function canShareText(): boolean {
+  try {
+    return typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+  } catch {
+    return false;
+  }
+}
+
+/** 共有の画面を閉じただけ（送らなかった）か。 */
+function isAbort(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && (e as { name?: unknown }).name === 'AbortError';
+}
+
+/**
+ * 試用の記録を、端末の共有の画面で送る（押したときの処理の中で呼ぶ）。閉じただけ（AbortError）なら何もしない。
+ * それ以外で送れなかったら onFail（［コピー］を案内する）。
+ */
+function shareText(text: string, onFail: () => void): void {
+  const fail = (e: unknown) => {
+    if (!isAbort(e)) onFail();
+  };
+  try {
+    navigator.share({ title: SHARE_TITLE, text }).then(() => undefined, fail);
+  } catch (e) {
+    fail(e);
+  }
+}
 
 export function aiStatusText(status: AiStatus): string {
   switch (status) {
@@ -103,6 +163,7 @@ export function HouseholdSheet({
   aiMode,
   aiStatus,
   clock = 'demo',
+  target = 'web',
   saveFailed = false,
   onClockChange = () => null,
   onAiModeChange,
@@ -119,6 +180,8 @@ export function HouseholdSheet({
   aiStatus: AiStatus;
   /** 日付の進め方。 */
   clock?: ClockMode;
+  /** アプリの版。'pwa'（ホーム画面に置く版）は AI を使わず、試用の記録を共有の画面で送れる。 */
+  target?: AppTarget;
   /** このブラウザに記録を保存できなかったか（データの欄に、そう書く）。 */
   saveFailed?: boolean;
   /** 日付の進め方を切り替える。切り替えられなければ、わけを返す（その場で出す）。 */
@@ -133,6 +196,7 @@ export function HouseholdSheet({
 }) {
   const h = state.household;
   const settings = h.settings;
+  const pwa = target === 'pwa';
   const [editing, setEditing] = useState<{ id: string | null; draft: MemberDraft } | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -419,27 +483,37 @@ export function HouseholdSheet({
         <h3 className="block-title" id="ai-title">
           AIの読み取り
         </h3>
-        <p className={cls('ai-status', (aiStatus === 'blocked' || aiStatus === 'none') && 'is-off')} data-testid="ai-status">
-          {aiStatusText(aiStatus)}
-        </p>
-        <div className="radio-list">
-          {AI_MODES.map((m) => (
-            <label key={m.id} className={cls('radio-card', aiMode === m.id && 'is-on')}>
-              <input type="radio" name="ai-mode" checked={aiMode === m.id} onChange={() => onAiModeChange(m.id)} />
-              <span>
-                <span className="radio-title">{m.label}</span>
-                <span className="field-note">{m.note}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-        <p className="field-note">AI には家族の名前を送らず、「member_1」のような番号に置き換えます。</p>
+        {pwa ? (
+          // ホーム画面に置く版は AI を使わない（ルールだけ）。選べない設定（おまかせ・いつも AI・使わない）は出さない。
+          <p className="ai-status is-off" data-testid="ai-status">
+            {RULES_ONLY_TEXT}
+          </p>
+        ) : (
+          <>
+            <p className={cls('ai-status', (aiStatus === 'blocked' || aiStatus === 'none') && 'is-off')} data-testid="ai-status">
+              {aiStatusText(aiStatus)}
+            </p>
+            <div className="radio-list">
+              {AI_MODES.map((m) => (
+                <label key={m.id} className={cls('radio-card', aiMode === m.id && 'is-on')}>
+                  <input type="radio" name="ai-mode" checked={aiMode === m.id} onChange={() => onAiModeChange(m.id)} />
+                  <span>
+                    <span className="radio-title">{m.label}</span>
+                    <span className="field-note">{m.note}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            <p className="field-note">AI には家族の名前を送らず、「member_1」のような番号に置き換えます。</p>
+          </>
+        )}
       </section>
 
       <DataTools
         state={state}
         catalog={catalog}
         clock={clock}
+        target={target}
         saveFailed={saveFailed}
         onImport={onImport}
         onReset={onReset}
@@ -526,19 +600,54 @@ function copyFromArea(area: HTMLTextAreaElement | null, text: string, onDone: ()
  * 試用の記録（1週間の試用のあとに、主催者に送る文）。名前は入らず、数だけ（エンジンの trialReport）。
  * 家族と設定を開いたときに作る（トークの書き込みのたびには作らない）。
  */
-function TrialRecord({ state, catalog, clock, onToast }: { state: AppState; catalog: Catalog; clock: ClockMode; onToast: (text: string) => void }) {
+function TrialRecord({
+  state,
+  catalog,
+  clock,
+  target,
+  onToast,
+}: {
+  state: AppState;
+  catalog: Catalog;
+  clock: ClockMode;
+  target: AppTarget;
+  onToast: (text: string) => void;
+}) {
   // 読み取れなかった書き込みの文は、送る人が選んだときだけ入れる（既定は入れない。エンジンの trialReport の既定と同じ）。
   const [includeTexts, setIncludeTexts] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const text = useMemo(() => formatTrialReport(trialReport(state, catalog, { includeTexts, clock })), [state, catalog, includeTexts, clock]);
+  // ホーム画面に置く版で、端末の共有の画面が使えるときは、［LINE などで送る］も出す（［コピー］は残す）。
+  const canShare = target === 'pwa' && canShareText();
+
+  const copyButton = (
+    <button
+      type="button"
+      className="btn btn--small"
+      onClick={() =>
+        copyFromArea(
+          areaRef.current,
+          text,
+          () => {
+            setCopyFailed(false);
+            onToast('試用の記録をコピーしました');
+          },
+          () => setCopyFailed(true),
+        )
+      }
+    >
+      <Icon name="copy" size={16} />
+      コピー
+    </button>
+  );
 
   return (
     <div className="data-tool trial-record" role="group" aria-labelledby="trial-title">
       <p className="setting-name" id="trial-title">
         試用の記録
       </p>
-      <p className="field-note">1週間の試用のあとに、この記録を主催者に送ってください。名前は入らず、数だけをまとめています。LINE やメールに貼り付けて送れます。</p>
+      <p className="field-note">{canShare ? TRIAL_NOTE.share : TRIAL_NOTE.copy}</p>
       <label className="toggle-row" htmlFor="trial-texts">
         <input id="trial-texts" type="checkbox" checked={includeTexts} onChange={(e) => setIncludeTexts(e.target.checked)} />
         <span className="toggle-text">読み取れなかった書き込みの文も入れる（読み取りの改善に使います）</span>
@@ -548,24 +657,17 @@ function TrialRecord({ state, catalog, clock, onToast }: { state: AppState; cata
       </label>
       <textarea id="trial-text" ref={areaRef} className="code-area" readOnly rows={8} value={text} />
       {copyFailed ? <p className="hint">コピーできませんでした。テキストを選択してコピーしてください。</p> : null}
-      <button
-        type="button"
-        className="btn btn--small"
-        onClick={() =>
-          copyFromArea(
-            areaRef.current,
-            text,
-            () => {
-              setCopyFailed(false);
-              onToast('試用の記録をコピーしました');
-            },
-            () => setCopyFailed(true),
-          )
-        }
-      >
-        <Icon name="copy" size={16} />
-        コピー
-      </button>
+      {canShare ? (
+        <div className="row-actions">
+          <button type="button" className="btn btn--small" onClick={() => shareText(text, () => onToast(SHARE_FAILED_TOAST))}>
+            <Icon name="share" size={16} />
+            LINE などで送る
+          </button>
+          {copyButton}
+        </div>
+      ) : (
+        copyButton
+      )}
     </div>
   );
 }
@@ -574,6 +676,7 @@ function DataTools({
   state,
   catalog,
   clock,
+  target,
   saveFailed,
   onImport,
   onReset,
@@ -583,6 +686,7 @@ function DataTools({
   state: AppState;
   catalog: Catalog;
   clock: ClockMode;
+  target: AppTarget;
   saveFailed: boolean;
   onImport: (state: AppState) => void;
   onReset: () => void;
@@ -596,6 +700,7 @@ function DataTools({
   const [resetStep, setResetStep] = useState(false);
   const exportRef = useRef<HTMLTextAreaElement>(null);
   const exportText = exportOpen ? JSON.stringify(state, null, 2) : '';
+  const version = target === 'pwa' ? 'pwa' : 'web';
 
   useEffect(() => {
     if (copyFailed && exportRef.current) {
@@ -627,14 +732,12 @@ function DataTools({
         データ
       </h3>
       {saveFailed ? (
-        <p className="field-note">
-          このブラウザには保存できていません。ページを閉じると、家族と記録が消えます。プライベートブラウズを使っていないか、サイトのデータを保存する設定になっているかを確かめてください。
-        </p>
+        <p className="field-note">{DATA_TEXT.saveFailed[version]}</p>
       ) : (
-        <p className="field-note">状態は、このブラウザの中だけに保存しています。ほかの人や端末には届きません。</p>
+        <p className="field-note">{DATA_TEXT.stored[version]}</p>
       )}
 
-      <TrialRecord state={state} catalog={catalog} clock={clock} onToast={onToast} />
+      <TrialRecord state={state} catalog={catalog} clock={clock} target={target} onToast={onToast} />
 
       <div className="data-tool">
         <p className="setting-name">書き出し</p>
@@ -714,7 +817,7 @@ function DataTools({
         </div>
         {resetStep ? (
           <div className="confirm" role="group" aria-label="リセットの確認">
-            <p>保存した内容を消して、デモの家族で始め直します。元には戻せません。</p>
+            <p>{DATA_TEXT.reset[version]}</p>
             <div className="row-actions">
               <button type="button" className="btn btn--danger" onClick={() => { setResetStep(false); onReset(); }}>
                 本当にリセットする

@@ -662,7 +662,8 @@ describe('画面での AI の読み取り', () => {
       fireEvent.change(screen.getByLabelText('送る人'), { target: { value: 'member_2' } });
       send('あさって俺おらんわ');
       await waitFor(() => expect(within(log()).getByText('AIで読み取り')).toBeTruthy());
-      expect(saved().meals.find((m) => m.date === '2026-11-11')?.absentMemberIds).toEqual(['member_2']);
+      // AI の結果は act の外で入り、保存は画面に出たあとの effect で書く（遅れることがある）。保存されるまで待つ。
+      await waitFor(() => expect(saved().meals.find((m) => m.date === '2026-11-11')?.absentMemberIds).toEqual(['member_2']));
       const reply = [...log().querySelectorAll('[data-from="bot"] .bubble--bot')].pop()?.textContent ?? '';
       expect(reply).toContain('パパ');
       expect(reply).not.toContain('ママ');
@@ -794,7 +795,10 @@ describe('画面での AI の読み取り', () => {
     fireEvent.click(screen.getByRole('button', { name: '戻る' }));
     release({ commands: [{ type: 'absence', ...NULLS, date: '2026-11-10', memberRef: 'member_2' }] });
     await waitFor(() => expect(within(log()).getByText('AIで読み取り')).toBeTruthy());
-    const s = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null') as AppState;
-    expect(s.meals.find((m) => m.date === '2026-11-10')?.absentMemberIds).toEqual(['member_2']);
+    // 保存は画面に出たあとの effect で書く（AI の結果は act の外で入るので、遅れることがある）。保存されるまで待つ。
+    await waitFor(() => {
+      const s = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null') as AppState;
+      expect(s.meals.find((m) => m.date === '2026-11-10')?.absentMemberIds).toEqual(['member_2']);
+    });
   });
 });

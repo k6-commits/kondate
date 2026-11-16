@@ -20,7 +20,8 @@ export type IconName =
   | 'edit'
   | 'trash'
   | 'snow'
-  | 'search';
+  | 'search'
+  | 'share';
 
 const PATHS: Record<IconName, ReactNode> = {
   week: (
@@ -87,6 +88,12 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <circle cx="11" cy="11" r="6.5" />
       <path d="m16 16 4.5 4.5" />
+    </>
+  ),
+  share: (
+    <>
+      <path d="M12 3.5V14M8 7.5l4-4 4 4" />
+      <path d="M8.5 10.5h-2A1.5 1.5 0 0 0 5 12v7a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 19v-7a1.5 1.5 0 0 0-1.5-1.5h-2" />
     </>
   ),
 };

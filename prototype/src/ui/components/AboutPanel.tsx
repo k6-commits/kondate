@@ -1,6 +1,8 @@
 // 案内パネル「このプロトタイプについて」。PC では左に、スマホでは「?」で開く。
 import { useEffect, useRef } from 'react';
+import type { AppTarget } from '../../pwa';
 import type { AiMode, AiStatus } from '../ai';
+import { RULES_ONLY_TEXT } from '../ai';
 import type { ClockMode } from '../storage';
 import { aiStatusText } from './HouseholdSheet';
 import { Icon } from './Icon';
@@ -34,10 +36,30 @@ function aiModeText(mode: AiMode): string {
   }
 }
 
+/**
+ * 案内の文のうち、ホーム画面に置く版（pwa）で言い方を変えるもの。claude.ai やブラウザのタブの中でしか合わない言い方
+ * （「ブラウザだけで再現」「このブラウザの中だけに保存」）を、この端末・このアプリの言い方にする。
+ */
+export const ABOUT_TEXT = {
+  scope: {
+    web: 'LINE のグループで使う想定のトーク画面（試作）と、今週の献立・買い物リスト・家族と設定の画面を、ブラウザだけで再現しています。はじめは、デモの家族（大人2人、小学生1人、幼児1人。小学生の子が卵アレルギー）で動きます。',
+    pwa: 'LINE のグループで使う想定のトーク画面（試作）と、今週の献立・買い物リスト・家族と設定の画面を、この端末の中だけで動かしています。デモの家族（大人2人、小学生1人、幼児1人。小学生の子が卵アレルギー）で試すこともできます。',
+  },
+  storageCalendar: {
+    web: '状態はこのブラウザの中だけに保存します。日付は、本物の日付（日本時間）に合わせて進みます。',
+    pwa: '家族と記録は、この端末のこのアプリの中だけに保存します。日付は、本物の日付（日本時間）に合わせて進みます。',
+  },
+  storageDemo: {
+    web: '状態はこのブラウザの中だけに保存します。日付は［翌日へ進む］で動かします。',
+    pwa: '家族と記録は、この端末のこのアプリの中だけに保存します。日付は［翌日へ進む］で動かします。',
+  },
+} as const;
+
 export function AboutPanel({
   aiStatus,
   aiMode = 'auto',
   clock = 'demo',
+  target = 'web',
   onStartOver,
   onClose,
 }: {
@@ -45,9 +67,12 @@ export function AboutPanel({
   aiMode?: AiMode;
   /** 日付の進め方（本物の日付で進めるときは、［翌日へ進む］の案内を出さない）。 */
   clock?: ClockMode;
+  /** アプリの版。'pwa'（ホーム画面に置く版）は AI を使わず、記録はこの端末のこのアプリの中だけ。 */
+  target?: AppTarget;
   onStartOver: () => void;
   onClose?: () => void;
 }) {
+  const pwa = target === 'pwa';
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     closeRef.current?.focus({ preventScroll: true });
@@ -69,9 +94,7 @@ export function AboutPanel({
       <p>
         家族の平日の夕食と買い物リストを、買い物の日に合わせて先に決めておく「献立当番」の試作です。何もしなければそのまま確定し、予定が崩れたら1タップで組み直します。
       </p>
-      <p>
-        LINE のグループで使う想定のトーク画面（試作）と、今週の献立・買い物リスト・家族と設定の画面を、ブラウザだけで再現しています。はじめは、デモの家族（大人2人、小学生1人、幼児1人。小学生の子が卵アレルギー）で動きます。
-      </p>
+      <p>{pwa ? ABOUT_TEXT.scope.pwa : ABOUT_TEXT.scope.web}</p>
 
       <h3 className="about-sub">試してほしいこと</h3>
       <ul className="try-list">
@@ -99,18 +122,15 @@ export function AboutPanel({
       )}
 
       <h3 className="about-sub">AI の読み取り</h3>
-      <p data-testid="about-ai-mode">{aiModeText(aiMode)}</p>
-      <p className="about-status">{aiStatusText(aiStatus)}</p>
+      {/* ホーム画面に置く版は AI を使わない（ルールだけ）。設定の説明や、使えるかの様子は出さない。 */}
+      <p data-testid="about-ai-mode">{pwa ? RULES_ONLY_TEXT : aiModeText(aiMode)}</p>
+      {pwa ? null : <p className="about-status">{aiStatusText(aiStatus)}</p>}
 
       <h3 className="about-sub">注意</h3>
       <ul className="about-notes">
         <li>アプリは除外の補助で、アレルギーの安全を保証するものではありません。重い食物アレルギーは対象外です。</li>
         <li>献立・分量・在庫は試作の計算です。消費期限を優先してください。</li>
-        <li>
-          {clock === 'calendar'
-            ? '状態はこのブラウザの中だけに保存します。日付は、本物の日付（日本時間）に合わせて進みます。'
-            : '状態はこのブラウザの中だけに保存します。日付は［翌日へ進む］で動かします。'}
-        </li>
+        <li>{(clock === 'calendar' ? ABOUT_TEXT.storageCalendar : ABOUT_TEXT.storageDemo)[pwa ? 'pwa' : 'web']}</li>
       </ul>
     </div>
   );

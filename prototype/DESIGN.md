@@ -20,6 +20,7 @@
 - **サーバーに `ANTHROPIC_API_KEY` があるときだけ、書き込みの解釈にLLMを使う**（失敗したらルールベースに戻る）。
 - **UI はブラウザだけで動く**（状態は localStorage）。日付は「翌日へ進む」で動かし、1週間の流れを体験できる。本物の家族での1週間の試用では、日付を本物の日付（日本時間）に合わせて進め、週末の質問と試用の記録で数を集める（3-11・3-12・4章・7章）。
 - **LINE とのつなぎ込み**は server/ に置く（webhook の受信と返信）。動かすには、LINE の Messaging API のチャネルが要る。
+- **ホーム画面に置く版（PWA）**：同じ画面を GitHub Pages で配り、試用の家族がスマホのホーム画面に置いて毎日開く（8章）。サーバーも AI も使わない（書き込みはルールだけで読む）。
 
 **作らないもの**：本物の課金、ネイティブアプリ、写真からの在庫登録、特売データ連携、栄養の数値。
 
@@ -36,8 +37,13 @@ prototype/
   src/data/     料理マスタ・食材マスタ・アレルゲン
   src/ui/       React の画面（スマホ幅で作る）
   src/report/   1週間の試用の集計ページ（report.html。主催者用。7章）
+  src/pwa/      ホーム画面に置く版（PWA）の窓口（index.ts が契約、updates.ts がサービスワーカーの登録と新しい版。8章）
+  public-pwa/   PWA の版だけに入れるファイル（icons/：元の絵 icon.svg と PNG）
   server/       Hono のサーバー（LINE webhook、LLM での解釈、JSON ファイルの保存）
-  scripts/      Artifact として公開するページを作る（make-artifact.mjs：アプリ、make-report.mjs：集計ページ）
+  scripts/      Artifact として公開するページを作る（make-artifact.mjs：アプリ、make-report.mjs：集計ページ）。
+                PWA の検査（check-pwa.mjs）とアイコンの PNG 作り（make-icons.mjs）
+  vite.config.ts / vite.pwa.ts   ビルドの設定（mode：既定・single・report・pwa。vite.pwa.ts は pwa のときだけ読む）
+.github/workflows/pages.yml      PWA を GitHub Pages に公開する（リポジトリの直下）
 ```
 
 - テストは Vitest。エンジンのテストは、マスタに頼らない小さなフィクスチャで書く（マスタの検査は src/data のテスト）。
@@ -258,6 +264,16 @@ prototype/
 - **状態の保存**：localStorage（try/catch で包み、使えなくても動く）。保存できないときは、データの欄にそう書き、本物の日付で進めているときは一度だけ「このブラウザには保存できません。ページを閉じると、家族と記録が消えます。」と知らせる。同じページを2つのタブで開いたときは、日付を進める前と storage イベントで保存を読み直し、ほかのタブがあとから保存した記録（日付の進め方・送った人の覚え書きも）を使う（古いタブが古い記録で上書きしない。読み取り中の AI の結果は使わない）。
 - **文言**はすべて日本語。注意書き（householdNotices）は設定と初回に必ず見せる。
 - **アクセシビリティ**：押せる所は 44px 以上（曜日のボタンは、7つ並ばない幅では2段にする。買い物のチェックは、行の左の列のどこを押しても切り替わる）。色だけに頼らない（今日の行は「今日」の印と aria-current、選べない料理は「除外」の印）。シートや案内を閉じたら、開いたボタンにフォーカスを戻す。幅が変わってフォーカスのある所が隠れたら、同じ案内のある見える所に移す（広くなったら左の案内の見出し、狭くなったら「?」、初回設定の画面ならその見出し）。案内を重ねて開いている間は、ほかの操作に Tab で移らない。重いアレルギーの印と「要確認の料理も出す」は、行のどこを押しても切り替わる。トークの入力欄は、「@きめとく」を押しても入れる。
+- **ホーム画面に置く版（PWA）だけの画面**（App の `target` が 'pwa'。既定はビルドの APP_TARGET。'web'（Artifact・開発用）は今までどおり。8章）：
+  - **はじめの画面**（Welcome.tsx）：保存した記録がないときに、デモの家族の代わりに出す（見出しにフォーカス）。［自分の家族で始める］（初回設定へ。⑤の「本物の日付で進める」は印つき）と［デモを見てみる］（デモの家族。［翌日へ進む］で進める）。選ぶまでは記録を保存しない（何も選ばずに閉じたら、次もはじめの画面）。はじめの画面から開いた初回設定には、置き換えの注意もデモの確かめもなく、［やめて戻る］で、はじめの画面に戻る。ほかの窓が家族を保存したら（storage イベント）、その家族で開く。
+  - **ホーム画面への追加の案内**（installGuide。上から順に当てはめる）：ホーム画面から開いている（isStandalone）→出さない／LINE の中（isLineInAppBrowser）→「Safari か Chrome で開いてください」（［自分の家族で始める］を出さない）／iPhone・iPad（isIos）→「先にホーム画面に追加してください」（［共有］→［ホーム画面に追加］。ホーム画面のアプリとブラウザとで記録が別になると書く。どのブラウザでも合う言い方）／ブラウザの確認が出せる（listenInstallPrompt）→［ホーム画面に追加する］（追加した・断ったら、結果の文にフォーカス）／それ以外→Chrome のメニューからの追加を1行で。判定が投げたら、メニューの1行にする。
+  - **新しい版の知らせ**（UpdateBanner.tsx）：開いたときに registerServiceWorker を1回だけ呼び、知らせを受けたら画面の上に出す（role="status"。操作は止めない。自分では読み直さない）。［更新する］は applyUpdate を呼び、「更新しています…」にして重ねて押せなくする（aria-disabled。［あとで］は隠す。20秒たっても読み直さなければ元に戻す）。［あとで］は、その App の間は出さない（フォーカスが BODY に落ちたら、今の画面の始まりへ移す）。初回設定（#start）のあいだは出さない（読み直すと入力の途中の内容が消えるため）。案内を重ねて開いている間は inert。
+  - **データを残す依頼**：自分の家族の初回設定を終えたときに、requestPersistentStorage を1回だけ呼ぶ（結果は使わない。デモでは呼ばない）。
+  - **AI**：使わない（AiReader の rulesOnly。はじめから 'none' で、「確かめています」も出さない）。家族と設定と案内は「この版では AI を使いません。書き込みは、ルールだけで読み取ります。」だけを書き、AI の設定と名前の置き換えの説明は出さない。
+  - **言い方**：ブラウザ・ページ・claude.ai の言い方を、この端末・このアプリの言い方にする（案内の範囲と保存の説明、データの欄、保存できないときの知らせ、リセットの確認、表示に失敗したときの画面）。リセットと、表示に失敗したときの［はじめの画面に戻る］は、はじめの画面に戻す（デモの家族ではない）。
+  - **試用の記録**：端末の共有の画面（navigator.share）があれば［LINE などで送る］を出す（題「きめとく 試用の記録」と記録の文。閉じただけ（AbortError）なら何も出さず、ほかの失敗は［コピー］を案内する知らせ）。［コピー］は残す。
+  - **履歴**：初回設定（#start）から出るとき（始めた・やめた）は、履歴を足さずに置き換える（history.replaceState）。Android の「戻る」で、終えた初回設定の空の画面に戻らない。
+  - **保存の順**：家族と記録を保存するときは、画面の覚え書き（日付の進め方など）を先に書く。同じ端末のほかの窓（Android のホーム画面のアプリと Chrome のタブ）が記録の storage イベントで覚え書きを読むときに、古い「デモ」を読んで書き戻さないように。
 
 ## 5. サーバー（server）
 
@@ -285,7 +301,7 @@ prototype/
 
 ## 6. 受け入れ条件
 
-- `npm run typecheck`、`npm test`、`npm run build`、`npm run build:single`、`npm run build:artifact`、`npm run build:report` が通る（`npm run check` で全部）。
+- `npm run typecheck`、`npm test`、`npm run build`、`npm run build:single`、`npm run build:artifact`、`npm run build:report`、`npm run build:pwa`（check-pwa.mjs の検査つき）が通る（`npm run check` で全部）。
 - デモの家族（大人2、小学生1、幼児1。子どもの1人が卵アレルギー）で、次が成り立つ（テストで確かめる）：
   - 月〜金の献立ができ、卵を含む料理が1つも入らない。ラク日が1日、新しい料理が1品以内。
   - 同じ主菜が7日以内に2回出ない。前日と同じたんぱく源が続かない。
@@ -310,3 +326,34 @@ prototype/
 - **読み取れなかった書き込み**：家族ごとの数と、送る人が入れた文（家族の呼び名は「〇〇」）。文の入っていない記録は「文は入っていません」。
 - **共有**：［集計を文にしてコピー］で、続行の目安・北極星・家族ごとの数を、名前を入れずに（家族A・家族B…で）文にしてコピーする（押したときの処理の中で書く。使えないときは、選択した文の欄を出す）。
 
+
+## 8. ホーム画面に置く版（PWA）
+
+1週間の試用で、家族がスマホのホーム画面に置いて毎日開く版。claude.ai の Artifact の代わりに、GitHub Pages（https://k6-commits.github.io/kondate/ 。github.io の /kondate/ の下）で配る。サーバーは使わない。画面だけのふるまいは4章の「ホーム画面に置く版（PWA）だけの画面」。
+
+- **版（target）**：ビルドの mode で決まる。`vite build --mode pwa`（`npm run build:pwa` → dist-pwa/）だけが 'pwa'（src/pwa の APP_TARGET）。ほかの mode（開発用・既定の build・single と Artifact・report）は 'web' で、Artifact のページは今までどおり動く（PWA だけの画面のコードは入るが、target で分けてあり動かない。サービスワーカーとインストールの確認のコードは、APP_TARGET が定数 'web' になるのでビルドから消える）。集計ページ（report）は、どちらにも関係しない。PWA の設定（vite.pwa.ts と vite-plugin-pwa）は、mode が pwa のときだけ読む。
+- **窓口（src/pwa/index.ts）**：画面は、PWA のことをここからだけ使う。関数の形は変えない（画面のテストは vi.mock で差し替える。足したら、そのモックにも足す）。どれもはじめに APP_TARGET を確かめ、'web' では何もしない。投げない。
+  - `APP_TARGET`：'pwa' か 'web'。
+  - `isStandalone()`：ホーム画面から開いているか（display-mode: standalone か、iOS の navigator.standalone）。
+  - `isIos()`：iPhone・iPad か（Mac のふりをする iPadOS の Safari も、タッチの点の数で見分ける。iPhone の Chrome なども含む）。
+  - `isLineInAppBrowser()`：LINE の中のブラウザか（User-Agent の「Line/」）。
+  - `registerServiceWorker(onUpdateReady)`：ページの読み込みが終わってから ./sw.js を範囲 ./ で登録し、新しい版が待つ状態になったら onUpdateReady を呼ぶ（1つの版につき1回。はじめてのインストールでは呼ばない。前に開いたときから待っている版は、開くたびに知らせる）。2回呼んでも登録は1回（知らせる先が増えるだけ）。開発用のサーバー（import.meta.env.DEV）では登録しない（sw.js がなく、ブラウザがエラーを出すため）。登録と更新のコード（updates.ts）は、ここで初めて読み込む（別のファイルになる）。
+  - `applyUpdate()`：待っている版に `{ type: 'SKIP_WAITING' }` を送り、切り替わったら（controllerchange。受け持たれていないページは activated）1回だけ読み直す。さらに新しい版をインストールしている途中なら、済んでから（失敗しても）、いちばん新しい待っている版に切り替える（先に古い方を動かすと、その片付け（cleanupOutdatedCaches）が、入れている途中の新しい版のファイル（index.html など）を消し、オフラインで開けなくなるため）。ほかの窓で先に切り替わっていたら、読み直すだけ。
+  - `requestPersistentStorage()`：navigator.storage.persisted() で確かめてから persist() を頼む。残すことになれば true。
+  - `listenInstallPrompt(onAvailable)`：beforeinstallprompt を、モジュールを読み込んだときから聞く（preventDefault で、ブラウザが自分で出す案内は止める）。画面が聞き始める前に来た分も渡す。渡す install() は、確認を1回だけ出して、入れたら true。appinstalled のあとは聞かない。戻り値は、聞くのをやめる関数。
+- **新しい版の確かめ方と切り替え**（updates.ts。ブラウザの API だけで書く。workbox-window は、読み込みから60秒より後に見つかった更新を聞かなくなるので使わない）：ブラウザが開いたとき（ナビゲーション）に確かめる分に加えて、開いている間は60分ごとと、画面に戻ったとき（visibilitychange）に registration.update() を呼ぶ（オフライン・インストール中・確かめている途中は呼ばない）。新しい版はインストールのあと待ち、画面の［更新する］（applyUpdate）で切り替える。アプリのすべての窓を閉じると、ブラウザが待っている版を動かす（次に開いたときは新しい版）。
+- **サービスワーカー**（vite-plugin-pwa の generateSW。設定は vite.pwa.ts。登録は自分で行う：injectRegister: false）：
+  - 先に入れる（precache）：index.html・JS・CSS・マニフェスト・アイコン（11個、約626KB）。1つのファイルが4MiBを超えると、ビルドが失敗する（黙って落とさない）。
+  - ページを開く（ナビゲーション）ときは、先に入れた index.html を返す（navigateFallback。?openExternalBrowser=1 などが付いていても）。
+  - 新しい版は自分では切り替えない（skipWaiting: false）。切り替わったら、開いているページを受け持つ（clientsClaim）。古い版のキャッシュは片付ける（cleanupOutdatedCaches）。
+  - Google Fonts：CSS は stale-while-revalidate、フォントのファイルは cache-first（ステータス 0 と 200 を取っておく。期限は1年、ファイルは400個まで。容量が足りなければ消す）。取っておいたものがなくオフラインのときは、CSS は空、フォントのファイルはほかの取っておいたファイルを返し、その字は端末の字で出す（読み込みのエラーにしない）。はじめて開いたときは、サービスワーカーが受け持つ前に読み込んだフォントを、受け持ったあとに読み直して取っておく（keepEarlyFonts）。
+  - キャッシュの名前は 'kimetoku' で始める（同じ github.io のほかのページとぶつからないように）。ほかのオリジンへの通信は、Google Fonts のほかは取っておかない。
+- **マニフェスト**：name・short_name「きめとく」、description、lang ja、id '/kondate/'（id は start_url の origin を基準に読まれる。'./' だと github.io の直下になり、同じ github.io のほかのアプリと同じ名前になる。あとから変えると、入れたアプリが別のアプリとみなされるので変えない）、start_url・scope './'、display standalone、theme_color・background_color #e7e3db（styles.css の明るいテーマの --door）、categories food・lifestyle、アイコン 192・512（any）と 512（maskable。茶碗は中心から32%の内側。安全な円は40%）。アイコンの PNG は public-pwa/icons/icon.svg から scripts/make-icons.mjs（Playwright）で作り、リポジトリに入れる。
+- **<head>**（vite.pwa.ts のプラグインが PWA の版だけに足す。index.html は共通のまま）：説明、favicon（PNG 32 と SVG）、apple-touch-icon（180。透明なし）、apple-mobile-web-app-capable・mobile-web-app-capable、apple-mobile-web-app-title、apple-mobile-web-app-status-bar-style default、マニフェストへのリンク。claude.ai の Artifact だけで使う meta（claude:…）は外す。URL はすべて相対（base './'。/kondate/ の下でも、ほかのフォルダでも動く）。
+- **保存**：今までと同じ localStorage（記録 `kimetoku:v1` と画面の覚え書き `kimetoku:v1:ui`）。github.io のオリジンは、同じ持ち主のほかの Pages のサイトと共通なので、名前は 'kimetoku:v1' で始める。家族の初回設定を終えたら、データを残すよう頼む（requestPersistentStorage。断られても保存はする）。記録はその端末のそのアプリの中にだけあり、サーバーには送らない。
+- **iPhone・iPad**（本物の端末では、まだ確かめていない）：ホーム画面のアプリは、Safari などのブラウザと記録（localStorage）が別になる。そのため、はじめの画面で、家族を設定するより先にホーム画面に追加するよう案内する。beforeinstallprompt はない（［共有］→［ホーム画面に追加］）。ホーム画面から開いたかは navigator.standalone で見る。アイコンは apple-touch-icon（角の丸めは iOS が付ける）。状態バーは default（ダークモードでの見え方は、本物の端末で確かめる）。
+- **LINE**：LINE の中のブラウザではホーム画面に追加できないので、送るリンクに ?openExternalBrowser=1 を付けて、Safari か Chrome で開かせる（サービスワーカーは、この形でも index.html を返す）。最後の「/」のない /kondate は範囲の外で、Pages の 301 が要る（オフラインでは開けない）。
+- **検査**（scripts/check-pwa.mjs。build:pwa の最後）：マニフェストの項目（id が公開先を指すか）とアイコン（PNG の大きさ）、apple-touch-icon・favicon、<head> の meta、claude:… が残っていないこと、先頭が '/' の URL がないこと（index.html・マニフェスト・先に入れる一覧・CSS）、sw.js が index.html・JS・CSS・マニフェストを先に入れること、ナビゲーションで index.html を返すこと、SKIP_WAITING で切り替えること（自分では切り替えない）、読み込む workbox のファイル、フォントの代わりの返事、合計の大きさ。
+- **公開**（リポジトリの .github/workflows/pages.yml）：既定のブランチ（claude/wizardly-cerf-5uox41）への push（prototype/ かワークフローの変更）と、手で動かす実行（workflow_dispatch）。build：checkout → setup-node（Node 22 のいちばん新しい版。npm のキャッシュ）→ npm ci → typecheck → test → build:pwa → configure-pages → upload-pages-artifact（prototype/dist-pwa）。deploy：github-pages の環境に deploy-pages。権限は contents read・pages write・id-token write。公開は1つずつ（途中の公開は止めない）。はじめに1回、リポジトリの Settings → Pages の Source を「GitHub Actions」にする（しないうちは configure-pages で止まる）。github-pages の環境は既定のブランチからしか公開できないので、既定のブランチを変えたら、ワークフローの branches も変える。
+- **開発**：`npm run dev -- --mode pwa`（vite --mode pwa）で、PWA の版の画面を開ける（サービスワーカーは登録しない）。サービスワーカーの動き（オフライン・新しい版）は、build:pwa の dist-pwa/ を配って確かめる。
+- **残る心配**（低い）：新しい版を待たせたまま、さらに新しい版を入れている途中で、アプリのすべての窓を閉じると、ブラウザが古い方を先に動かし、その片付けで新しい方のファイルが一部消えることがある（同じ precache の入れ物を使うため。画面からは防げない。次の公開で直る）。Workbox は先に入れるファイルを版の印で確かめないので、公開の直後に GitHub の配信が古い index.html を返すと、新しい版が古いページを取っておくことがある（もう一度公開すれば直る）。

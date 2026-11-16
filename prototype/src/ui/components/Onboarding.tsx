@@ -21,6 +21,8 @@ export function Onboarding({
   onStart,
   onDemo,
   onCancel,
+  replaces = !!onCancel,
+  focusTitle = false,
 }: {
   catalog: Catalog;
   today: ISODate;
@@ -28,7 +30,20 @@ export function Onboarding({
   onStart: (input: OnboardingInput, clock: ClockMode) => void;
   onDemo: () => void;
   onCancel?: () => void;
+  /**
+   * 今の家族と記録を置き換えるか（既定は、やめて戻れるとき＝今の状態から開いたとき）。置き換えるときは、デモで始め直す前に
+   * ページの中で確かめ、確認（⑤）に置き換えの注意を出す。はじめの画面から開いたとき（ホーム画面に置く版）は、置き換えない。
+   */
+  replaces?: boolean;
+  /** 開いたら見出しへフォーカスを移す（はじめの画面のボタンから開いたとき。押したボタンは消えるので）。 */
+  focusTitle?: boolean;
 }) {
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const focusOnOpen = useRef(focusTitle);
+  useEffect(() => {
+    // 開いたときだけ（あとで focusTitle が変わっても動かさない）。
+    if (focusOnOpen.current) titleRef.current?.focus({ preventScroll: true });
+  }, []);
   const [step, setStep] = useState(0);
   /** 本物の日付で進める（1週間の試用）。自分の家族で試す人のための既定。 */
   const [calendar, setCalendar] = useState(true);
@@ -124,7 +139,7 @@ export function Onboarding({
       <header className="ob-head">
         <div className="ob-head-row">
           {/* 幅が狭くなって左の案内が隠れたときの、フォーカスの行き先（tabindex=-1）。 */}
-          <h1 className="ob-title" tabIndex={-1}>
+          <h1 className="ob-title" tabIndex={-1} ref={titleRef}>
             はじめの設定
           </h1>
           {onCancel ? (
@@ -166,7 +181,7 @@ export function Onboarding({
               </div>
             </div>
           ) : (
-            <button type="button" className="btn" ref={demoButtonRef} onClick={() => (onCancel ? setDemoConfirm(true) : onDemo())}>
+            <button type="button" className="btn" ref={demoButtonRef} onClick={() => (replaces ? setDemoConfirm(true) : onDemo())}>
               デモの家族で始める
             </button>
           )}
@@ -336,7 +351,7 @@ export function Onboarding({
                 始める前に読んでください
               </p>
               <ul>
-                {onCancel ? <li key="replace">{REPLACE_TEXT}</li> : null}
+                {replaces ? <li key="replace">{REPLACE_TEXT}</li> : null}
                 {noticeLines.map((n) => (
                   <li key={n.text}>{n.text}</li>
                 ))}

@@ -141,3 +141,153 @@
   align-items: baseline;
   gap: 0 4px;
 }
+
+/* ------------------------------------------------------------------ ホーム画面に置く版：はじめの画面 */
+
+/* はじめての起動（まだ何も保存していない）ときに、デモの家族の代わりに出す。縦にスクロールできる。 */
+.welcome {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--paper);
+}
+
+.welcome-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 28px 18px calc(28px + env(safe-area-inset-bottom, 0px));
+}
+
+.welcome-body > * {
+  flex-shrink: 0;
+}
+
+.welcome-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.welcome-names {
+  min-width: 0;
+}
+
+.welcome-kicker {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--kaki-strong);
+  letter-spacing: 0.08em;
+}
+
+.welcome-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.welcome-lead {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.75;
+}
+
+/* ホーム画面への追加の案内。LINE の中・iPhone では「先にすること」なので、柿色の枠で目立たせる。 */
+.install-guide {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--paper-raised);
+}
+
+.install-guide.is-first {
+  border-color: var(--kaki);
+  background: var(--kaki-wash);
+}
+
+.install-guide p {
+  margin: 0;
+}
+
+.install-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.install-steps {
+  margin: 0;
+  padding-left: 1.4em;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.install-guide .install-note {
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+.install-hint {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+.welcome-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.welcome-actions .btn {
+  width: 100%;
+  min-height: 52px;
+  font-size: 16px;
+}
+
+/* フォーカスの行き先にしている見出しと文（tabindex=-1）。ほかの見出しと同じく、枠は出さない。 */
+.welcome-title:focus,
+.install-hint:focus {
+  outline: none;
+}
+
+/* ------------------------------------------------------------------ ホーム画面に置く版：新しい版の知らせ */
+
+/* 画面の上に出す帯。操作は止めない（重ねずに、上に並べる）。 */
+.update-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 12px;
+  background: var(--ai-wash);
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+.update-text {
+  flex: 1 1 14em;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink);
+  /* 最後の行が「す。」だけにならないように。 */
+  text-wrap: pretty;
+}
+
+.update-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}

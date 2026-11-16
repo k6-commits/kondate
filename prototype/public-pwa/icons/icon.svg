@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- きめとくのアイコン（元の絵）：柿色の地に、ご飯を盛った白い茶碗。scripts/make-icons.mjs が、ここから PNG を作る。
+       tile（地）の rx を 0 にすると、角の丸めを OS に任せる版（apple-touch-icon・maskable）になる。
+       mark（茶碗）は、maskable の安全な円（中心から半径 40%）の内側に収める。 -->
+  <rect id="tile" width="512" height="512" rx="112" fill="#b8511c"/>
+  <g id="mark" fill="#fbf8f1">
+    <clipPath id="rice-clip"><rect width="512" height="225"/></clipPath>
+    <g clip-path="url(#rice-clip)">
+      <circle cx="185" cy="223" r="56"/>
+      <circle cx="256" cy="193" r="76"/>
+      <circle cx="327" cy="223" r="56"/>
+    </g>
+    <path d="M92 247H420A164 138 0 0 1 92 247Z"/>
+    <path d="M202 376H310L299 406H213Z"/>
+  </g>
+</svg>
