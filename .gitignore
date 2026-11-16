@@ -1,0 +1,2 @@
+# Netlify の CLI を手元で使ったときに作られるフォルダ（netlify build などの設定の写し。リポジトリには入れない）。
+.netlify/

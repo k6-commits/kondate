@@ -20,7 +20,7 @@
 - **サーバーに `ANTHROPIC_API_KEY` があるときだけ、書き込みの解釈にLLMを使う**（失敗したらルールベースに戻る）。
 - **UI はブラウザだけで動く**（状態は localStorage）。日付は「翌日へ進む」で動かし、1週間の流れを体験できる。本物の家族での1週間の試用では、日付を本物の日付（日本時間）に合わせて進め、週末の質問と試用の記録で数を集める（3-11・3-12・4章・7章）。
 - **LINE とのつなぎ込み**は server/ に置く（webhook の受信と返信）。動かすには、LINE の Messaging API のチャネルが要る。
-- **ホーム画面に置く版（PWA）**：同じ画面を GitHub Pages で配り、試用の家族がスマホのホーム画面に置いて毎日開く（8章）。サーバーも AI も使わない（書き込みはルールだけで読む）。
+- **ホーム画面に置く版（PWA）**：同じ画面を Netlify で配り、試用の家族がスマホのホーム画面に置いて毎日開く（8章）。サーバーも AI も使わない（書き込みはルールだけで読む）。
 
 **作らないもの**：本物の課金、ネイティブアプリ、写真からの在庫登録、特売データ連携、栄養の数値。
 
@@ -43,7 +43,7 @@ prototype/
   scripts/      Artifact として公開するページを作る（make-artifact.mjs：アプリ、make-report.mjs：集計ページ）。
                 PWA の検査（check-pwa.mjs）とアイコンの PNG 作り（make-icons.mjs）
   vite.config.ts / vite.pwa.ts   ビルドの設定（mode：既定・single・report・pwa。vite.pwa.ts は pwa のときだけ読む）
-.github/workflows/pages.yml      PWA を GitHub Pages に公開する（リポジトリの直下）
+netlify.toml                     PWA を Netlify で公開する設定（リポジトリの直下。ビルドの命令・公開するフォルダ・ヘッダー。8章）
 ```
 
 - テストは Vitest。エンジンのテストは、マスタに頼らない小さなフィクスチャで書く（マスタの検査は src/data のテスト）。
@@ -274,6 +274,7 @@ prototype/
   - **試用の記録**：端末の共有の画面（navigator.share）があれば［LINE などで送る］を出す（題「きめとく 試用の記録」と記録の文。閉じただけ（AbortError）なら何も出さず、ほかの失敗は［コピー］を案内する知らせ）。［コピー］は残す。
   - **履歴**：初回設定（#start）から出るとき（始めた・やめた）は、履歴を足さずに置き換える（history.replaceState）。Android の「戻る」で、終えた初回設定の空の画面に戻らない。
   - **保存の順**：家族と記録を保存するときは、画面の覚え書き（日付の進め方など）を先に書く。同じ端末のほかの窓（Android のホーム画面のアプリと Chrome のタブ）が記録の storage イベントで覚え書きを読むときに、古い「デモ」を読んで書き戻さないように。
+  - **Netlify のバッジの分の余白**：Netlify（無料のプラン）がページに足す「Powered by Netlify」のバッジの枠（右下に固定の iframe#nl-badge-frame。高さ 64px）が出ているあいだは、画面全体（.shell）の下を 64px から下の安全領域の分を引いただけあける（vite.pwa.ts が PWA の版の <head> にだけ足す style。:has() で枠があるかを見る。8章）。あけないと、幅 360〜430px で下の安全領域のない端末では、はじめの設定の［次へ］がバッジの下に隠れて押せず（押すと Netlify の案内が開く）、メニューの［メニュー］「買い物リスト」「家族と設定」の真ん中も隠れる。
 
 ## 5. サーバー（server）
 
@@ -329,7 +330,7 @@ prototype/
 
 ## 8. ホーム画面に置く版（PWA）
 
-1週間の試用で、家族がスマホのホーム画面に置いて毎日開く版。claude.ai の Artifact の代わりに、GitHub Pages（https://k6-commits.github.io/kondate/ 。github.io の /kondate/ の下）で配る。サーバーは使わない。画面だけのふるまいは4章の「ホーム画面に置く版（PWA）だけの画面」。
+1週間の試用で、家族がスマホのホーム画面に置いて毎日開く版。claude.ai の Artifact の代わりに、Netlify（https://（プロジェクト名）.netlify.app/ 。このアプリだけのオリジンの一番上。名前のおすすめは kimetoku）で配る。サーバーは使わない。画面だけのふるまいは4章の「ホーム画面に置く版（PWA）だけの画面」。
 
 - **版（target）**：ビルドの mode で決まる。`vite build --mode pwa`（`npm run build:pwa` → dist-pwa/）だけが 'pwa'（src/pwa の APP_TARGET）。ほかの mode（開発用・既定の build・single と Artifact・report）は 'web' で、Artifact のページは今までどおり動く（PWA だけの画面のコードは入るが、target で分けてあり動かない。サービスワーカーとインストールの確認のコードは、APP_TARGET が定数 'web' になるのでビルドから消える）。集計ページ（report）は、どちらにも関係しない。PWA の設定（vite.pwa.ts と vite-plugin-pwa）は、mode が pwa のときだけ読む。
 - **窓口（src/pwa/index.ts）**：画面は、PWA のことをここからだけ使う。関数の形は変えない（画面のテストは vi.mock で差し替える。足したら、そのモックにも足す）。どれもはじめに APP_TARGET を確かめ、'web' では何もしない。投げない。
@@ -347,13 +348,21 @@ prototype/
   - ページを開く（ナビゲーション）ときは、先に入れた index.html を返す（navigateFallback。?openExternalBrowser=1 などが付いていても）。
   - 新しい版は自分では切り替えない（skipWaiting: false）。切り替わったら、開いているページを受け持つ（clientsClaim）。古い版のキャッシュは片付ける（cleanupOutdatedCaches）。
   - Google Fonts：CSS は stale-while-revalidate、フォントのファイルは cache-first（ステータス 0 と 200 を取っておく。期限は1年、ファイルは400個まで。容量が足りなければ消す）。取っておいたものがなくオフラインのときは、CSS は空、フォントのファイルはほかの取っておいたファイルを返し、その字は端末の字で出す（読み込みのエラーにしない）。はじめて開いたときは、サービスワーカーが受け持つ前に読み込んだフォントを、受け持ったあとに読み直して取っておく（keepEarlyFonts）。
-  - キャッシュの名前は 'kimetoku' で始める（同じ github.io のほかのページとぶつからないように）。ほかのオリジンへの通信は、Google Fonts のほかは取っておかない。
-- **マニフェスト**：name・short_name「きめとく」、description、lang ja、id '/kondate/'（id は start_url の origin を基準に読まれる。'./' だと github.io の直下になり、同じ github.io のほかのアプリと同じ名前になる。あとから変えると、入れたアプリが別のアプリとみなされるので変えない）、start_url・scope './'、display standalone、theme_color・background_color #e7e3db（styles.css の明るいテーマの --door）、categories food・lifestyle、アイコン 192・512（any）と 512（maskable。茶碗は中心から32%の内側。安全な円は40%）。アイコンの PNG は public-pwa/icons/icon.svg から scripts/make-icons.mjs（Playwright）で作り、リポジトリに入れる。
-- **<head>**（vite.pwa.ts のプラグインが PWA の版だけに足す。index.html は共通のまま）：説明、favicon（PNG 32 と SVG）、apple-touch-icon（180。透明なし）、apple-mobile-web-app-capable・mobile-web-app-capable、apple-mobile-web-app-title、apple-mobile-web-app-status-bar-style default、マニフェストへのリンク。claude.ai の Artifact だけで使う meta（claude:…）は外す。URL はすべて相対（base './'。/kondate/ の下でも、ほかのフォルダでも動く）。
-- **保存**：今までと同じ localStorage（記録 `kimetoku:v1` と画面の覚え書き `kimetoku:v1:ui`）。github.io のオリジンは、同じ持ち主のほかの Pages のサイトと共通なので、名前は 'kimetoku:v1' で始める。家族の初回設定を終えたら、データを残すよう頼む（requestPersistentStorage。断られても保存はする）。記録はその端末のそのアプリの中にだけあり、サーバーには送らない。
+  - キャッシュの名前は 'kimetoku' で始める（ほかのキャッシュと見分けられるように）。ほかのオリジンへの通信は、Google Fonts のほかは取っておかない。
+- **マニフェスト**：name・short_name「きめとく」、description、lang ja、id '/'（id は start_url の origin を基準に読まれるので、どのホスト名でもオリジンの一番上を指す。Netlify では、このアプリだけのオリジン。家族が入れたあとは変えない。変えると、入れたアプリが別のアプリとみなされる）、start_url・scope './'、display standalone、theme_color・background_color #e7e3db（styles.css の明るいテーマの --door）、categories food・lifestyle、アイコン 192・512（any）と 512（maskable。茶碗は中心から32%の内側。安全な円は40%）。アイコンの PNG は public-pwa/icons/icon.svg から scripts/make-icons.mjs（Playwright）で作り、リポジトリに入れる。
+- **<head>**（vite.pwa.ts のプラグインが PWA の版だけに足す。index.html は共通のまま）：説明、favicon（PNG 32 と SVG）、apple-touch-icon（180。透明なし）、apple-mobile-web-app-capable・mobile-web-app-capable、apple-mobile-web-app-title、apple-mobile-web-app-status-bar-style default、マニフェストへのリンク、Netlify のバッジの分を画面の下にあける style（NETLIFY_BADGE_SPACE_CSS。`body:has(> #nl-badge-frame) .shell` の bottom を max(0px, 64px − 下の安全領域)。4章）。claude.ai の Artifact だけで使う meta（claude:…）は外す。URL はすべて相対（base './'。オリジンの一番上でも、フォルダの下（手元で試すときなど）でも動く）。
+- **保存**：今までと同じ localStorage（記録 `kimetoku:v1` と画面の覚え書き `kimetoku:v1:ui`）。オリジンはこのアプリだけのものだが、Netlify がページに足すバッジの script も、同じオリジンの localStorage に自分の覚え書き（`nl-hud:…`。バッジを隠せるプランで［Hide this badge］を押したとき。無料のプランでは隠せないので書かない）を書くことがあるので、名前は 'kimetoku:v1' で始め、ほかの名前は読まない（storage イベントも、記録の名前のときだけ読み直す）。記録はオリジンごとに分かれるので、家族に配ったあとは、公開先のアドレス（Netlify のプロジェクト名・ドメイン）を変えない（変えると、アプリも記録も別になる）。家族の初回設定を終えたら、データを残すよう頼む（requestPersistentStorage。断られても保存はする）。記録はその端末のそのアプリの中にだけあり、サーバーには送らない。
 - **iPhone・iPad**（本物の端末では、まだ確かめていない）：ホーム画面のアプリは、Safari などのブラウザと記録（localStorage）が別になる。そのため、はじめの画面で、家族を設定するより先にホーム画面に追加するよう案内する。beforeinstallprompt はない（［共有］→［ホーム画面に追加］）。ホーム画面から開いたかは navigator.standalone で見る。アイコンは apple-touch-icon（角の丸めは iOS が付ける）。状態バーは default（ダークモードでの見え方は、本物の端末で確かめる）。
-- **LINE**：LINE の中のブラウザではホーム画面に追加できないので、送るリンクに ?openExternalBrowser=1 を付けて、Safari か Chrome で開かせる（サービスワーカーは、この形でも index.html を返す）。最後の「/」のない /kondate は範囲の外で、Pages の 301 が要る（オフラインでは開けない）。
-- **検査**（scripts/check-pwa.mjs。build:pwa の最後）：マニフェストの項目（id が公開先を指すか）とアイコン（PNG の大きさ）、apple-touch-icon・favicon、<head> の meta、claude:… が残っていないこと、先頭が '/' の URL がないこと（index.html・マニフェスト・先に入れる一覧・CSS）、sw.js が index.html・JS・CSS・マニフェストを先に入れること、ナビゲーションで index.html を返すこと、SKIP_WAITING で切り替えること（自分では切り替えない）、読み込む workbox のファイル、フォントの代わりの返事、合計の大きさ。
-- **公開**（リポジトリの .github/workflows/pages.yml）：既定のブランチ（claude/wizardly-cerf-5uox41）への push（prototype/ かワークフローの変更）と、手で動かす実行（workflow_dispatch）。build：checkout → setup-node（Node 22 のいちばん新しい版。npm のキャッシュ）→ npm ci → typecheck → test → build:pwa → configure-pages → upload-pages-artifact（prototype/dist-pwa）。deploy：github-pages の環境に deploy-pages。権限は contents read・pages write・id-token write。公開は1つずつ（途中の公開は止めない）。はじめに1回、リポジトリの Settings → Pages の Source を「GitHub Actions」にする（しないうちは configure-pages で止まる）。github-pages の環境は既定のブランチからしか公開できないので、既定のブランチを変えたら、ワークフローの branches も変える。
+- **LINE**：LINE の中のブラウザではホーム画面に追加できないので、送るリンクに ?openExternalBrowser=1 を付けて、Safari か Chrome で開かせる（サービスワーカーは、この形でも index.html を返す）。送るリンクは https://（プロジェクト名）.netlify.app/?openExternalBrowser=1 。サイトはオリジンの一番上にあるので、「/」を落としても、ブラウザが https://…/ にして範囲（scope './'）の中で開く。
+- **検査**（scripts/check-pwa.mjs。build:pwa の最後。Netlify のビルドでも走る）：マニフェストの項目（id・start_url・scope が、ホスト名によらずオリジンの一番上を指すか。仮のオリジン2つで読んで確かめる。決まったホスト名には頼らない）とアイコン（PNG の大きさ）、apple-touch-icon・favicon、<head> の meta、Netlify のバッジの分をあける style、claude:… が残っていないこと、先頭が '/' の URL がないこと（index.html・マニフェスト・先に入れる一覧・CSS）、sw.js が index.html・JS・CSS・マニフェストを先に入れること、ナビゲーションで index.html を返すこと、SKIP_WAITING で切り替えること（自分では切り替えない）、読み込む workbox のファイル、フォントの代わりの返事、合計の大きさ。
+- **公開**（リポジトリの直下の netlify.toml。Netlify の Git の連携）：主催者が Netlify の画面で、プロジェクトをこのリポジトリにつなぎ、Production branch を claude/wizardly-cerf-5uox41 にする（1回だけ。手順は README.md の「Netlify での公開」）。push のたびに Netlify が、base の prototype/ で、先に自分の npm install（NPM_FLAGS "--no-save"。package-lock.json を書き換えさせない）→ build の command（npm ci --include=dev → typecheck → test → build:pwa）を行い、通ったら publish の dist-pwa/ を公開する（どれかが失敗したら公開しない）。Node は NODE_VERSION "22"（22 のいちばん新しい版。新しいプロジェクトの既定の 24 にしない。jsdom 31 は 22.22.2 以上が要る。Node.js 22 の保守は 2027年4月30日までなので、それまでに "24" に上げる。jsdom 31 は 24 なら 24.15.0 以上）。netlify.toml の値は、Netlify の画面の値より優先される（画面には何も入れない）。prototype/ に netlify.toml・.nvmrc・.node-version を置かない（置くと、そちらが優先される）。有料のプランの秘密の検出（smart detection）は、公開の前に prototype/ のファイル（テストと文書も）を調べ、鍵らしい文字列があると公開を止めるので、テストや文書に本物らしい形の鍵を書かない（無料のプランにはない）。
+  - **ignore**（本番）：前にビルドが通ったコミット（CACHED_COMMIT_REF）から、prototype/（README.md・DESIGN.md を除く）と netlify.toml が変わっていなければ、ビルドしない（0 で終える。本番の公開は1回ごとにクレジットを使うため）。prototype/server/ だけの変更もビルドする（型の検査とテストに入るため。出力は同じで、家族のアプリに新しい版は届かないが、公開1回分のクレジットを使う）。2つのコミットが同じ（はじめての公開・キャッシュなしの公開・同じコミットの公開し直し）、どちらかが空、前のコミットが見つからないときは、比べずにビルドする（1 で終える。終わり方は 0 か 1 だけ）。Netlify の clone は blob を持たない（--filter=blob:none）が、git diff --quiet は木を比べるだけなので、取りに行かない。Deploy Previews と branch deploys は、いつも止める（ignore "exit 0"。別のオリジンにアプリを作らない）。
+  - **ヘッダー**（[[headers]]。重なる決まりで同じ名前のヘッダーを付けない）：すべて（404 も）に X-Content-Type-Options nosniff・Referrer-Policy strict-origin-when-cross-origin・X-Frame-Options SAMEORIGIN・Content-Security-Policy frame-ancestors 'self'（ほかのサイトの枠では開かせない。同じオリジンの枠は、使わないが許しても困らないので許す。Netlify が足すバッジの枠は srcdoc（HTTP で読まない枠）なので、この2つのヘッダーには関係しない。script や style を縛る CSP は使わない。script-src を縛ると、バッジの枠の中の script も止まる）。sw.js は no-cache、マニフェストは application/manifest+json（Netlify は .webmanifest を application/octet-stream で返す）と no-cache。assets/* と workbox-*.js（名前にハッシュが入る）は public, max-age=31536000, immutable。ほか（index.html・アイコン）は Netlify の既定（public, max-age=0, must-revalidate と ETag）。リダイレクトと SPA の書き換えは置かない（/index.html は 200 で返り、ナビゲーションはサービスワーカーが受ける。書き換えると、見つからない JS にも HTML を返してしまう）。
+  - **Netlify が返す index.html**：*.netlify.app では、Netlify が注釈のコメントや「Powered by Netlify」のバッジ（無料のプランの新しい公開のプロジェクト）・公開前のツールバー（非公開のあいだ）の script を足して返すことがある。サービスワーカーが取っておく index.html にも入りうる（そのときは、dist-pwa/index.html とも、sw.js の revision とも、同じバイトにならない。Workbox は中身を確かめないので、サービスワーカーの動きは変わらない。index.html の中身を照らし合わせる検査を足すときは、この分を除く）。
+    - バッジの script（/.netlify/scripts/hud。同じオリジン。取っておかない）は、srcdoc の枠（iframe#nl-badge-frame）を body の最後に足し、右下に固定で出す（z-index は最大に近い。押せる所は clip-path でバッジの形だけ）。無料のプランでは［Hide this badge］を出さず、覚え書きがあっても隠さない（Netlify の script のとおり。説明のページには、だれでも隠せると書いてあるが、今の script と違う）。ホーム画面のアプリでも、つながっていれば出る。
+    - そのままだと画面の下のボタンに重なるので、枠があるあいだは画面の下をあける（4章の「Netlify のバッジの分の余白」）。Chromium（幅 360・375・390・430・768・1280px。下の安全領域 0・34・80px。暗いテーマ）で、Netlify の本物の script を使い、はじめの設定の［次へ］・［メニュー］・タイル・シートのボタンが押せること、バッジ自身も押せて閉じられること、バッジがないときは下をあけないことを確かめた（本物の端末では、まだ）。
+    - オフラインのときは script が読めず、バッジは出ない（下もあけない）。コンソールに、その読み込みのエラーが1つ出る（アプリのものではない）。
+  - **費用**（無料のプラン）：本番の公開が成功するたびに、月300クレジットのうち15を使う（失敗した公開・元に戻す公開・試し公開は使わない）。使い切ると、次の月の区切りまで、チームのすべてのプロジェクトが止まる。くわしくは README.md。
+  - **止まったとき・消したとき**：サイトがどのパスにも 503・404・ほかの HTML を返しても、ホーム画面に入れたアプリは、取っておいた分で開き、記録もそのまま。新しい版の確かめ（sw.js）は黙って失敗し、知らせも出ない。公開が戻れば、新しい版はふつうに届く（Chromium で、その3つの返事を真似て確かめた）。
 - **開発**：`npm run dev -- --mode pwa`（vite --mode pwa）で、PWA の版の画面を開ける（サービスワーカーは登録しない）。サービスワーカーの動き（オフライン・新しい版）は、build:pwa の dist-pwa/ を配って確かめる。
-- **残る心配**（低い）：新しい版を待たせたまま、さらに新しい版を入れている途中で、アプリのすべての窓を閉じると、ブラウザが古い方を先に動かし、その片付けで新しい方のファイルが一部消えることがある（同じ precache の入れ物を使うため。画面からは防げない。次の公開で直る）。Workbox は先に入れるファイルを版の印で確かめないので、公開の直後に GitHub の配信が古い index.html を返すと、新しい版が古いページを取っておくことがある（もう一度公開すれば直る）。
+- **残る心配**（低い）：新しい版を待たせたまま、さらに新しい版を入れている途中で、アプリのすべての窓を閉じると、ブラウザが古い方を先に動かし、その片付けで新しい方のファイルが一部消えることがある（同じ precache の入れ物を使うため。画面からは防げない。次の公開で直る）。Workbox は先に入れるファイルを版の印で確かめない。Netlify は公開ごとに配信のキャッシュを入れ替えるので、古い index.html が返ることはまずないが、もし返れば、新しい版が古いページを取っておく（もう一度公開すれば直る）。assets/* の1年の immutable は 404 にも付くので、ある版を入れている途中に公開が切り替わり、その版のファイルの 404 をブラウザが取っておくと、あとでその版に戻したときに、その端末だけ入れられないことがある（とても起きにくい。名前にハッシュの入らないファイルは assets/ に置かない）。バッジの分の余白は、Netlify の script の中の枠の id（nl-badge-frame）と高さ（64px）に頼る（公開された決まりではない。変わったら vite.pwa.ts を直す）。

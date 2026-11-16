@@ -1,0 +1,80 @@
+# ホーム画面に置く版（PWA）を Netlify で公開する設定（手順は prototype/README.md の「ホーム画面アプリ（PWA）」）。
+# Netlify のプロジェクトをこのリポジトリにつなぎ、Production branch を claude/wizardly-cerf-5uox41 にすると、
+# そこへ push するたびに、ここに書いたとおりにビルドして公開する。ここの値は、Netlify の画面（Build settings など）の値より優先される。
+# このファイルはリポジトリの直下に置く（prototype/ に netlify.toml を置くと、そちらが代わりに読まれる）。
+
+[build]
+  # 依存を入れてビルドするフォルダ（package.json と package-lock.json がある所）。publish と ignore も、ここから見た場所。
+  base = "prototype"
+  # 公開するのは PWA の版（prototype/dist-pwa）だけ。
+  publish = "dist-pwa"
+  # package-lock.json のとおりに依存を入れ直し（開発用も。ビルドとテストに要る）、型の検査 → テスト → PWA の版のビルドと検査
+  # （check-pwa）。どれか1つでも失敗したら公開しない（家族には前の版が出たまま。失敗した回はクレジットを使わない）。
+  command = "npm ci --include=dev && npm run typecheck && npm test && npm run build:pwa"
+  # 本番の公開の前に走る。0 で終わればビルドしない（「Canceled」）、1 ならビルドする。
+  # 前にビルドが通ったコミット（CACHED_COMMIT_REF）から、prototype/（README.md と DESIGN.md を除く）と netlify.toml の
+  # どれも変わっていなければ、ビルドしない（本番の公開は1回ごとにクレジットを使うので）。prototype/server/ だけを変えた
+  # push もビルドする（アプリの中身は変わらないが、型の検査とテストには server/ も入るので確かめる。クレジットは使う）。
+  # 2つのコミットが同じ（はじめての公開・キャッシュなしの公開・同じコミットの公開し直し）、どちらかが空、前のコミットが
+  # 見つからないときは、比べずにビルドする。終わり方は 0 か 1 だけにする（ほかの値の扱いに頼らない）。
+  ignore = 'if [ -n "$CACHED_COMMIT_REF" ] && [ -n "$COMMIT_REF" ] && [ "$CACHED_COMMIT_REF" != "$COMMIT_REF" ] && git cat-file -e "$CACHED_COMMIT_REF^{commit}" && git diff --quiet "$CACHED_COMMIT_REF" "$COMMIT_REF" -- . ":(top)netlify.toml" ":(exclude)README.md" ":(exclude)DESIGN.md"; then exit 0; else exit 1; fi'
+
+[build.environment]
+  # Node.js 22 のいちばん新しい版でビルドする（Netlify の既定は 24。テストに使う jsdom 31 は 22.22.2 以上が要る）。
+  # Node.js 22 の保守は 2027年4月30日まで。それまでに "24" に上げる（jsdom 31 は 24 なら 24.15.0 以上）。
+  # prototype/ に .nvmrc や .node-version を置くと、そちらが優先されるので置かない。
+  NODE_VERSION = "22"
+  # Netlify がビルドの前に自分で走らせる npm install に、package-lock.json を書き換えさせない
+  # （package.json と食い違っていたら、上の npm ci で止まり、公開しない）。
+  NPM_FLAGS = "--no-save"
+
+# プルリクエストの試し公開（Deploy Previews）と、ほかのブランチの公開（branch deploys）は、ビルドせずに止める
+# （別のアドレスにもう1つアプリができると、家族が迷い、記録も分かれるため）。
+[context.deploy-preview]
+  ignore = "exit 0"
+
+[context.branch-deploy]
+  ignore = "exit 0"
+
+# ---- 返すときに付ける HTTP ヘッダー ----
+# 重なる2つの決まりで、同じ名前のヘッダーを付けないこと（片方の値しか残らない）。
+
+# すべて（見つからないときの 404 も）。アプリを縛らない守りだけ（script や style を縛る CSP は使わない）。
+[[headers]]
+  for = "/*"
+  [headers.values]
+    # ファイルの型をブラウザに推測させない。
+    X-Content-Type-Options = "nosniff"
+    # ほかのサイトには、どこから来たかをオリジン（https://…）までしか伝えない。
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    # ほかのサイトの枠（iframe）の中では開かせない（古いブラウザ向けと、新しいブラウザ向け）。同じオリジンの枠は許す
+    # （このアプリは使わないが、許しても困らない）。Netlify がページに足すバッジの枠は srcdoc（HTTP で読まない枠）なので、
+    # この2つのヘッダーには関係しない。
+    X-Frame-Options = "SAMEORIGIN"
+    Content-Security-Policy = "frame-ancestors 'self'"
+
+# サービスワーカー：毎回サーバーに確かめさせる（新しい版にすぐ気づけるように）。
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+# マニフェスト：Netlify は .webmanifest の型を知らない（application/octet-stream で返す）ので、正しい型を付ける。毎回確かめさせる。
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Content-Type = "application/manifest+json"
+    Cache-Control = "no-cache"
+
+# vite が作る JS・CSS（名前に中身のハッシュが入り、中身が変わると名前も変わる）：1年間、確かめずに使ってよい。
+# 見つからないときの 404 にも付くので、assets/ には、名前にハッシュの入らないファイルを置かない。
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# サービスワーカーが読み込む workbox のファイル（これも名前にハッシュが入る）：1年間、確かめずに使ってよい。
+[[headers]]
+  for = "/workbox-*.js"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

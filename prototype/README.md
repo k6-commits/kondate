@@ -29,7 +29,7 @@ npm run typecheck        # 型の検査
 npm run build            # 画面のビルド（dist/）
 npm run build:artifact   # claude.ai の Artifact として公開できる1枚のページ（dist-artifact/kimetoku.html）
 npm run build:report     # 1週間の試用の集計ページ（主催者用。dist-artifact/kimetoku-report.html）
-npm run build:pwa        # ホーム画面に置く版（PWA。dist-pwa/。GitHub Pages で公開する）
+npm run build:pwa        # ホーム画面に置く版（PWA。dist-pwa/。Netlify で公開する）
 npm run server           # サーバー（http://localhost:8787）
 npm run check            # typecheck・test・build・build:artifact・build:report・build:pwa を全部
 ```
@@ -91,7 +91,7 @@ npm run check            # typecheck・test・build・build:artifact・build:rep
 
 本物の家族（5組ほど）に、それぞれのスマホで1週間使ってもらい、企画書 12章の続行の目安を確かめる。北極星は、週末の質問「今週、自分で考えた夕食は何日？」の答え。
 
-1. 主催者は、アプリをホーム画面に置く版（PWA。下の「ホーム画面アプリ（PWA）」）のリンクで家族に渡す。LINE で送るときは https://k6-commits.github.io/kondate/?openExternalBrowser=1 。集計ページは `npm run build:report` で作り、claude.ai の Artifact として公開する（dist-artifact/kimetoku-report.html。主催者だけが使う）。
+1. 主催者は、アプリをホーム画面に置く版（PWA。下の「ホーム画面アプリ（PWA）」）のリンクで家族に渡す（はじめに、下の「Netlify での公開（主催者）」の手順で公開しておく）。LINE で送るときは https://（プロジェクト名）.netlify.app/?openExternalBrowser=1 。集計ページは `npm run build:report` で作り、claude.ai の Artifact として公開する（dist-artifact/kimetoku-report.html。主催者だけが使う）。
    claude.ai の Artifact のアプリ（`npm run build:artifact` の dist-artifact/kimetoku.html）でも、今までどおり試用できる（AI の読み取りを使うなら、公開するときに capabilities に `sample` を宣言する。下の「AI の読み取り」）。
 2. 家族は、リンクを Safari か Chrome（プライベートブラウズでないもの）で開いてホーム画面に追加し（iPhone・iPad では、家族を設定するより先に）、ホーム画面の「きめとく」の［自分の家族で始める］で自分の家族を設定する。確認（⑤）の「本物の日付で進める（1週間の試用）」は、印を付けたままにする（既定）。月曜の朝に始めるのがよい（夕方に始めても、その日は献立の日に数える。作らなかった日は［作らなかった］で答えてもらう）。
    Artifact のときは、いつものブラウザでリンクを開き、［はじめから設定する］（案内「このプロトタイプについて」か「家族と設定」）で設定する。
@@ -105,17 +105,17 @@ npm run check            # typecheck・test・build・build:artifact・build:rep
 
 ## ホーム画面アプリ（PWA）
 
-家族がスマホのホーム画面に置いて、アプリのように毎日開く版。中身は同じアプリ（エンジンも画面も同じ）で、`npm run build:pwa` で dist-pwa/ に作り、GitHub Pages で公開する。サーバーは使わない。
+家族がスマホのホーム画面に置いて、アプリのように毎日開く版。中身は同じアプリ（エンジンも画面も同じ）で、`npm run build:pwa` で dist-pwa/ に作り、Netlify で公開する（下の「Netlify での公開」）。サーバーは使わない。
 
-- **アドレス**：https://k6-commits.github.io/kondate/ 。LINE で送るときは https://k6-commits.github.io/kondate/?openExternalBrowser=1 （LINE の中のブラウザではなく、Safari か Chrome で開く）。どちらも最後の「/」を落とさない（落とすと、オフラインのときに開けない）。
-- **公開（主催者が最初に1回だけ）**：GitHub のリポジトリの Settings → Pages → Build and deployment → Source を「GitHub Actions」にする。そのあとは、既定のブランチ（今は `claude/wizardly-cerf-5uox41`）に `prototype/` の変更を push するたびに、[.github/workflows/pages.yml](../.github/workflows/pages.yml) が型の検査・テスト・`npm run build:pwa` を行って公開し直す（数分かかる）。
-  - Source を変える前に動いた公開は「Configure Pages」で止まる。変えたあとに、Actions の「Deploy the PWA to GitHub Pages」で［Run workflow］（または止まった回の［Re-run jobs］）を押す。手で公開し直すときも同じ。
-  - 公開できるのは既定のブランチからだけ（github-pages の環境の決まり）。既定のブランチを変えたら、ワークフローの `branches` も変える。
+- **アドレス**：https://（プロジェクト名）.netlify.app/ 。プロジェクト名は、主催者が Netlify で決める（おすすめは kimetoku。空いていれば https://kimetoku.netlify.app/ ）。LINE で送るときは https://（プロジェクト名）.netlify.app/?openExternalBrowser=1 （「/」のあとに ?openExternalBrowser=1 を付ける。LINE の中のブラウザではなく、Safari か Chrome で開く）。
+  - 家族に配ったあとは、プロジェクト名を変えない（独自のドメインにも移さない）。アドレスが変わると、ホーム画面のアプリは別のアプリになり、それまでの記録も新しいアドレスでは出ない（記録はアドレスごとに分かれる。名前を変えると、Netlify は前のアドレスでは配らなくなる）。
+  - 家族に渡すのは、このアドレスだけ。Netlify の画面に出る、公開1回ごとのアドレス（https://（英数字）--（プロジェクト名）.netlify.app/）は、別のアプリになる。
 - **家族のはじめ方**（はじめの画面にも、開いている所に合わせて案内が出る）：
   - iPhone・iPad：Safari（Chrome などでもよい）でリンクを開き、［共有］→［ホーム画面に追加］。ホーム画面の「きめとく」を開いて、［自分の家族で始める］。iPhone・iPad では、ホーム画面のアプリと Safari などのブラウザとで記録が別々になる（ブラウザで設定した家族は、ホーム画面のアプリには出ない）。そのため、家族を設定するより先に、ホーム画面に追加してもらう。
   - Android：Chrome でリンクを開く。はじめの画面に［ホーム画面に追加する］が出たら押す（出ないときは、Chrome のメニューの［ホーム画面に追加］か［アプリをインストール］）。ホーム画面の「きめとく」を開いて、［自分の家族で始める］。
   - LINE の中で開いたとき：ホーム画面に追加できないので、「Safari か Chrome で開いてください」と案内する（［自分の家族で始める］は出さず、デモだけ見られる）。
   - はじめの画面の［デモを見てみる］は、デモの家族（［翌日へ進む］で進める）。何も選ばずに閉じたら、次もはじめの画面から。
+  - 画面の右下（アプリの下）に「Powered by Netlify」の小さな印が出ることがある（公開に使っている Netlify が付ける印。押すと Netlify の案内が開くので、右上の×で閉じる。アプリと記録には関係しない）。
 - **新しい版の届き方**：アプリは、開いたとき・画面に戻ったとき・開いている間は60分ごとに、新しい版を確かめる。見つけても自分では切り替えず、画面の上に「新しい版があります。更新しても、家族と記録はそのままです。」と［更新する］［あとで］を出す。
   - ［更新する］：1回だけ読み直して、新しい版になる（家族と記録はそのまま）。さらに新しい版を入れている途中なら、済むまで「更新しています…」と出る（数秒）。
   - ［あとで］：開いている間は出さない（読み直すと、また出る）。アプリを終了して開き直したときは、知らせなしで新しい版になる。
@@ -126,9 +126,41 @@ npm run check            # typecheck・test・build・build:artifact・build:rep
   - 通知はない（スマホに知らせは届かない。有料版の配信などは、アプリを開いたときにトークで見る）。
   - 記録は、その端末のそのアプリの中にだけある（サーバーにも、ほかの家族のスマホにも送らない）。アプリを消す・サイトのデータを消すと、記録も消える。家族の初回設定のあとに、ブラウザに「データを消さないで」と頼む（断られても、ふだんどおり使える）。
   - LINE の中のブラウザでは、ホーム画面に追加できない（上の案内を出す）。Instagram などのアプリの中のブラウザは見分けていない。
-  - 本物の iPhone・Android・LINE では、まだ確かめていない（Chromium で、インストールできること・オフライン・新しい版の切り替えを確かめた）。
+  - 本物の iPhone・Android・LINE では、まだ確かめていない（Chromium で、インストールできること・オフライン・新しい版の切り替えを確かめた）。本物の Netlify にも、まだ公開していない（netlify.toml は、Netlify の設定の読み込みと、手元での同じ手順で確かめた）。
 - **試用の記録**：「家族と設定」→「データ」の「試用の記録」に［LINE などで送る］が出る（端末の共有の画面で送る。使えない端末では［コピー］だけ）。
-- **開発で試す**：`npm run dev -- --mode pwa` で、PWA の版の画面（はじめの画面・ルールだけの説明など）を開ける。開発用のサーバーでは、サービスワーカーを登録しない。オフラインと新しい版の知らせは、`npm run build:pwa` の dist-pwa/ を配って試す（`npm run preview -- --mode pwa` か、/kondate/ の下に置いた静的なサーバー）。
+- **開発で試す**：`npm run dev -- --mode pwa` で、PWA の版の画面（はじめの画面・ルールだけの説明など）を開ける。開発用のサーバーでは、サービスワーカーを登録しない。オフラインと新しい版の知らせは、`npm run build:pwa` の dist-pwa/ を配って試す（`npm run preview -- --mode pwa` か、dist-pwa/ を一番上に置いた静的なサーバー。URL はすべて相対なので、フォルダの下に置いても動く）。
+
+### Netlify での公開（主催者）
+
+設定は、リポジトリの直下の [netlify.toml](../netlify.toml)。Netlify のプロジェクトをこのリポジトリにつなぐと、`claude/wizardly-cerf-5uox41` に push するたびに、Netlify が prototype/ で `npm ci` → 型の検査 → テスト → `npm run build:pwa`（check-pwa の検査つき）を行い、すべて通ったら dist-pwa/ を公開し直す（数分）。アプリの中身が変わっていれば、家族のアプリに新しい版が届く（上の「新しい版の届き方」）。どれか1つでも失敗したら公開しない（家族には前の版が出たまま）。
+
+- **ビルドしないとき**：prototype/ の README.md・DESIGN.md だけ、または prototype/ の外（netlify.toml を除く）だけを変えた push では、ビルドしない（公開の回数を節約するため。netlify.toml の ignore）。「Deploys」には「Canceled」と出る（GitHub のコミットの横の Netlify の印は、失敗の印になることがある。公開は前の版のまま）。コミットのメッセージに `[skip ci]` か `[skip netlify]` を書いた push も、公開しない（次の push のときに、まとめて公開される）。prototype/server/ だけを変えた push は、ビルドして公開し直す（型の検査とテストに入るため。アプリの中身は同じなので家族のアプリに新しい版は届かないが、クレジットは使う）。
+- **ビルドの決まり**：Node.js は 22 のいちばん新しい版（netlify.toml の NODE_VERSION）。package.json と package-lock.json が食い違っていると、`npm ci` で止まり、公開しない。プルリクエストの試し公開（Deploy Previews）と、ほかのブランチの公開（branch deploys）は、ビルドせずに止める（別のアドレスにアプリができないように）。
+- **Netlify が足すもの**：Netlify は、返す index.html に自分の注釈（コメント）や「Powered by Netlify」のバッジの script を足すことがある（dist-pwa/index.html と同じにはならない）。注釈は、アプリの動きを変えない。
+  - バッジ（無料のプランの新しいプロジェクト。Netlify が順に広げている）は、画面の右下に固定で出て、押すと Netlify の案内（「Build your own site with Netlify」）が開く（右上の×で閉じる）。無料のプランでは、見る人がバッジを隠すことはできない（［Hide this badge］が出ない）。
+  - バッジが出ているあいだは、アプリが画面の下をバッジの高さの分あけて、ボタンに重ならないようにする（あけないと、はじめの設定の［次へ］やメニューのボタンの上にバッジが重なり、押せない）。電波がないときは、バッジは出ない（下もあけない）。Chromium で、Netlify の本物の script を使って確かめた（本物の端末では、まだ）。
+- **主催者が最初に1回だけ**（Netlify の画面。パソコンのブラウザで、app.netlify.com のポップアップを許して行う）：
+  1. netlify.toml の入った版が `claude/wizardly-cerf-5uox41` に push されていることを確かめる（その push の最後のコミットのメッセージに `[skip ci]`・`[skip netlify]` がないこと）。
+  2. https://app.netlify.com/signup で［Continue with GitHub］を押し、このリポジトリ（kondate）を持つ GitHub のアカウントで入る（GitHub の「Authorize Netlify」で許可する）。無料のプラン（Free）は、カードの登録が要らない。
+  3. 「Welcome to Netlify!」の質問に答えて進み、「What would you like to do first?」で「Publish from your Git repository」を選んで進み、［GitHub］を押す（「Projects」の画面に来たときは、［Add new project］を押して、「Import a Git repository」（か「Publish from your Git repository」）の［GitHub］。［Add new project］でメニューが開いたときは、［Import an existing project］→［GitHub］）。AI で作る項目と［Clone］は選ばない（AI はクレジットを使い、［Clone］はリポジトリの写しを作る）。
+  4. GitHub の「Install Netlify」の窓で「Only select repositories」を選び、kondate に印を付けて［Install］（［Install & Authorize］のこともある）。
+  5. 「Pick a repository」で kondate を選ぶ（出ないときは［Configure Netlify on GitHub］で kondate を足す）。「Branch to deploy」は `claude/wizardly-cerf-5uox41`（はじめての人の画面では、欄の代わりに「Deploy … from claude/wizardly-cerf-5uox41 branch …」の文に出る。欄は［Edit build settings］で開く）。「Project name」の欄があれば、決めた名前（kimetoku など）を入れ、「Project name is available」と出るのを確かめる（「Project name is not available」と出たら、ほかの人が使っている。kimetoku-2026 のように、英小文字・数字・「-」で別の名前にする。名前がそのままアドレスになる）。ビルドの設定（「Base directory」「Build command」「Publish directory」など）と「Environment variables」には、何も入れない・変えない（netlify.toml の値が使われる。あとで「Build settings」に「Overridden by netlify.toml. …」と出ることがあるが、それでよい）。
+  6. ［Deploy （入れた名前。入れていなければ kondate）］か［Deploy project］（はじめての人の画面では［Deploy kondate to Netlify］）を押す。左の「Deploys」で、いちばん上が「Published」になるまで待つ（数分。失敗したら、下の「ビルドが失敗したとき」）。
+  7. 名前を確かめる。決めた名前でなければ（名前の欄がなかったときは、でたらめな名前になる）、家族に配る前に「Project configuration」→「General」→「Project details」の［Change project name］で直す。
+  8. 公開する。新しいプロジェクトは、はじめはログインしている主催者しか開けない。「Project overview」で［Make public］を押す（「Project configuration」→「General」→「Visitor access」の「Project visibility」でも変えられる。［Make public］が出ないときは、もう公開されている）。Netlify にログインしていないスマホか、ブラウザのプライベートの窓でアドレスを開き、アプリが出ることを確かめる。
+  9. 続けて、そのスマホで、右下の「Powered by Netlify」のバッジを見る（出ないこともある）。バッジが出ていれば、アプリの画面はバッジの上で終わり、ボタンに重ならないはず。［自分の家族で始める］で、はじめの設定の［次へ］が押せること、［デモを見てみる］で、下の［メニュー］と「買い物リスト」「家族と設定」が押せることを確かめる（重なって押せなければ、家族に配る前に開発の担当に知らせる）。バッジを消したいときは「Project configuration」→「General」→「Powered by Netlify badge」で、「Show the badge on this project」の印を外して保存する（無料のプランでは「Upgrade your team’s plan to hide the badge on this project.」と出て、外せないことがある。有料のプランなら外せる）。
+  10. （しなくてもよい）「Project configuration」→「Developer settings」の「Branches and deploy contexts」で［Configure］を押し、「Branch deploys」と「Deploy Previews」を「None」にして［Save］（netlify.toml で止めているので、しなくても公開はされない。「Deploys」の一覧が本番だけになる）。
+- **公開し直す・元に戻す**（「Deploys」の画面）：
+  - ふつうは push するだけ。手で公開し直すときは［Trigger deploy］→［Deploy project］（前にビルドが通った版のあとに、文書だけを変えた push しかないときは「Canceled」で止まる）。Netlify の設定を変えたあとなど、必ず作り直したいときは［Trigger deploy］→［Deploy project without cache］。
+  - 元に戻す：一覧から前に公開した回を開き、［Publish deploy］→［Publish］（すぐに替わる。クレジットは使わない）。家族のアプリには、ふつうの公開と同じ届き方で戻る（「新しい版があります」が出るか、開き直したときに知らせなしで替わる）。このままだと次の push の公開で置き換わるので、止めておくときは［Lock to stop auto publishing］→［Lock published deploy］（push はビルドだけして、公開しない。止めている間、ビルドしただけで公開しない回はクレジットを使わない。戻すときは［Unlock to start auto publishing］→［Unlock published deploy］）。無料のプランでは、30日より前の公開は消えていることがある。
+- **ビルドが失敗したとき**：公開はされず、家族には前の版が出たまま（失敗した回は、クレジットを使わない）。「Deploys」で「Failed」の回を開き、「Deploy log」を見る（型の検査・テスト・check-pwa のどこで止まったかが出る）。直して push すれば、その版をビルドする。Netlify の一時の不調なら、その回の［Retry］→［Retry with latest branch commit］。エージェントの機能（［Fix with agent］など）は押さない（クレジットを使う）。リポジトリが公開なので、ビルドの記録は、GitHub のコミットの横の Netlify の印からも開ける。
+- **無料のプラン（Free）で気をつけること**（2026年11月に、Netlify の説明で確かめた。変わることがある。2025年9月4日より前に作った Netlify のアカウントは、前の料金の決まりのままで、ここのクレジットの話は当てはまらない）：
+  - クレジットは月に300（無料のプランでは、足りなくなっても足せない。月の区切りは、Netlify のチームを作った日）。本番の公開が成功するたびに15使う（300 ÷ 15 で月に20回まで。配る量などの分だけ、もう少し少ない）。失敗した公開・元に戻す公開・試し公開は使わない。ビルドの時間は数えない。
+  - 配る量（1GB で20）とリクエスト（1万回で2）でも使う（この試用の大きさなら、合わせて月に数クレジットの見込み）。
+  - 50%・75%・100% などで、メールと画面に知らせが来る。残りは、チームの「Usage & billing」で見る。
+  - 使い切ると、次の月の区切りまで、チームのすべてのプロジェクトが止まる（開くと「Site not available」。公開もできない）。push はまとめて行う（文書だけの変更は、上のとおりビルドしない）。
+  - 止まっても、ホーム画面に入れたアプリは、取っておいた分で開いて使える（記録もそのまま。新しい版は届かない。まだ開いたことのない人は開けない）。止まりが解けて公開が戻れば、新しい版はまた届く（Chromium で、止まったときの返事を真似て確かめた）。
+- **試用のあと**：そのままにしてもよい（無料のプランは料金がかからない）。止めるときは「Project configuration」→「Configuration」→「Danger zone」の［Disable project］（設定は残り、［Enable project］で戻せる）。消すときは同じ所の［Delete this project］（プロジェクトの名前を打って確かめる。元に戻せない）。家族のホーム画面のアプリは、家族に消してもらう。
 
 ## しくみ
 
@@ -148,7 +180,7 @@ prototype/
   vite.pwa.ts      PWA の版のビルドの設定（マニフェスト・サービスワーカー・<head> のタグ）
 ```
 
-PWA を GitHub Pages に公開するワークフローは、リポジトリの [.github/workflows/pages.yml](../.github/workflows/pages.yml)。
+PWA を Netlify で公開する設定は、リポジトリの直下の [netlify.toml](../netlify.toml)（上の「Netlify での公開」）。
 
 - **engine**：すべて純粋関数。入力の state を書き換えず、新しい state を返す。乱数は世帯と週から作る seed で決まるので、同じ入力なら同じ献立になる。献立は点数（定番、家族の反応、7日以内の重複、前日のたんぱく源、旬、在庫、調理時間 など）をつけて日に割り当て、足りなければ条件を段階的にゆるめる。安全・旬・7日以内の重複はゆるめない。
 - **data**：日本の家庭の定番料理と、食材（売り場・パック・日持ち・派生原材料を含むアレルゲン・旬・代わりの食材）。
@@ -266,12 +298,12 @@ PWA を GitHub Pages に公開するワークフローは、リポジトリの [
   - 答えのない週末の質問が2週分あるとき、古い週に答えたすぐあとの「やっぱり3」は、古い週の答え直しではなく、新しい週の答えになる（返事は「記録しました」で、週は出ない）。答えた週のボタンは出さないので、古い週の答えは、そのあと直せない。
   - 読み取れなかった書き込みの文で「〇〇」に置き換えるのは、家族の呼び名だけ（呼び名の別の書き方や、ほかの人の名前はそのまま）。文を入れるときは、送る前に見てもらう。
   - 集計ページは、［翌日へ進む］で進めた記録を自動では外さない（印を付けて知らせる）。中身がすべて同じ記録は1つにまとめるが、同じ家族の前の記録は「かもしれません」と知らせるだけ（［外す］で外す）。
-  - LINE でも週末の質問に答えられるが、LINE の世帯はデモの家族なので、試用には画面（Artifact）を使う。LINE では、数だけの答え（「2」）でも、`ANTHROPIC_API_KEY` があれば先に LLM を呼ぶ（結果は使わない。ほかの直前の返事への答えと同じ）。
+  - LINE でも週末の質問に答えられるが、LINE の世帯はデモの家族なので、試用には画面（ホーム画面の版か Artifact）を使う。LINE では、数だけの答え（「2」）でも、`ANTHROPIC_API_KEY` があれば先に LLM を呼ぶ（結果は使わない。ほかの直前の返事への答えと同じ）。
 - **ホーム画面アプリ（PWA）**：
   - AI の読み取り・通知はない。記録は端末ごと（上の「ホーム画面アプリ（PWA）」）。
   - 本物の端末（iPhone の Safari・Android の Chrome・LINE の中のブラウザ）では、まだ確かめていない。iPhone のホーム画面のアプリと Safari とで記録が別になること、iOS 26 の Safari の［共有］の場所、LINE のメニューの言い方、共有の画面から LINE に送れることは、本物の端末で確かめる。
   - 新しい版を待たせたまま、さらに新しい版を入れている途中で、家族がアプリのすべての窓を閉じると、ブラウザが古い方の新しい版を先に動かし、その片付けで新しい方のファイルが一部消えることがある（画面からは防げない。次の公開で直る）。
-  - Workbox は、先に入れるファイルを版の印で確かめない。公開の直後に GitHub の配信が古い index.html を返すと、新しい版が古いページを取っておくことがある（見つけたら、もう一度公開する）。
+  - Workbox は、先に入れるファイルの中身を版の印で確かめない。Netlify は公開ごとに配信のキャッシュを入れ替えるので、古い index.html が返ることはまずないが、Netlify が index.html に足す注釈やバッジの script も、そのまま取っておく（動きは変わらない。index.html の中身を照らし合わせる検査を足すときは、この分を除く）。
   - 開いている間の新しい版の知らせは、画面（App）が動いてから確かめ始める。画面が開く前に壊れる版では、ブラウザが開いたときに確かめる分だけで直る（アプリを終了して開き直す）。
   - 同じ端末で、はじめの画面の窓とほかの窓を同時に開いて家族を設定したときに、日付の進め方の覚え書きを記録より先に書くのは PWA の版だけ（'web' は今までどおり。Artifact では窓を2つ開くことは少ない）。
 - **作らないもの**（DESIGN.md 1章）：本物の課金、ネイティブアプリ、写真からの在庫登録、特売データの連携、栄養の数値。

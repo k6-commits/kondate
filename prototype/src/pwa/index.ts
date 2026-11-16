@@ -1,5 +1,5 @@
 // ホーム画面に置くアプリ（PWA）のための小さな窓口。画面（src/ui）は、PWA のことはここだけを使う。
-// PWA の版（vite の mode が 'pwa'。npm run build:pwa → dist-pwa/、GitHub Pages で公開）だけで働き、
+// PWA の版（vite の mode が 'pwa'。npm run build:pwa → dist-pwa/、Netlify で公開）だけで働き、
 // claude.ai の Artifact の版・開発用の版では何もしない（APP_TARGET が 'web'）。
 //
 // 関数の形（名前・引数・戻り値）は変えないこと。画面の担当は、テストではこのモジュールを vi.mock で差し替える。

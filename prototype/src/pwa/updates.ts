@@ -9,7 +9,7 @@
 // - 新しい版は、インストールのあと待つ（自分では skipWaiting しない）。{ type: 'SKIP_WAITING' } を受けると切り替わる。
 // - 切り替わると、開いているページを受け持つ（clientsClaim）。
 
-/** サービスワーカーのファイル（ページと同じフォルダ。GitHub Pages では /kondate/sw.js）。 */
+/** サービスワーカーのファイル（ページと同じフォルダ。Netlify ではサイトの一番上の /sw.js）。 */
 export const SW_URL = './sw.js';
 /** 受け持つ範囲（ページと同じフォルダより下）。 */
 export const SW_SCOPE = './';

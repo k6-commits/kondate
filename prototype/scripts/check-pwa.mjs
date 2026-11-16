@@ -4,13 +4,14 @@
 //   node scripts/check-pwa.mjs <出力フォルダ>
 //
 // 確かめること：
-// - マニフェスト：名前・説明・言語・start_url/scope（'./'）・id（公開先のフォルダ）・display・色・分類・アイコン（192・512・maskable 512）。
+// - マニフェスト：名前・説明・言語・start_url/scope（'./'）・id・display・色・分類・アイコン（192・512・maskable 512）。
+//   id・start_url・scope が、ホスト名によらずオリジンの一番上を指すか（サイトはオリジンの一番上に置く。Netlify）。
 //   アイコンのファイルがあり、PNG の大きさ（IHDR の幅と高さ）が sizes のとおりか。
 // - sw.js：あるか。index.html とページの JS・CSS を先に入れるか。ナビゲーションで index.html を返すか。
 //   新しい版を勝手に切り替えないか（SKIP_WAITING を受けて切り替える形か）。読み込む workbox のファイルがあるか。
 //   Google Fonts を取っておく決まりに、オフラインで取れないときの代わりの返事（handlerDidError）があるか。
 // - index.html：マニフェストとアイコンのリンク、ホーム画面のアプリの meta、説明。'/…'（先頭が '/'）の URL がないか。
-//   claude.ai の Artifact だけで使う meta（claude:…）が残っていないか。
+//   claude.ai の Artifact だけで使う meta（claude:…）が残っていないか。Netlify のバッジの分を画面の下にあける style があるか。
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,8 +22,12 @@ const OUT = resolve(process.argv[2] ?? join(ROOT, 'dist-pwa'));
 const NAME = 'きめとく';
 const DESCRIPTION = '平日の夕食を、家族の定番から先に決めておく献立アプリ（試用版）';
 const THEME_COLOR = '#e7e3db';
-/** GitHub Pages の公開先。マニフェストの id（ホーム画面のアプリを見分ける名前）が、ここを指すかを確かめる。 */
-const PAGES_URL = 'https://k6-commits.github.io/kondate/';
+/**
+ * 公開先のオリジンの例（仮の名前。本物は Netlify のプロジェクト名で決まる：https://（プロジェクト名）.netlify.app）。
+ * サイトはオリジンの一番上に置く。マニフェストの id（ホーム画面のアプリを見分ける名前）・start_url・scope が、
+ * どちらの仮の名前でもオリジンの一番上を指すかを確かめる（ホスト名を書き込んだ id や、フォルダを指す id は通らない）。
+ */
+const SAMPLE_ORIGINS = ['https://kimetoku.example', 'https://another-name.example'];
 const MANIFEST_ICONS = [
   { sizes: '192x192', purpose: 'any' },
   { sizes: '512x512', purpose: 'any' },
@@ -116,7 +121,8 @@ for (const tag of metas) {
   if ((attr(tag, 'name') ?? '').startsWith('claude:')) problems.push(`index.html：claude.ai の Artifact だけで使う meta が残っています：${tag}`);
 }
 
-// '/…' や '//…' で始まる URL（サイトの一番上からの URL）は、/kondate/ の下に置くと壊れる。
+// '/…' や '//…' で始まる URL（サイトの一番上・ほかのホストからの URL）は使わない。URL はすべて相対にしておき、
+// フォルダの下に置いても（手元で試すときなど）動くようにする。
 for (const m of html.matchAll(/\b(?:src|href|content)\s*=\s*(["'])(\/[^"']*)\1/gi)) {
   problems.push(`index.html：先頭が '/' の URL があります：${m[2]}`);
 }
@@ -140,6 +146,13 @@ for (const tag of icons) {
   const sizes = attr(tag, 'sizes');
   if (sizes && /^\d+x\d+$/.test(sizes)) checkPng('favicon', href, sizes);
   else if (!fileFor(href) || !existsSync(fileFor(href))) problems.push(`favicon：${href} がありません（相対の URL で）`);
+}
+
+// Netlify（無料のプラン）が右下に足すバッジの枠（#nl-badge-frame）が出ているあいだ、画面（.shell）の下をあける style
+// （vite.pwa.ts の NETLIFY_BADGE_SPACE_CSS）。ないと、はじめの設定の［次へ］などにバッジが重なる。
+const styles = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map((m) => m[1]);
+if (!styles.some((css) => /body:has\(>\s*#nl-badge-frame\)\s+\.shell\s*\{[^}]*\bbottom\s*:/.test(css))) {
+  problems.push('index.html：Netlify のバッジ（#nl-badge-frame）の分を画面の下にあける <style> がありません（vite.pwa.ts の NETLIFY_BADGE_SPACE_CSS）');
 }
 
 // ページが読み込む JS・CSS（vite が付けたもの）。
@@ -182,17 +195,33 @@ if (manifest) {
   for (const [key, value] of Object.entries(expect)) {
     if (manifest[key] !== value) problems.push(`マニフェスト：${key} が「${value}」ではありません（${JSON.stringify(manifest[key])}）`);
   }
-  // id は、マニフェストの場所ではなく start_url の origin（https://k6-commits.github.io）を基準に読まれる。'./' や '/' だと
-  // origin の一番上になり、同じ github.io に置いたほかのアプリと同じ名前になる。公開先のフォルダ（/kondate/）を指すこと。
+  // サイトはオリジンの一番上に置く（Netlify）。start_url と scope はマニフェストの場所を基準に、id はマニフェストの場所ではなく
+  // start_url の origin を基準に読まれる。どれも、ホスト名によらずオリジンの一番上（https://（ホスト名）/）を指すこと。
   if (typeof manifest.id !== 'string' || manifest.id === '') {
     problems.push('マニフェスト：id がありません');
-  } else if (typeof manifest.start_url === 'string') {
-    const deployedManifest = new URL(relative(OUT, manifestPath).split(/[\\/]/).join('/'), PAGES_URL);
-    const start = new URL(manifest.start_url, deployedManifest);
-    const id = new URL(manifest.id, start.origin);
-    if (id.href !== PAGES_URL) {
-      problems.push(`マニフェスト：id「${manifest.id}」は ${id.href} を指します（公開先 ${PAGES_URL} を指すこと。id は start_url の origin を基準に読まれます）`);
+  } else if (typeof manifest.start_url === 'string' && typeof manifest.scope === 'string') {
+    const manifestRel = relative(OUT, manifestPath).split(/[\\/]/).join('/');
+    const wrong = new Map();
+    try {
+      for (const origin of SAMPLE_ORIGINS) {
+        const root = `${origin}/`;
+        const deployedManifest = new URL(manifestRel, root);
+        const start = new URL(manifest.start_url, deployedManifest);
+        const resolved = {
+          start_url: start,
+          scope: new URL(manifest.scope, deployedManifest),
+          id: new URL(manifest.id, start.origin),
+        };
+        for (const [key, url] of Object.entries(resolved)) {
+          if (url.href === root || wrong.has(key)) continue;
+          const basis = key === 'id' ? ' start_url の origin ' : 'マニフェストの場所';
+          wrong.set(key, `${key}「${manifest[key]}」は、公開先が ${root} のとき ${url.href} を指します（オリジンの一番上を指すこと。${key} は${basis}を基準に読まれます）`);
+        }
+      }
+    } catch (error) {
+      wrong.set('url', `id・start_url・scope を URL として読めません（${error.message}）`);
     }
+    for (const message of wrong.values()) problems.push(`マニフェスト：${message}`);
   }
   const categories = Array.isArray(manifest.categories) ? manifest.categories : [];
   for (const category of ['food', 'lifestyle']) {
