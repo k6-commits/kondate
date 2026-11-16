@@ -178,7 +178,7 @@ describe('プロンプト', () => {
   it('パラメータ：モデル・max_tokens・effort・出力の形', () => {
     const req = buildRequest({ text: '今日は無理', today: TODAY, members }, catalog, 'claude-test-model');
     expect(req.model).toBe('claude-test-model');
-    // Opus 5.5 は思考を止められず、思考も max_tokens に数えるので、余裕をとる
+    // 既定のモデルは思考を止められず、思考も max_tokens に数えるので、余裕をとる
     expect(req.max_tokens).toBe(4096);
     expect(LLM_MAX_TOKENS).toBe(4096);
     expect(req.output_config.effort).toBe('low');

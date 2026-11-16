@@ -33,7 +33,7 @@ import { maskableNickname, toHiragana, toKatakana } from './names';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
 /**
- * 出力の上限。Opus 5.5 は思考を止められず、思考のトークンも max_tokens に数えるので、
+ * 出力の上限。既定のモデルは思考を止められず、思考のトークンも max_tokens に数えるので、
  * 出力の JSON（最大5件）だけを見た大きさより余裕をとる（課金は使った分だけ）。
  */
 export const LLM_MAX_TOKENS = 4096;
