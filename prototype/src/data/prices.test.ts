@@ -42,6 +42,11 @@ describe('PRICES', () => {
     }
   });
 
+  it('leaves no shopping-list ingredient of the default catalog (standard, world and extras) without a price', () => {
+    const missing = defaultCatalog.ingredients.filter((i) => !i.pantry && !(i.price && i.price.yen > 0 && i.price.per > 0)).map((i) => i.id);
+    expect(missing).toEqual([]);
+  });
+
   it('is attached to the ingredients of the default catalog', () => {
     for (const i of priced) expect(defaultCatalog.ingredientById.get(i.id)?.price, i.id).toEqual(PRICES[i.id]);
   });
