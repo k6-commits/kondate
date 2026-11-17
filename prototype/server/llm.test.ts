@@ -7,6 +7,7 @@ import {
   COMMAND_TYPES,
   DEFAULT_MODEL,
   FALLBACK_BETA,
+  supportsFallbacks,
   LLM_MAX_RETRIES,
   LLM_MAX_TOKENS,
   LLM_TIMEOUT_MS,
@@ -374,6 +375,20 @@ describe('公式SDK のクライアントで（fetch をモックして、ネッ
     expect(config.format.type).toBe('json_schema');
     expect(JSON.stringify(body.messages)).toContain('member_2が鶏むねが安いって');
     expect(JSON.stringify(body)).not.toContain('パパ');
+  });
+
+  it('Haiku を選んだときは、断られたときの別のモデル（fallbacks とそのベータ）を送らない', async () => {
+    const out = { commands: [cmd({ type: 'show_week' })] };
+    const { client, requests } = sdkWith(() => ({ status: 200, json: message('end_turn', JSON.stringify(out)) }));
+    const llm = createLlmInterpreter({ client, catalog, model: 'claude-haiku-5-5' });
+    expect(await llm.interpret({ text: '今週の献立は？', today: TODAY, members })).toEqual([{ type: 'show_week' }]);
+    const { headers, body } = requests[0];
+    expect(body.model).toBe('claude-haiku-5-5');
+    expect(body).not.toHaveProperty('fallbacks');
+    expect(headers.get('anthropic-beta') ?? '').not.toContain(FALLBACK_BETA);
+    expect(supportsFallbacks('claude-haiku-5-5')).toBe(false);
+    expect(supportsFallbacks('claude-opus-5-5')).toBe(true);
+    expect(supportsFallbacks('claude-sonnet-5-5')).toBe(true);
   });
 
   it('拒否・形の違う JSON・API のエラーは null（再試行は1回まで）', async () => {

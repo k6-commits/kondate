@@ -300,6 +300,14 @@ export function buildUserContent(input: InterpretInput): string {
   ].join('\n');
 }
 
+/**
+ * 断られたときに別のモデルが続ける仕組み（server-side fallback）を使えるモデルか。Haiku にはこの仕組みがないので、
+ * KIMETOKU_MODEL で Haiku を選んだときは送らない（送ると、呼び出しが断られるおそれがある）。
+ */
+export function supportsFallbacks(model: string): boolean {
+  return !/haiku/i.test(model);
+}
+
 /** beta.messages.parse に渡すパラメータ。断られたら、既定の別のモデルが同じ呼び出しの中で続ける（fallbacks: 'default'）。 */
 export function buildRequest(input: InterpretInput, catalog: Catalog, model: string) {
   return {
@@ -308,8 +316,7 @@ export function buildRequest(input: InterpretInput, catalog: Catalog, model: str
     system: [{ type: 'text' as const, text: buildSystemPrompt(catalog), cache_control: { type: 'ephemeral' as const } }],
     messages: [{ role: 'user' as const, content: buildUserContent(input) }],
     output_config: { format: OUTPUT_FORMAT, effort: 'low' as const },
-    betas: [FALLBACK_BETA],
-    fallbacks: 'default' as const,
+    ...(supportsFallbacks(model) ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {}),
   };
 }
 
