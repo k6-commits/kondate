@@ -65,6 +65,8 @@ export const pwaOptions: Partial<VitePWAOptions> = {
     // ページを開く（ナビゲーション）ときは、URL に ?openExternalBrowser=1（LINE が外のブラウザで開くときに付ける）などが
     // 付いていても、先に入れた index.html を返す。
     navigateFallback: 'index.html',
+    // /api/ は Netlify の関数（AI の読み取り。/api/parse）。ブラウザで直接開いたときも、アプリではなく関数の返事を見せる。
+    navigateFallbackDenylist: [/^\/api\//],
     cleanupOutdatedCaches: true,
     // 新しい版は、家族が［更新する］を押すまで待たせる（入力の途中で読み直さない）。押したら SKIP_WAITING を送る。
     skipWaiting: false,
