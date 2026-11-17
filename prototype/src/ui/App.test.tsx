@@ -627,7 +627,9 @@ describe('初回設定', () => {
     fireEvent.click(screen.getByLabelText(/卵：重い/));
     fireEvent.click(screen.getByRole('button', { name: 'できた' }));
     fireEvent.click(screen.getByRole('button', { name: '次へ' }));
-    expect(screen.getByRole('heading', { name: /買い物に行く曜日/ })).toBeTruthy();
+    // ②は、食事と買い物（買い物は、何日分まとめて買うかで選ぶ。既定は週2回＝日・水）
+    expect(screen.getByRole('heading', { name: '② 食事と買い物' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '買い物は？' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '次へ' }));
     fireEvent.change(screen.getByLabelText('料理の名前で探す'), { target: { value: '生姜焼き' } });
     fireEvent.click(screen.getByRole('button', { name: /豚の生姜焼き/ }));

@@ -250,6 +250,28 @@ export function cls(...names: (string | false | null | undefined)[]): string {
   return names.filter(Boolean).join(' ');
 }
 
+/** 曜日の並び（'日・水'）。並びは渡した順のまま。 */
+export function weekdaysText(weekdays: readonly Weekday[]): string {
+  return weekdays.map((w) => WEEKDAY_JA[w]).join('・');
+}
+
+/**
+ * 1週間の食費の目安の言い方（予算の選び方・確認の画面）。1万円より少なければ '5,000円'、ちょうど万なら '1万円'、
+ * そのほかは '1万3,000円'。
+ */
+export function budgetText(yen: number): string {
+  const n = Math.round(yen);
+  if (n < 10000) return `${n.toLocaleString('ja-JP')}円`;
+  const man = Math.floor(n / 10000);
+  const rest = n % 10000;
+  return rest === 0 ? `${man}万円` : `${man}万${rest.toLocaleString('ja-JP')}円`;
+}
+
+/** 金額をそのまま（'15,000円'）。食費の目安と並べて比べるときに使う。 */
+export function plainYen(yen: number): string {
+  return `${Math.round(yen).toLocaleString('ja-JP')}円`;
+}
+
 /** ShoppingItem.label（'鶏もも肉 1パック（約300g）'）から量の部分だけを取り出す。 */
 export function quantityOf(name: string, label: string): string {
   if (label.startsWith(`${name} `)) return label.slice(name.length + 1);

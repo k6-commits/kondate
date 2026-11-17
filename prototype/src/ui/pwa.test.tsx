@@ -302,7 +302,9 @@ describe('はじめの画面（ホーム画面に置く版で、まだ何も保�
     fireEvent.change(screen.getByLabelText('ニックネーム'), { target: { value: 'あきこ' } });
     fireEvent.click(screen.getByRole('button', { name: 'できた' }));
     for (let i = 0; i < 3; i++) fireEvent.click(screen.getByRole('button', { name: '次へ' }));
-    expect(screen.getByRole('heading', { name: '④ 無料と有料、どちらで試しますか？' })).toBeTruthy();
+    // ④は、予算とプラン（プランは、その中の「無料と有料、どちらで試しますか？」）
+    expect(screen.getByRole('heading', { name: '④ 予算とプラン' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '無料と有料、どちらで試しますか？' })).toBeTruthy();
     expect(screen.getByText(PLAN_NOTE.pwa)).toBeTruthy();
     expect(screen.queryByText(PLAN_NOTE.web)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '次へ' }));

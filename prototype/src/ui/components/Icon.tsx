@@ -16,6 +16,7 @@ export type IconName =
   | 'copy'
   | 'bell'
   | 'plus'
+  | 'minus'
   | 'close'
   | 'edit'
   | 'trash'
@@ -80,6 +81,7 @@ const PATHS: Record<IconName, ReactNode> = {
     </>
   ),
   plus: <path d="M12 5v14M5 12h14" />,
+  minus: <path d="M5 12h14" />,
   close: <path d="M6 6l12 12M18 6 6 18" />,
   edit: <path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4" />,
   trash: <path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13" />,

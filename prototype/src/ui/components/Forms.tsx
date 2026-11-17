@@ -1,7 +1,7 @@
 // 初回設定と「家族と設定」で共通の入力部品。
 import { useMemo, useState } from 'react';
 import type { AgeBand, AllergenId, Catalog, Dish, Exclusion, Household, Ingredient, Protein, TextExclusionTargets, Weekday } from '../../engine';
-import { AGE_BAND_LABEL, PROTEIN_LABEL, WEEKDAY_JA, allergensOfText, checkDishSafety, textExclusionTargets } from '../../engine';
+import { AGE_BAND_LABEL, PROTEIN_LABEL, WEEKDAY_JA, allergensOfText, checkDishSafety, cuisineLevel, textExclusionTargets } from '../../engine';
 import type { MemberRole } from '../lib';
 import { ROLE_LABEL, ROLE_ORDER, WEEKDAYS_MON_FIRST, cls, normalizeForSearch } from '../lib';
 import { Icon } from './Icon';
@@ -117,6 +117,82 @@ export function Segmented<T extends string | number>({
           {o.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/**
+ * 短い選択肢から1つを選ぶ（国の料理・辛さ・朝ごはん・お昼・調理時間）。見た目は Segmented と同じで、中身は radio
+ * （読み上げで「よく出す、ラジオボタン、1/3」と伝わり、矢印キーで選び替えられる）。value がどれにも当たらなければ、どれも選ばない。
+ * even：選択肢の幅をそろえる（国の料理の行で、列をそろえるため）。名前は label か、見出しの id（labelledBy）で付ける。
+ */
+export function RadioSeg<T extends string | number>({
+  name,
+  label,
+  labelledBy,
+  options,
+  value,
+  onChange,
+  even = false,
+}: {
+  name: string;
+  label?: string;
+  labelledBy?: string;
+  options: readonly { value: T; label: string }[];
+  value: T | null;
+  onChange: (next: T) => void;
+  even?: boolean;
+}) {
+  return (
+    <div
+      className={cls('seg', 'seg--radio', even && 'seg--even')}
+      role="radiogroup"
+      aria-label={labelledBy ? undefined : label}
+      aria-labelledby={labelledBy}
+    >
+      {options.map((o) => {
+        const on = o.value === value;
+        return (
+          <label key={String(o.value)} className={cls('seg-opt', on && 'is-on')}>
+            <input type="radio" name={name} value={String(o.value)} checked={on} onChange={() => onChange(o.value)} />
+            <span>{o.label}</span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * 人数を1つずつ増やす・減らす（お弁当・お昼の人数）。押せる所は 44px。端の数では押しても変わらない（押せない印は aria-disabled。
+ * disabled にすると、押したボタンからフォーカスが外れるため）。今の数は読み上げにも伝える。
+ */
+export function CountStepper({
+  labelledBy,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  labelledBy: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (next: number) => void;
+}) {
+  const atMin = value <= min;
+  const atMax = value >= max;
+  return (
+    <div className="count-stepper" role="group" aria-labelledby={labelledBy}>
+      <button type="button" className="btn count-btn" aria-label="1人減らす" aria-disabled={atMin} onClick={() => !atMin && onChange(value - 1)}>
+        <Icon name="minus" size={20} />
+      </button>
+      <span className="count-value num" aria-live="polite">
+        {value}人分
+      </span>
+      <button type="button" className="btn count-btn" aria-label="1人増やす" aria-disabled={atMax} onClick={() => !atMax && onChange(value + 1)}>
+        <Icon name="plus" size={20} />
+      </button>
     </div>
   );
 }
@@ -526,17 +602,25 @@ export function DishPicker({
   onChange: (ids: string[], customNames: string[]) => void;
 }) {
   const [query, setQuery] = useState('');
+  const [showHidden, setShowHidden] = useState(false);
   const q = normalizeForSearch(query);
   const safety = useMemo(() => {
     const map = new Map<string, 'ok' | 'excluded' | 'uncertain'>();
     for (const d of catalog.dishes) map.set(d.id, checkDishSafety(d, household, catalog).status);
     return map;
   }, [catalog, household]);
+  // 国の料理の好み（入力中の世帯の設定）。「よく出す」「ときどき」の国の料理を先に出し、「出さない」にした国の料理は、
+  // ふだんの一覧から外して下にたたむ（献立は定番を好みより優先するので、定番には選べる）。
+  const levelOf = (d: Dish) => cuisineLevel(household.settings, d.genre);
+  const rankOf = (d: Dish) => ({ often: 0, sometimes: 1, never: 2 })[levelOf(d)];
 
   const matches = q
     ? catalog.dishes
         .filter((d) => normalizeForSearch(d.name).includes(q))
-        .sort((a, b) => Number(b.role === 'main') - Number(a.role === 'main') || a.name.length - b.name.length)
+        .sort(
+          (a, b) =>
+            Number(b.role === 'main') - Number(a.role === 'main') || rankOf(a) - rankOf(b) || a.name.length - b.name.length,
+        )
     : [];
   const exact = q && catalog.dishes.some((d) => normalizeForSearch(d.name) === q);
   const customTaken = customNames.some((n) => normalizeForSearch(n) === q);
@@ -547,7 +631,8 @@ export function DishPicker({
   const toggle = (id: string) =>
     onChange(selectedIds.includes(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id], customNames);
 
-  const dishChip = (d: Dish) => {
+  /** neverNote：「出さない」にした国の料理に、そう添える（名前で探したとき。たたんだ一覧の中では添えない）。 */
+  const dishChip = (d: Dish, neverNote = false) => {
     const s = safety.get(d.id) ?? 'ok';
     const on = selectedIds.includes(d.id);
     return (
@@ -562,13 +647,17 @@ export function DishPicker({
         {on ? <Icon name="check" size={15} /> : null}
         {d.name}
         {s === 'excluded' ? <span className="chip-flag">除外</span> : s === 'uncertain' ? <span className="chip-flag">要確認</span> : null}
+        {neverNote && levelOf(d) === 'never' ? <span className="chip-note">出さない国</span> : null}
       </button>
     );
   };
 
+  const mains = catalog.dishes.filter((d) => d.role === 'main');
+  const hiddenMains = mains.filter((d) => levelOf(d) === 'never');
   const groups = PROTEIN_ORDER.map((p) => ({
     protein: p,
-    dishes: catalog.dishes.filter((d) => d.role === 'main' && d.protein === p),
+    // 並びは、よく出す国 → ときどきの国の順（同じなら、マスタの順）。
+    dishes: mains.filter((d) => d.protein === p && levelOf(d) !== 'never').sort((a, b) => rankOf(a) - rankOf(b)),
   })).filter((g) => g.dishes.length > 0);
 
   return (
@@ -624,7 +713,7 @@ export function DishPicker({
 
       {q ? (
         <div className="results" role="group" aria-label="料理の候補">
-          {matches.slice(0, 16).map(dishChip)}
+          {matches.slice(0, 16).map((d) => dishChip(d, true))}
           {!exact && !customTaken ? (
             <button
               type="button"
@@ -652,9 +741,25 @@ export function DishPicker({
           {groups.map((g) => (
             <section key={g.protein} className="dish-group" aria-label={PROTEIN_LABEL[g.protein]}>
               <h4 className="dish-group-title">{g.protein === 'none' ? 'そのほか' : PROTEIN_LABEL[g.protein]}</h4>
-              <div className="chip-grid">{g.dishes.map(dishChip)}</div>
+              <div className="chip-grid">{g.dishes.map((d) => dishChip(d))}</div>
             </section>
           ))}
+          {hiddenMains.length > 0 ? (
+            <div className="dish-hidden">
+              <button type="button" className="text-btn" aria-expanded={showHidden} onClick={() => setShowHidden(!showHidden)}>
+                出さない国の料理（{hiddenMains.length}品）
+                <Icon name={showHidden ? 'chevronUp' : 'chevronDown'} size={16} />
+              </button>
+              {showHidden ? (
+                <>
+                  <p className="hint">「国の料理」で「出さない」にした国の料理です。定番に選んだ料理は、献立に出します。</p>
+                  <div className="chip-grid" role="group" aria-label="出さない国の料理">
+                    {hiddenMains.map((d) => dishChip(d))}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       )}
       <p className="hint">

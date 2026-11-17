@@ -1,16 +1,57 @@
 // 家族と設定。いちばん上に注意（householdNotices）を必ず出す。
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AppState, Catalog, Exclusion, Household, HouseholdSettings, Member } from '../../engine';
-import { checkDishSafety, findDish, formatTrialReport, householdNotices, trialReport } from '../../engine';
+import type { AppState, Catalog, Exclusion, Household, HouseholdSettings, ISODate, Member, Weekday } from '../../engine';
+import {
+  BREAKFAST_LABEL,
+  addDays,
+  CUISINE_LABEL,
+  CUISINE_LEVEL_LABEL,
+  LUNCH_LABEL,
+  MEALS_LABEL,
+  SPICE_LABEL,
+  budgetOf,
+  checkDishSafety,
+  cuisinesOf,
+  findDish,
+  formatTrialReport,
+  householdNotices,
+  lunchStyleOf,
+  mealsOf,
+  paceOf,
+  paceWeekdays,
+  spiceOf,
+  trialReport,
+  weekCost,
+  weekStartOf,
+} from '../../engine';
 import type { AppTarget } from '../../pwa';
 import type { AiMode, AiStatus } from '../ai';
 import { PWA_AI_PRIVACY_TEXT, PWA_AI_SERVER_TEXT, RULES_ONLY_TEXT, aiModesFor } from '../ai';
-import { SERVINGS_NOTE, SIDE_POLICY, cls, hasPartialServings, nextMemberId, normalizeForSearch, planToast } from '../lib';
+import { SERVINGS_NOTE, SIDE_POLICY, budgetText, cls, hasPartialServings, nextMemberId, normalizeForSearch, planToast } from '../lib';
 import { parseImportedState } from '../storage';
 import type { ClockMode } from '../storage';
 import type { MemberDraft } from './Forms';
-import { MemberEditor, PlanPicker, Segmented, WeekdayPicker, emptyMemberDraft, exclusionLine, memberLine } from './Forms';
+import { MemberEditor, PlanPicker, RadioSeg, Segmented, WeekdayPicker, emptyMemberDraft, exclusionLine, memberLine } from './Forms';
 import { Icon } from './Icon';
+import type { MealsValue } from './SettingsFields';
+import {
+  BudgetPicker,
+  COOK_TIME_OPTIONS,
+  CUISINE_NOTE,
+  CostMeter,
+  CuisineRows,
+  MealsFields,
+  PRICE_NOTE,
+  SPICE_NOTE,
+  SPICE_OPTIONS,
+  ShoppingPaceFields,
+  cookTimeDetail,
+  cookTimeOf,
+  extrasLabelOf,
+  mealsValueOf,
+  paceLabel,
+  withCookTime,
+} from './SettingsFields';
 import { Sheet } from './Sheet';
 
 export interface HouseholdChange {
@@ -20,9 +61,15 @@ export interface HouseholdChange {
   /**
    * 家族の変更（人を加える・外す・年齢帯や除外を直す）。作り直しは、今の家族で出せなくなった日だけにする
    * （エンジンの regenerate_week の keepSafe。今の家族でも出せる日は、だれが決めた日でも残し、人数と買い物リストは直す）。
-   * 献立の曜日・買い物の曜日・ラク日・新しい料理・副菜・要確認の変更では使わない（週を作り直す）。
+   * 献立の曜日・買い物の曜日・ラク日・新しい料理・副菜・要確認・国の料理・辛さ・食費の目安・調理時間の変更では使わない
+   * （週を作り直す）。
    */
   keepSafe?: boolean;
+  /**
+   * 作り直さずに、買い物リストだけを作り直す（regenerate が false のとき）。食事（お弁当・朝ごはん・お昼）と、その人数の変更。
+   * 夕食の献立はそのままで、買い物リストに足す・外す物だけが変わる。
+   */
+  reshop?: boolean;
 }
 
 const MAX_MEMBERS = 6;
@@ -60,6 +107,12 @@ export const DATA_TEXT = {
     pwa: '本物の支払いはありません。有料の動きも試せます。',
   },
 } as const;
+
+/**
+ * 国の料理をまだ選んでいない世帯（前の版の記録・LINE の世帯）への一言。選ぶまでは、前からの料理だけで献立を作る
+ * （エンジンは、cuisines のない世帯に世界の料理を出さない）。
+ */
+export const CUISINES_UNSET_NOTE = 'まだ選んでいません。いまは前からの料理だけで献立を作っています（選ぶと、新しい国の料理も入ります）。';
 
 /** 試用の記録を送るときの題（navigator.share の title）。 */
 export const SHARE_TITLE = 'きめとく 試用の記録';
@@ -215,6 +268,40 @@ export function HouseholdSheet({
   const regen = (toast: string): HouseholdChange => ({ regenerate: true, toast });
   /** 家族の変更：出せなくなった日だけを作り直す。 */
   const regenFamily = (toast: string): HouseholdChange => ({ regenerate: true, toast, keepSafe: true });
+  /** 食事の変更：夕食の献立はそのままで、買い物リストだけを作り直す。 */
+  const reshop = (toast: string): HouseholdChange => ({ regenerate: false, reshop: true, toast });
+
+  const changeMeals = (patch: Partial<MealsValue>) => {
+    if (patch.meals) {
+      setSettings({ meals: patch.meals }, reshop(`食事を「${MEALS_LABEL[patch.meals]}」にしました。夕食の献立はそのままです。`));
+    } else if (patch.breakfastStyle) {
+      setSettings({ breakfastStyle: patch.breakfastStyle }, reshop(`朝ごはんを「${BREAKFAST_LABEL[patch.breakfastStyle]}」にしました。`));
+    } else if (patch.lunchStyle) {
+      setSettings({ lunchStyle: patch.lunchStyle }, reshop(`お昼を「${LUNCH_LABEL[patch.lunchStyle]}」にしました。`));
+    } else if (patch.lunchCount !== undefined) {
+      const home = mealsOf(settings) === 'three' && lunchStyleOf(settings) === 'home';
+      setSettings({ lunchCount: patch.lunchCount }, reshop(`${home ? 'お昼' : 'お弁当'}を${patch.lunchCount}人分にしました。`));
+    }
+  };
+
+  /** 調理時間を、どの曜日も同じにしているか（0 はこだわらない。曜日で違えば null）。 */
+  const cookTime = cookTimeOf(settings);
+
+  const changeDinnerDays = (dinnerWeekdays: Weekday[]) => {
+    const patch: Partial<HouseholdSettings> = { dinnerWeekdays };
+    // どの曜日も同じ調理時間にしていたら、足した曜日にも同じ時間を当てる（曜日ごとに違う時間にならないように）。
+    if (cookTime !== null && cookTime > 0) patch.maxMinutes = withCookTime(dinnerWeekdays, cookTime);
+    // 買い物を「毎日」にしていたら、買い物の曜日も献立の曜日に合わせる。
+    if (paceOf(settings.shoppingWeekdays, settings.dinnerWeekdays) === 'daily') patch.shoppingWeekdays = paceWeekdays('daily', dinnerWeekdays);
+    setSettings(patch, regen('献立の曜日を変えました。'));
+  };
+
+  const budget = budgetOf(settings);
+  // 食費の目安は今週の分。今週の献立がなく、来週の献立があれば（週末に始めたときなど）来週の分を出す。
+  const thisWeek = weekStartOf(state.today);
+  const nextWeek = addDays(thisWeek, 7);
+  const hasWeek = (ws: ISODate) => state.meals.some((m) => weekStartOf(m.date) === ws);
+  const costWeek = !hasWeek(thisWeek) && hasWeek(nextWeek) ? nextWeek : thisWeek;
 
   const saveMember = () => {
     if (!editing) return;
@@ -365,23 +452,126 @@ export function HouseholdSheet({
         {hasPartialServings(h.members) ? <p className="field-note">{SERVINGS_NOTE}</p> : null}
       </section>
 
-      <section className="block" aria-labelledby="days-title">
-        <h3 className="block-title" id="days-title">
-          献立の曜日
+      <section className="block" aria-labelledby="meals-title">
+        <h3 className="block-title" id="meals-title">
+          食事
         </h3>
-        <WeekdayPicker
-          label="献立を作る曜日"
-          value={settings.dinnerWeekdays}
-          onChange={(dinnerWeekdays) => setSettings({ dinnerWeekdays }, regen('献立の曜日を変えました。'))}
-        />
+        <p className="field-note">献立を決める食事と、曜日です。お弁当や朝ごはんを変えても、夕食の献立はそのままです。</p>
+        <MealsFields idPrefix="st" labelledBy="meals-title" value={mealsValueOf(settings)} onChange={changeMeals} />
+        <div className="pref-field">
+          <p className="setting-name" id="days-title">
+            献立を作る曜日
+          </p>
+          <WeekdayPicker label="献立を作る曜日" value={settings.dinnerWeekdays} onChange={changeDinnerDays} />
+        </div>
+      </section>
+
+      <section className="block" aria-labelledby="shop-title">
         <h3 className="block-title" id="shop-title">
-          買い物の曜日
+          買い物のしかた
         </h3>
-        <WeekdayPicker
-          label="買い物の曜日"
-          value={settings.shoppingWeekdays}
-          onChange={(shoppingWeekdays) => setSettings({ shoppingWeekdays }, regen('買い物の曜日を変えました。'))}
+        <p className="field-note">何日分をまとめて買うかです。買い物リストは、買い物の日ごとに作ります。</p>
+        <ShoppingPaceFields
+          idPrefix="st"
+          labelledBy="shop-title"
+          shoppingWeekdays={settings.shoppingWeekdays}
+          dinnerWeekdays={settings.dinnerWeekdays}
+          onChange={(shoppingWeekdays, pace) =>
+            setSettings(
+              { shoppingWeekdays },
+              regen(pace === 'custom' ? '買い物の曜日を変えました。' : `買い物を「${paceLabel(pace)}」にしました。`),
+            )
+          }
         />
+      </section>
+
+      <section className="block" aria-labelledby="taste-title">
+        <h3 className="block-title" id="taste-title">
+          好み
+        </h3>
+        <p className="field-note">国の料理と辛さの好みです。変えると、今週の献立を作り直します。</p>
+        <p className="setting-name">国の料理</p>
+        <CuisineRows
+          idPrefix="st"
+          value={cuisinesOf(settings)}
+          onChange={(genre, level) =>
+            setSettings(
+              // 1つ変えたら、7つの国をすべて書く（画面に出ている選び方のまま。書いたあとは、世界の料理も選び方どおりに入る）。
+              { cuisines: { ...cuisinesOf(settings), [genre]: level } },
+              regen(`${CUISINE_LABEL[genre]}を「${CUISINE_LEVEL_LABEL[level]}」にしました。`),
+            )
+          }
+        />
+        {settings.cuisines === undefined ? <p className="field-note">{CUISINES_UNSET_NOTE}</p> : null}
+        <p className="field-note">{CUISINE_NOTE}</p>
+        <div className="pref-field">
+          <p className="setting-name" id="spice-title">
+            辛さ
+          </p>
+          <RadioSeg
+            name="st-spice"
+            labelledBy="spice-title"
+            options={SPICE_OPTIONS}
+            value={spiceOf(settings)}
+            onChange={(spice) => setSettings({ spice }, regen(`辛さを「${SPICE_LABEL[spice]}」にしました。`))}
+          />
+          <p className="field-note">{SPICE_NOTE}</p>
+        </div>
+      </section>
+
+      <section className="block" aria-labelledby="budget-title">
+        <h3 className="block-title" id="budget-title">
+          1週間の食費
+        </h3>
+        <p className="field-note">1週間の食費の目安です。選ぶと、目安に近い献立にします。</p>
+        <BudgetPicker
+          idPrefix="st"
+          labelledBy="budget-title"
+          value={budget}
+          onChange={(weeklyBudget) =>
+            setSettings(
+              { weeklyBudget },
+              regen(
+                weeklyBudget === null ? '1週間の食費の目安を「目安なし」にしました。' : `1週間の食費の目安を${budgetText(weeklyBudget)}にしました。`,
+              ),
+            )
+          }
+        />
+        {hasWeek(costWeek) ? (
+          <CostMeter
+            label={costWeek === nextWeek ? '来週の目安' : '今週の目安'}
+            cost={weekCost(state, catalog, costWeek)}
+            budget={budget}
+            extrasLabel={extrasLabelOf(settings)}
+          />
+        ) : (
+          <p className="hint">献立ができたら、ここに今週の食費の目安を出します。</p>
+        )}
+        <p className="field-note">{PRICE_NOTE}</p>
+      </section>
+
+      <section className="block" aria-labelledby="time-title">
+        <h3 className="block-title" id="time-title">
+          平日の調理時間
+        </h3>
+        <p className="field-note">夕食づくりにかけられる時間です。主菜は、この時間でできる料理を優先します。</p>
+        <RadioSeg
+          name="st-time"
+          labelledBy="time-title"
+          options={COOK_TIME_OPTIONS}
+          value={cookTime}
+          onChange={(minutes) =>
+            setSettings(
+              { maxMinutes: withCookTime(settings.dinnerWeekdays, minutes) },
+              regen(`平日の調理時間を「${minutes === 0 ? 'こだわらない' : `${minutes}分`}」にしました。`),
+            )
+          }
+        />
+        {cookTime === null ? (
+          <p className="hint">今は、曜日ごとに違う時間です（{cookTimeDetail(settings)}）。選ぶと、どの曜日も同じ時間にします。</p>
+        ) : !COOK_TIME_OPTIONS.some((o) => o.value === cookTime) ? (
+          <p className="hint">今は、どの曜日も{cookTime}分です。選ぶと、どの曜日もその時間にします。</p>
+        ) : null}
       </section>
 
       <FavoritesBlock state={state} catalog={catalog} pwa={pwa} />

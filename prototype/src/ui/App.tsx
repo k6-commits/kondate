@@ -831,9 +831,12 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
       const before = new Set(prev.chat.map((m) => m.id));
       s = { ...s, chat: s.chat.filter((m) => m.from !== 'user' || before.has(m.id)) };
     }
+    // 食事（お弁当・朝ごはん・お昼）の変更：夕食の献立は作り直さず、買い物リストだけを作り直す（チェックは引き継ぐ）。
+    const reshopped = !change.regenerate && !!change.reshop;
+    if (reshopped) s = { ...s, shopping: buildShoppingLists(s, catalog) };
     commit(s);
     if (!regenerated) {
-      showToast(change.toast);
+      showToast(reshopped ? `${change.toast}買い物リストも直しました。` : change.toast);
     } else if (change.keepSafe) {
       // トークの返事（エンジンの regenerate_week の keepSafe）と同じ言い方にする。
       const { redone, raku } = redoneDays(prev, s);

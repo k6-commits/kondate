@@ -1,11 +1,35 @@
 // 今週の献立（と、できていれば来週）。差し替え・今日は無理・作った・反応をここから押せる。
+// 夕食のほかの食事（朝ごはん・お弁当・お昼）を決める家族には、日ごとに夕食の下に添える。いちばん下に、その週の食費の目安。
 import { useState } from 'react';
-import type { Action, AppState, Catalog, ISODate, PlannedMeal } from '../../engine';
-import { addDays, alternativesFor, findDish, formatJa, weekStartOf, weeklySummary } from '../../engine';
+import type { Action, AppState, Catalog, ExtraMeal, ISODate, PlannedMeal } from '../../engine';
+import {
+  EXTRA_SLOT_LABEL,
+  addDays,
+  alternativesFor,
+  budgetOf,
+  extrasOn,
+  findDish,
+  formatJa,
+  mealsOf,
+  weekCost,
+  weekStartOf,
+  weeklySummary,
+} from '../../engine';
 import { REACTIONS, SERVINGS_NOTE, cls, hasPartialServings, nobodyEats } from '../lib';
 import { SummaryBody } from './ChatCard';
 import { MealDetails, RakuBadge, StatusBadge, statusBadgeShown } from './MealDetails';
+import { CostMeter, PRICE_SHORT_NOTE, extrasLabelOf } from './SettingsFields';
 import { Sheet } from './Sheet';
+
+/** 夕食のほかの食事の1行の中身（「鶏の照り焼き弁当（2人分）」）。朝ごはんは家族みんなの分なので、人数は書かない。 */
+function extraText(x: ExtraMeal): string {
+  return x.slot === 'breakfast' ? x.dish.name : `${x.dish.name}（${x.servings}人分）`;
+}
+
+/** 夕食のほかの食事の1行（「お弁当：鶏の照り焼き弁当（2人分）」）。 */
+export function extraLine(x: ExtraMeal): string {
+  return `${EXTRA_SLOT_LABEL[x.slot]}：${extraText(x)}`;
+}
 
 export function WeekSheet({
   state,
@@ -44,7 +68,8 @@ export function WeekSheet({
   // 来週を開いたときは、終わった今週の振り返りを上に出す（トークの「今週の献立」の返事と同じ）。
   const thisWeekSummary = shown === nextWeek && thisWeekOver && weeklySummary(state, catalog, thisWeek).plannedDays > 0;
   const shownDone = meals.length > 0 && meals.every((m) => m.date < state.today);
-  const title = shown === nextWeek ? '来週の献立' : shown === lastWeek ? '先週の献立' : '今週の献立';
+  const when = shown === nextWeek ? '来週' : shown === lastWeek ? '先週' : '今週';
+  const title = `${when}の献立`;
 
   return (
     <Sheet id="week" title={title} onBack={onBack}>
@@ -98,8 +123,42 @@ export function WeekSheet({
           <SummaryBody weekStart={shown} state={state} catalog={catalog} />
         </section>
       ) : null}
+      {meals.length > 0 ? <WeekCostPanel state={state} catalog={catalog} weekStart={shown} label={`${when}の食費の目安`} /> : null}
       {meals.length > 0 && hasPartialServings(state.household.members) ? <p className="hint">{SERVINGS_NOTE}</p> : null}
     </Sheet>
+  );
+}
+
+/**
+ * その週の食費の目安（夕食と、夕食のほかの食事の材料費）。予算があれば、予算と比べる棒も出す。値段の目安がわかる材料が
+ * まだなく、予算もなければ出さない（「約0円」と言わない）。
+ */
+function WeekCostPanel({ state, catalog, weekStart, label }: { state: AppState; catalog: Catalog; weekStart: ISODate; label: string }) {
+  const cost = weekCost(state, catalog, weekStart);
+  const budget = budgetOf(state.household.settings);
+  if (cost.total <= 0 && budget === null) return null;
+  return (
+    <section className="panel week-cost" aria-label={label}>
+      <CostMeter label={label} cost={cost} budget={budget} extrasLabel={extrasLabelOf(state.household.settings)} />
+      <p className="hint">{PRICE_SHORT_NOTE}</p>
+    </section>
+  );
+}
+
+/** その日の、夕食のほかの食事（食事が「夕食だけ」なら出さない）。 */
+function ExtraLines({ state, catalog, date }: { state: AppState; catalog: Catalog; date: ISODate }) {
+  if (mealsOf(state.household.settings) === 'dinner') return null;
+  const extras = extrasOn(state.household, catalog, date);
+  if (extras.length === 0) return null;
+  return (
+    <ul className="extras" aria-label={`${formatJa(date)}の夕食のほかの食事`}>
+      {extras.map((x) => (
+        <li key={x.slot} className="extra-line">
+          <span className="extra-key">{EXTRA_SLOT_LABEL[x.slot]}：</span>
+          <span className="extra-name">{extraText(x)}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -126,6 +185,7 @@ function DayCard({ state, catalog, meal, onAction }: { state: AppState; catalog:
         {statusBadgeShown(state, meal) ? <StatusBadge meal={meal} /> : null}
       </header>
       <MealDetails state={state} catalog={catalog} meal={meal} />
+      <ExtraLines state={state} catalog={catalog} date={date} />
       {canCook || canSkip || canImpossible || editable ? (
         <div className="day-actions">
           {canCook ? (

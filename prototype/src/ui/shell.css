@@ -291,3 +291,356 @@
   gap: 8px;
   margin-left: auto;
 }
+
+/* ------------------------------------------------------------------ あとから足した設定（食事・買い物のしかた・好み・予算・調理時間） */
+
+/* 設定の中の小さなまとまり（見出しと、その選択肢）。 */
+.pref-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 初回設定の手順の名前は、語の途中で折り返さない（「食事と<wbr>買い物」の wbr で折り返す）。 */
+.stepper .step-name {
+  line-height: 1.3;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * 短い選択肢から1つを選ぶ（RadioSeg）。.seg と同じ見た目で、中身は radio。radio は札いっぱいに広げて透明にする（押せる所は札
+ * 全体。フォーカスは札の枠で見せる）。幅は親いっぱい。
+ */
+.seg--radio {
+  display: flex;
+  width: 100%;
+}
+
+/* 選択肢の幅をそろえる（国の料理の行で、列をそろえる）。 */
+.seg--even {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+}
+
+.seg-opt {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 44px;
+  padding: 4px 6px;
+  color: var(--ink-soft);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.seg-opt + .seg-opt {
+  border-left: 1px solid var(--rule-strong);
+}
+
+.seg-opt input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.seg-opt:hover:not(.is-on) {
+  color: var(--ink);
+  background: var(--paper-sunk);
+}
+
+.seg-opt.is-on {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.seg-opt:has(input:focus-visible) {
+  outline: 3px solid var(--focus);
+  outline-offset: -3px;
+}
+
+/* お弁当・お昼の人数（［−］2人分［＋］）。 */
+.count-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  align-self: flex-start;
+}
+
+.count-btn {
+  width: 48px;
+  min-width: 48px;
+  padding: 0;
+}
+
+.count-btn[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.count-btn[aria-disabled="true"]:hover {
+  border-color: var(--rule-strong);
+}
+
+.count-value {
+  min-width: 4.2em;
+  text-align: center;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+/* 1回の買い物で、だいたい何日分か（選ぶたびに変わる）。 */
+.trip-note {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-sunk);
+  font-size: 14px;
+}
+
+.trip-note strong {
+  margin-inline: 2px;
+  color: var(--kaki-strong);
+  font-size: 17px;
+}
+
+.trip-days {
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+/* 国の料理：1行に、国の名前と3つの選択肢。幅が足りないときは、名前を上にする。 */
+.cuisine-rows {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cuisine-row {
+  display: grid;
+  grid-template-columns: 5.4em minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.cuisine-name {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+@container (max-width: 279.98px) {
+  .cuisine-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+}
+
+/* 1週間の食費の目安：金額の札と、ほかの金額。 */
+.budget-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.budget-other {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+/* 「ほかの金額」は1行に置き、入力欄と［この金額にする］を次の行に並べる（狭い幅でも、ボタンだけが離れないように）。 */
+.budget-other > .field-label {
+  flex: 1 0 100%;
+}
+
+.yen-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.yen-input .text-input {
+  width: 7.5em;
+  text-align: right;
+}
+
+/* ほかの金額を使っているときは、入力欄を選んだ札と同じ色の枠にする。 */
+.budget-other.is-on .text-input {
+  border-color: var(--kaki);
+  box-shadow: 0 0 0 1px var(--kaki);
+}
+
+/* 食費の目安と、予算との比べ（棒）。棒の地は、塗りと同じ色の薄い段（柿・山吹・朱）。 */
+.cost {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-raised);
+}
+
+.cost-line {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 2px;
+  font-size: 14px;
+}
+
+.cost-total {
+  font-size: 18px;
+}
+
+.cost-budget,
+.cost-sub {
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.cost-sub {
+  margin: 0;
+}
+
+.meter {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--kaki-wash);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--kaki);
+}
+
+.meter--near {
+  background: var(--yama-wash);
+}
+
+.meter--near .meter-fill {
+  background: var(--yama);
+}
+
+.meter--over {
+  background: var(--shu-wash);
+}
+
+.meter--over .meter-fill {
+  background: var(--shu);
+}
+
+@media (forced-colors: active) {
+  .meter {
+    border: 1px solid CanvasText;
+  }
+  .meter-fill {
+    background: Highlight;
+  }
+}
+
+/* 今週の献立のいちばん下の、食費の目安（パネルの中なので、枠は重ねない）。 */
+.week-cost {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 10px;
+}
+
+.week-cost .cost {
+  border: 0;
+  background: none;
+}
+
+.week-cost > .hint {
+  padding: 0 12px;
+}
+
+/* 今週の献立：夕食の下に、朝ごはん・お弁当・お昼を添える。 */
+.extras {
+  list-style: none;
+  margin: 0 12px 10px;
+  padding: 8px 0 0;
+  border-top: 1px dashed var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
+}
+
+.extra-line {
+  display: grid;
+  grid-template-columns: 4.6em minmax(0, 1fr);
+  gap: 4px;
+  align-items: baseline;
+}
+
+.extra-key {
+  font-size: 12px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.extra-name {
+  min-width: 0;
+}
+
+/* 買い物リストの合計の目安。 */
+.list-cost {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  font-size: 14px;
+}
+
+.list-cost-total {
+  font-weight: 700;
+}
+
+.list-cost-note {
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+/* 定番の候補で、「出さない」にした国の料理に添える印（除外・要確認とちがい、選べる）。 */
+.chip-note {
+  flex: none;
+  white-space: nowrap;
+  font-size: 11px;
+  padding: 0 6px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  color: var(--ink-soft);
+  font-weight: 700;
+}
+
+/* 定番の一覧の下にたたんだ、「出さない」にした国の料理。 */
+.dish-hidden {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--rule);
+}

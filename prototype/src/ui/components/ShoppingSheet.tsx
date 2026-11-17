@@ -1,12 +1,23 @@
-// 買い物リスト：買い物日ごとのタブ、売り場順、チェック、常備品の確認、テキストでコピー。
+// 買い物リスト：買い物日ごとのタブ、売り場順、チェック、常備品の確認、テキストでコピー、合計の目安。
 import { useEffect, useRef, useState } from 'react';
-import type { Action, AppState, Catalog, ISODate } from '../../engine';
-import { AISLE_LABEL, AISLE_ORDER, formatJa, renderCardText } from '../../engine';
+import type { Action, AppState, Catalog, ISODate, ShoppingList } from '../../engine';
+import { AISLE_LABEL, AISLE_ORDER, formatJa, listCost, renderCardText, yenText } from '../../engine';
 import { cls, leftCount, quantityOf } from '../lib';
 import { Icon } from './Icon';
+import { PRICE_SHORT_NOTE } from './SettingsFields';
 import { Sheet } from './Sheet';
 
 const FREEZE = '買ったら冷凍';
+
+/**
+ * 買い物リストの合計の目安（買う量＝パックの数で数える。チェックした物も含める）。値段のわからない品は数えず、その数を添える。
+ * 値段のわかる品がひとつもなければ、出せないと言う（「約0円」と言わない）。
+ */
+export function listCostText(list: ShoppingList, catalog: Catalog): { total: string; note: string | null } {
+  const { yen, missing } = listCost(list, catalog);
+  if (missing >= list.items.length) return { total: '合計の目安：まだ出せません', note: '値段の目安がわかる品がありません' };
+  return { total: `合計の目安：${yenText(yen)}`, note: missing > 0 ? `値段のわからない品${missing}点は含みません` : null };
+}
 
 export function ShoppingSheet({
   state,
@@ -98,6 +109,7 @@ export function ShoppingSheet({
               テキストでコピー
             </button>
           </div>
+          {current.items.length > 0 ? <ListCost list={current} catalog={catalog} /> : null}
           {current.date < state.today ? (
             <p className="hint">済んだ買い物日のリストです。「のこり」は、まだチェックしていない物のうち、これからの献立に使う物の数です。</p>
           ) : null}
@@ -190,5 +202,16 @@ export function ShoppingSheet({
         </>
       )}
     </Sheet>
+  );
+}
+
+function ListCost({ list, catalog }: { list: ShoppingList; catalog: Catalog }) {
+  const { total, note } = listCostText(list, catalog);
+  return (
+    <p className="list-cost num">
+      <span className="list-cost-total">{total}</span>
+      {note ? <span className="list-cost-note">（{note}）</span> : null}
+      <span className="list-cost-note">{PRICE_SHORT_NOTE}</span>
+    </p>
   );
 }
