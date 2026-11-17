@@ -3,6 +3,8 @@
 // エンジンとマスタは src/engine/index.ts と src/data/index.ts からだけ使う。
 // ホーム画面に置く版（target が 'pwa'）だけ：はじめての起動ではデモの家族の代わりに、はじめの画面を出す。新しい版の知らせ、
 // 初回設定のあとの「データを残す」の依頼、AI なし（ルールだけ）の説明もこの版だけ。PWA のことは src/pwa からだけ使う。
+// ホーム画面に置く版は本番：デモ（デモの家族・［翌日へ進む］・上の帯のプランの切り替え・「ためしに」の例）はなく、
+// 日付はいつも本物の日付で進める。
 import { Component, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import type { Action, AppState, Catalog, Household, ISODate, OnboardingInput } from '../engine';
@@ -40,6 +42,7 @@ import {
   cls,
   firstLine,
   formerSender,
+  importAheadText,
   japanToday,
   nobodyEats,
   nobodyEatsOn,
@@ -308,15 +311,20 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
     const raw = readStoredRaw();
     const stored = parseStoredState(raw);
     const prefs = readUiPrefs();
+    // ホーム画面に置く版（本番）で、前の版の［翌日へ進む］のデモとして保存した記録（デモの家族など）は開かない。はじめの
+    // 画面から、自分の家族を設定してもらう（その記録は消さずに残し、自分の家族を設定したときに置き換わる）。
+    const demoLeftover = pwa && !!stored && prefs.clock === 'demo';
     // 本物の日付で進めるのは、保存した記録から再開するときだけ（記録がなくデモで始めるときは、［翌日へ進む］のデモ）。
-    const clock: ClockMode = stored && prefs.clock === 'calendar' ? 'calendar' : 'demo';
+    // ホーム画面に置く版は、いつも本物の日付。
+    const clock: ClockMode = pwa || (stored && prefs.clock === 'calendar') ? 'calendar' : 'demo';
     return {
-      state: stored ?? demoState(catalog, todayFn()),
+      state: stored && !demoLeftover ? stored : demoState(catalog, todayFn()),
       prefs,
       clock,
+      // デモの残りも、保存されている文字列として覚える（ほかのタブが保存した記録と取り違えて、読み直さないように）。
       raw: stored ? raw : null,
-      // ホーム画面に置く版で、まだ何も保存していない（はじめての起動）なら、デモの家族の代わりに、はじめの画面を出す。
-      welcome: pwa && !stored,
+      // ホーム画面に置く版で、まだ自分の家族を保存していない（はじめての起動・デモの残り）なら、はじめの画面を出す。
+      welcome: pwa && (!stored || demoLeftover),
     };
   });
   /**
@@ -465,8 +473,11 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
   };
 
   useEffect(() => {
+    // ホーム画面に置く版：はじめの画面のあいだは、画面の覚え書きも書かない（まだ何も選んでいない。前の版のデモの残りの
+    // 覚え書き（［翌日へ進む］）を、本物の日付に書き換えると、次に開いたときにデモの家族が本物の日付で開いてしまう）。
+    if (pwa && welcome) return;
     writeUiPrefs(uiPrefsNow());
-  }, [state.chat, senders, senderPref, aiMode, menuOpen, aboutSeen, clock]);
+  }, [state.chat, senders, senderPref, aiMode, menuOpen, aboutSeen, clock, welcome]);
 
   useEffect(() => {
     const onHash = () => setRoute(readRoute());
@@ -532,10 +543,12 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
     if (raw === null || raw === savedRaw.current) return false;
     const next = parseStoredState(raw);
     if (!next) return false;
+    const prefs = readUiPrefs();
+    // ホーム画面に置く版（本番）は、ほかの窓（前の版のまま開いていた窓）が［翌日へ進む］のデモとして保存した記録を読み直さない。
+    if (pwa && prefs.clock === 'demo') return false;
     savedRaw.current = raw;
     epochRef.current += 1;
-    const prefs = readUiPrefs();
-    if (prefs.clock) setClock(prefs.clock);
+    if (prefs.clock && !pwa) setClock(prefs.clock);
     if (prefs.senders) setSenders((cur) => ({ ...cur, ...prefs.senders }));
     // 「AIで読み取り」の印は、同じ id で同じ文のメッセージにだけ残す（ほかのタブで始め直すと、id がまた1から振られる）。
     const before = new Map(stateRef.current.chat.map((m) => [m.id, m.text]));
@@ -899,7 +912,8 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
     setSenders({});
     setMarks({});
     setSenderPref(undefined);
-    setClock('demo');
+    // ホーム画面に置く版は、いつも本物の日付（はじめの画面のあいだも）。
+    setClock('calendar');
     setWelcome(true);
     // 裏で持つ状態も、まだ何も保存していないときと同じにする（はじめの画面のあいだは保存しない）。
     commit(demoState(catalog, todayFn()));
@@ -931,7 +945,7 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
       <aside className="about-col" aria-labelledby="about-title">
         <AboutPanel aiStatus={aiStatus} aiMode={aiMode} clock={clock} target={target} onStartOver={() => navigate('start')} />
       </aside>
-      <main className="phone" aria-label="きめとく（試作）">
+      <main className="phone" aria-label={pwa ? 'きめとく' : 'きめとく（試作）'}>
         {pwa ? (
           <UpdateBanner
             // 初回設定のあいだは出さない（［更新する］で読み直すと、入力の途中の内容が消える）。閉じたら出す。
@@ -954,11 +968,13 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
               // ホーム画面に置く版：家族の記録を、ブラウザが勝手に消さないように頼む（1回。結果は使わない）。
               if (pwa) askToKeepData();
             }}
-            onDemo={() => startDemo()}
+            // ホーム画面に置く版（本番）は、デモの家族で始めるボタンも、日付の進め方の選択も出さない。
+            onDemo={pwa ? undefined : () => startDemo()}
             onCancel={() => navigate('talk')}
             // はじめの画面から開いたときは、置き換える家族や記録がない（やめると、はじめの画面に戻る）。
             replaces={!welcome}
             focusTitle={welcome}
+            target={target}
           />
         ) : welcome ? (
           <Welcome
@@ -966,12 +982,12 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
             installing={installState === 'busy'}
             onInstall={installApp}
             onStart={() => navigate('start')}
-            onDemo={() => startDemo()}
           />
         ) : (
           <>
             <DemoBar
               today={state.today}
+              pwa={pwa}
               clock={clock}
               plan={state.household.settings.plan}
               busy={busy}
@@ -1011,6 +1027,7 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
                   onMenuToggle={() => setMenuOpen((o) => !o)}
                   visible={!sheetOpen}
                   showTimes={clock !== 'calendar'}
+                  examples={!pwa}
                 />
               </div>
               {/* 案内を重ねて開いているあいだは、シートにもフォーカスが出ないようにする（display: contents の入れ物）。 */}
@@ -1052,6 +1069,8 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
                     }}
                     onHouseholdChange={changeHousehold}
                     onImport={(s) => {
+                      // ホーム画面に置く版は本物の日付だけで進めるので、今日より先の日付の記録は読み込まない（日付は戻さない）。
+                      if (pwa && s.today > todayFn()) return importAheadText(s.today);
                       epochRef.current += 1;
                       setSenders({});
                       setMarks({});
@@ -1060,6 +1079,7 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
                       commit(s);
                       navigate('talk');
                       afterImport(s);
+                      return null;
                     }}
                     onReset={resetAll}
                     onStartOver={() => navigate('start')}
@@ -1097,6 +1117,7 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
 
 function DemoBar({
   today,
+  pwa = false,
   clock,
   plan,
   busy,
@@ -1107,6 +1128,11 @@ function DemoBar({
   onHelp,
 }: {
   today: ISODate;
+  /**
+   * ホーム画面に置く版（本番）。今日の日付と案内の「?」だけを出す（［翌日へ進む］・本物の日付の添え書き・「試し方を見る」・
+   * プランの切り替えは出さない。プランは家族と設定で変える）。
+   */
+  pwa?: boolean;
   /** 本物の日付で進める（試用）ときは、［翌日へ進む］の代わりに、そう書いた小さな添え書きを出す。 */
   clock: ClockMode;
   plan: 'free' | 'paid';
@@ -1121,6 +1147,21 @@ function DemoBar({
   onHelp: () => void;
 }) {
   const calendar = clock === 'calendar';
+  if (pwa) {
+    return (
+      <div className="demo-bar demo-bar--pwa" role="region" aria-label="今日の日付" inert={inert} data-clock={clock}>
+        <p className="demo-today">
+          <span className="demo-label">今日</span>
+          <strong className="demo-date num" data-testid="demo-today">
+            {formatJa(today)}
+          </strong>
+        </p>
+        <button type="button" className="icon-btn about-toggle" aria-label="きめとくについて" onClick={onHelp}>
+          <Icon name="help" size={22} />
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="demo-bar" role="region" aria-label={calendar ? '日付とプラン' : 'デモの操作'} inert={inert} data-clock={clock}>
       <p className={cls('demo-today', showHint && 'has-hint')}>

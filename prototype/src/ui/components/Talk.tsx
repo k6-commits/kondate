@@ -40,6 +40,11 @@ export interface TalkProps {
    * 出さない（夜に書いた書き込みが「08:28」と出て、本物の時刻と合わないため）。日の区切りは出す。
    */
   showTimes?: boolean;
+  /**
+   * 「ためしに」の書き込みの例のボタンを出すか（既定は出す）。ホーム画面に置く版（本番）では出さない（押すと、本物の家族の
+   * 予定として「水曜は夫が飲み会」などが記録されてしまうため）。
+   */
+  examples?: boolean;
 }
 
 function lastUserIndex(chat: ChatMessage[]): number {
@@ -442,14 +447,16 @@ function Composer(props: TalkProps) {
             ))}
           </select>
         </label>
-        <div className="examples" role="group" aria-label="ためしに送る書き込み">
-          <span className="examples-label">ためしに</span>
-          {EXAMPLE_TEXTS.map((t) => (
-            <button key={t} type="button" className="chip chip--example" disabled={props.busy} onClick={() => send(t)}>
-              {t}
-            </button>
-          ))}
-        </div>
+        {props.examples === false ? null : (
+          <div className="examples" role="group" aria-label="ためしに送る書き込み">
+            <span className="examples-label">ためしに</span>
+            {EXAMPLE_TEXTS.map((t) => (
+              <button key={t} type="button" className="chip chip--example" disabled={props.busy} onClick={() => send(t)}>
+                {t}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       <form
         className="composer"

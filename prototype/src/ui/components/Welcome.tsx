@@ -1,5 +1,5 @@
-// はじめの画面（ホーム画面に置く版で、まだ何も保存していないとき）。デモの家族の代わりに出す。
-// 自分の家族で始める（初回設定へ）か、デモを見る。ホーム画面への追加の案内は、開いている所で出し分ける。
+// はじめの画面（ホーム画面に置く版で、まだ自分の家族を設定していないとき）。ホーム画面に置く版は本番なので、デモはない。
+// ［自分の家族で始める］で初回設定へ。ホーム画面への追加の案内は、開いている所で出し分ける。
 import { useEffect, useRef } from 'react';
 import { Hanko } from './Icon';
 
@@ -30,11 +30,11 @@ export function installGuide(env: {
 }
 
 export const WELCOME_TEXT = {
-  kicker: 'うちの献立当番（試作）',
+  kicker: 'うちの献立当番',
   lead: '平日の夕食の献立と買い物リストを、買い物の日に合わせて先に決めておきます。何もしなければそのまま決まり、予定が変わったら1タップで組み直します。',
   lineTitle: 'Safari か Chrome で開いてください',
   lineBody: 'LINE の中で開いたページは、ホーム画面に追加できません。LINE のメニューから、Safari か Chrome でこのページを開き直してください。',
-  lineNote: '自分の家族で始めるのは、開き直してからにしてください。デモは、ここでも見られます。',
+  lineNote: '家族の設定は、Safari か Chrome で開き直してから始めてください。',
   // iPhone・iPad のブラウザは Safari とは限らない（Chrome などでも、［共有］からホーム画面に追加できる）。どのブラウザでも
   // 合う言い方にする（［共有］の場所は、Safari では画面の下の［…］の中、Chrome ではアドレスバーの右のことがある）。
   iosTitle: '先にホーム画面に追加してください',
@@ -53,14 +53,12 @@ export function Welcome({
   installing = false,
   onInstall,
   onStart,
-  onDemo,
 }: {
   guide: InstallGuide;
   /** ブラウザの確認を出しているあいだ（ボタンを押せなくする）。 */
   installing?: boolean;
   onInstall: () => void;
   onStart: () => void;
-  onDemo: () => void;
 }) {
   const titleRef = useRef<HTMLHeadingElement>(null);
   const resultRef = useRef<HTMLParagraphElement>(null);
@@ -132,18 +130,15 @@ export function Welcome({
           </p>
         ) : null}
 
-        <div className="welcome-actions">
-          {guide === 'ios' ? <p className="install-hint">{WELCOME_TEXT.iosAnyway}</p> : null}
-          {/* LINE の中では始めない（ホーム画面に追加できず、開き直すと記録が別になる）。デモは見られる。 */}
-          {guide === 'line' ? null : (
+        {/* LINE の中では始めない（ホーム画面に追加できず、開き直すと記録が別になる）。案内だけを出す。 */}
+        {guide === 'line' ? null : (
+          <div className="welcome-actions">
+            {guide === 'ios' ? <p className="install-hint">{WELCOME_TEXT.iosAnyway}</p> : null}
             <button type="button" className="btn btn--primary" onClick={onStart}>
               自分の家族で始める
             </button>
-          )}
-          <button type="button" className="btn" onClick={onDemo}>
-            デモを見てみる
-          </button>
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );

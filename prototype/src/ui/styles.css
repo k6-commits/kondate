@@ -291,6 +291,11 @@ h4 {
   margin-left: auto;
 }
 
+/* ホーム画面に置く版（本番）の上の帯は、今日の日付と「?」だけなので、狭い画面でも1行に並べる。 */
+.demo-bar--pwa .demo-today {
+  flex: 1 1 auto;
+}
+
 @media (min-width: 900px) {
   .demo-today {
     flex: 1 1 auto;

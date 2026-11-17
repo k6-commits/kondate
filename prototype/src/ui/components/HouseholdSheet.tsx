@@ -54,6 +54,11 @@ export const DATA_TEXT = {
     web: '保存した内容を消して、デモの家族で始め直します。元には戻せません。',
     pwa: '保存した内容を消して、はじめの画面に戻ります。元には戻せません。',
   },
+  /** プランの欄の添え書き。ホーム画面に置く版（本番）は「試作」と言わない。 */
+  plan: {
+    web: '試作なので、本物の課金はありません。有料の動きを試せます。',
+    pwa: '本物の支払いはありません。有料の動きも試せます。',
+  },
 } as const;
 
 /** 試用の記録を送るときの題（navigator.share の title）。 */
@@ -188,7 +193,8 @@ export function HouseholdSheet({
   onClockChange?: (mode: ClockMode) => string | null;
   onAiModeChange: (mode: AiMode) => void;
   onHouseholdChange: (next: Household, change: HouseholdChange) => void;
-  onImport: (state: AppState) => void;
+  /** 読み込む。読み込めなければ、わけを返す（その場で出す。貼り付けた文は消さない）。 */
+  onImport: (state: AppState) => string | null | void;
   onReset: () => void;
   onStartOver: () => void;
   onBack: () => void;
@@ -272,7 +278,7 @@ export function HouseholdSheet({
           {h.members.map((m) =>
             editing?.id === m.id ? (
               <li key={m.id} className="member-card is-editing">
-                <MemberEditor idPrefix={`edit-${m.id}`} value={editing.draft} onChange={(draft) => setEditing({ id: m.id, draft })} catalog={catalog} />
+                <MemberEditor idPrefix={`edit-${m.id}`} value={editing.draft} onChange={(draft) => setEditing({ id: m.id, draft })} catalog={catalog} pwa={pwa} />
                 {editError ? <p className="form-error" role="alert">{editError}</p> : null}
                 <div className="row-actions">
                   <button type="button" className="btn btn--primary" onClick={saveMember}>
@@ -332,7 +338,7 @@ export function HouseholdSheet({
           )}
           {editing && editing.id === null ? (
             <li className="member-card is-editing">
-              <MemberEditor idPrefix="edit-new" value={editing.draft} onChange={(draft) => setEditing({ id: null, draft })} catalog={catalog} />
+              <MemberEditor idPrefix="edit-new" value={editing.draft} onChange={(draft) => setEditing({ id: null, draft })} catalog={catalog} pwa={pwa} />
               {editError ? <p className="form-error" role="alert">{editError}</p> : null}
               <div className="row-actions">
                 <button type="button" className="btn btn--primary" onClick={saveMember}>
@@ -378,7 +384,7 @@ export function HouseholdSheet({
         />
       </section>
 
-      <FavoritesBlock state={state} catalog={catalog} />
+      <FavoritesBlock state={state} catalog={catalog} pwa={pwa} />
 
       <section className="block" aria-labelledby="plan-rule-title">
         <h3 className="block-title" id="plan-rule-title">
@@ -453,31 +459,34 @@ export function HouseholdSheet({
         <h3 className="block-title" id="plan-title">
           プラン
         </h3>
-        <p className="field-note">試作なので、本物の課金はありません。有料の動きを試せます。</p>
+        <p className="field-note">{DATA_TEXT.plan[pwa ? 'pwa' : 'web']}</p>
         <PlanPicker name="settings-plan" value={settings.plan} onChange={(plan) => setSettings({ plan }, { regenerate: false, toast: planToast(plan, clock) })} />
       </section>
 
-      <section className="block" aria-labelledby="clock-title">
-        <h3 className="block-title" id="clock-title">
-          日付の進め方
-        </h3>
-        <div className="radio-list" role="radiogroup" aria-labelledby="clock-title">
-          {CLOCK_MODES.map((m) => (
-            <label key={m.id} className={cls('radio-card', clock === m.id && 'is-on')}>
-              <input type="radio" name="clock-mode" value={m.id} checked={clock === m.id} onChange={() => changeClock(m.id)} />
-              <span>
-                <span className="radio-title">{m.label}</span>
-                <span className="field-note">{m.note}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-        {clockError ? (
-          <p className="form-error" role="alert">
-            {clockError}
-          </p>
-        ) : null}
-      </section>
+      {/* ホーム画面に置く版（本番）は、いつも本物の日付で進める（［翌日へ進む］のデモはない）ので、選ばせない。 */}
+      {pwa ? null : (
+        <section className="block" aria-labelledby="clock-title">
+          <h3 className="block-title" id="clock-title">
+            日付の進め方
+          </h3>
+          <div className="radio-list" role="radiogroup" aria-labelledby="clock-title">
+            {CLOCK_MODES.map((m) => (
+              <label key={m.id} className={cls('radio-card', clock === m.id && 'is-on')}>
+                <input type="radio" name="clock-mode" value={m.id} checked={clock === m.id} onChange={() => changeClock(m.id)} />
+                <span>
+                  <span className="radio-title">{m.label}</span>
+                  <span className="field-note">{m.note}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {clockError ? (
+            <p className="form-error" role="alert">
+              {clockError}
+            </p>
+          ) : null}
+        </section>
+      )}
 
       <section className="block" aria-labelledby="ai-title">
         <h3 className="block-title" id="ai-title">
@@ -525,7 +534,7 @@ export function HouseholdSheet({
 }
 
 /** うちの定番の一覧。献立に出ない定番（除外に当たる・要確認）には、そのわけを添える。 */
-function FavoritesBlock({ state, catalog }: { state: AppState; catalog: Catalog }) {
+function FavoritesBlock({ state, catalog, pwa = false }: { state: AppState; catalog: Catalog; pwa?: boolean }) {
   const h = state.household;
   const allowUncertain = h.settings.allowUncertainWithExclusions;
   // 自由入力の定番（customDishes）も定番として扱う（エンジンの isFavorite と同じ）。
@@ -541,7 +550,7 @@ function FavoritesBlock({ state, catalog }: { state: AppState; catalog: Catalog 
         うちの定番
         <span className="block-count num">{rows.length}品</span>
       </h3>
-      <p className="field-note">献立は、この定番を中心に組みます（定番の追加と削除は、この試作ではまだできません）。</p>
+      <p className="field-note">献立は、この定番を中心に組みます（定番の追加と削除は、{pwa ? 'まだできません' : 'この試作ではまだできません'}）。</p>
       {rows.length === 0 ? (
         <p className="field-note">定番はまだありません。</p>
       ) : (
@@ -688,7 +697,7 @@ function DataTools({
   clock: ClockMode;
   target: AppTarget;
   saveFailed: boolean;
-  onImport: (state: AppState) => void;
+  onImport: (state: AppState) => string | null | void;
   onReset: () => void;
   onStartOver: () => void;
   onToast: (text: string) => void;
@@ -794,9 +803,13 @@ function DataTools({
               setImportError(r.error);
               return;
             }
+            const refused = onImport(r.state);
+            if (refused) {
+              setImportError(refused);
+              return;
+            }
             setImportText('');
             setImportError(null);
-            onImport(r.state);
           }}
         >
           読み込む

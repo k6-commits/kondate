@@ -111,6 +111,14 @@ export function clockAheadText(today: ISODate): string {
   return `記録の日付（${formatJa(today)}）が今日より先に進んでいるので、切り替えられません。［はじめから設定する］で、今日から始め直してください。`;
 }
 
+/**
+ * ホーム画面に置く版（本物の日付だけで進める）で、今日より先の日付の記録を読み込もうとしたときのわけ（読み込まない。日付は
+ * 戻さない）。
+ */
+export function importAheadText(today: ISODate): string {
+  return `記録の日付（${formatJa(today)}）が今日より先に進んでいるので、読み込めません。`;
+}
+
 /** プランを変えたときの知らせ。有料版の配信が届く時を、日付の進め方に合わせて言う。 */
 export function planToast(plan: 'free' | 'paid', clock: ClockMode): string {
   if (plan === 'free') return '無料版にしました。';

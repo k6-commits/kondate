@@ -1,7 +1,9 @@
 // 初回設定（DESIGN.md 4章の①〜④）。最後に注意を見せてから始める。
 // 確認（⑤）で、日付の進め方を選ぶ：本物の日付で進める（1週間の試用。既定）か、［翌日へ進む］で進めるデモか。
+// ホーム画面に置く版（target が 'pwa'。本番）は、デモの家族で始めるボタンも、日付の進め方の選択もない（いつも本物の日付）。
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Catalog, Household, ISODate, OnboardingInput, Weekday } from '../../engine';
+import type { AppTarget } from '../../pwa';
 import { WEEKDAY_JA, householdNotices } from '../../engine';
 import { cls, normalizeForSearch } from '../lib';
 import type { ClockMode } from '../storage';
@@ -12,8 +14,15 @@ import { Icon } from './Icon';
 const STEPS = ['家族', '買い物の日', '定番', 'プラン', '確認'] as const;
 const MAX_MEMBERS = 6;
 const SEVERE_TEXT = '重い食物アレルギー（アナフィラキシーの経験など）は、このプロトタイプの対象外です。医師の指示を優先してください';
+/** 同じ注意の、ホーム画面に置く版（本番の試用）の言い方（エンジンの文は LINE と共通なので、画面で置き換える）。 */
+export const SEVERE_TEXT_PWA = '重い食物アレルギー（アナフィラキシーの経験など）は、この試用の対象外です。医師の指示を優先してください';
 /** 今の状態から開いたとき（onCancel があるとき）の、置き換えの注意。 */
 const REPLACE_TEXT = '今の家族と記録は、この内容で置き換わります。元には戻せません。';
+/** プランの選択（④）の添え書き。ホーム画面に置く版（本番）は「試作」と言わない。 */
+export const PLAN_NOTE = {
+  web: '試作なので、本物の課金はありません。あとから「家族と設定」で変えられます。',
+  pwa: '本物の支払いはありません。あとから「家族と設定」で変えられます。',
+} as const;
 
 export function Onboarding({
   catalog,
@@ -23,12 +32,17 @@ export function Onboarding({
   onCancel,
   replaces = !!onCancel,
   focusTitle = false,
+  target = 'web',
 }: {
   catalog: Catalog;
   today: ISODate;
-  /** clock：日付の進め方（確認の画面のチェックで選ぶ。デモの家族で始めるときは、いつも demo）。 */
+  /**
+   * clock：日付の進め方（確認の画面のチェックで選ぶ。デモの家族で始めるときは、いつも demo。ホーム画面に置く版は、いつも
+   * calendar）。
+   */
   onStart: (input: OnboardingInput, clock: ClockMode) => void;
-  onDemo: () => void;
+  /** デモの家族で始める（ホーム画面に置く版では使わない）。 */
+  onDemo?: () => void;
   onCancel?: () => void;
   /**
    * 今の家族と記録を置き換えるか（既定は、やめて戻れるとき＝今の状態から開いたとき）。置き換えるときは、デモで始め直す前に
@@ -37,7 +51,11 @@ export function Onboarding({
   replaces?: boolean;
   /** 開いたら見出しへフォーカスを移す（はじめの画面のボタンから開いたとき。押したボタンは消えるので）。 */
   focusTitle?: boolean;
+  /** アプリの版。'pwa'（ホーム画面に置く版。本番）は、デモの家族で始めるボタンと日付の進め方の選択を出さない。 */
+  target?: AppTarget;
 }) {
+  const pwa = target === 'pwa';
+  const demo = !pwa && !!onDemo;
   const titleRef = useRef<HTMLHeadingElement>(null);
   const focusOnOpen = useRef(focusTitle);
   useEffect(() => {
@@ -127,12 +145,14 @@ export function Onboarding({
         customFavoriteNames: customNames,
         plan,
       },
-      calendar ? 'calendar' : 'demo',
+      pwa || calendar ? 'calendar' : 'demo',
     );
   };
 
   const notices = householdNotices(draft);
-  const noticeLines = notices.some((n) => n.text === SEVERE_TEXT) ? notices : [...notices, { level: 'info' as const, text: SEVERE_TEXT }];
+  const noticeLines = (notices.some((n) => n.text === SEVERE_TEXT) ? notices : [...notices, { level: 'info' as const, text: SEVERE_TEXT }]).map((n) =>
+    pwa && n.text === SEVERE_TEXT ? { ...n, text: SEVERE_TEXT_PWA } : n,
+  );
 
   return (
     <div className="onboarding">
@@ -159,33 +179,35 @@ export function Onboarding({
       </header>
 
       <div className="ob-body">
-        <div className="demo-start">
-          <p>すぐに試すなら、デモの家族（大人2人、小学生1人、幼児1人。小学生の子が卵アレルギー）で始められます。</p>
-          {demoConfirm ? (
-            <div
-              className="confirm"
-              role="group"
-              aria-label="デモの家族で始め直すかの確認"
-              aria-describedby="demo-confirm-text"
-              tabIndex={-1}
-              ref={demoConfirmRef}
-            >
-              <p id="demo-confirm-text">今の家族と記録は消えて、デモの家族で始め直します。元には戻せません。</p>
-              <div className="row-actions">
-                <button type="button" className="btn btn--danger" onClick={onDemo}>
-                  デモで始め直す
-                </button>
-                <button type="button" className="btn" onClick={() => setDemoConfirm(false)}>
-                  やめる
-                </button>
+        {demo ? (
+          <div className="demo-start">
+            <p>すぐに試すなら、デモの家族（大人2人、小学生1人、幼児1人。小学生の子が卵アレルギー）で始められます。</p>
+            {demoConfirm ? (
+              <div
+                className="confirm"
+                role="group"
+                aria-label="デモの家族で始め直すかの確認"
+                aria-describedby="demo-confirm-text"
+                tabIndex={-1}
+                ref={demoConfirmRef}
+              >
+                <p id="demo-confirm-text">今の家族と記録は消えて、デモの家族で始め直します。元には戻せません。</p>
+                <div className="row-actions">
+                  <button type="button" className="btn btn--danger" onClick={onDemo}>
+                    デモで始め直す
+                  </button>
+                  <button type="button" className="btn" onClick={() => setDemoConfirm(false)}>
+                    やめる
+                  </button>
+                </div>
               </div>
-            </div>
-          ) : (
-            <button type="button" className="btn" ref={demoButtonRef} onClick={() => (replaces ? setDemoConfirm(true) : onDemo())}>
-              デモの家族で始める
-            </button>
-          )}
-        </div>
+            ) : (
+              <button type="button" className="btn" ref={demoButtonRef} onClick={() => (replaces ? setDemoConfirm(true) : onDemo?.())}>
+                デモの家族で始める
+              </button>
+            )}
+          </div>
+        ) : null}
 
         {step === 0 ? (
           <section className="ob-step" aria-labelledby="ob-family">
@@ -201,6 +223,7 @@ export function Onboarding({
                       idPrefix={`ob-${i}`}
                       value={m}
                       catalog={catalog}
+                      pwa={pwa}
                       onChange={(v) => setMembers(members.map((x, k) => (k === i ? v : x)))}
                     />
                     <div className="row-actions">
@@ -303,7 +326,7 @@ export function Onboarding({
             <h2 className="ob-step-title" id="ob-plan">
               ④ 無料と有料、どちらで試しますか？
             </h2>
-            <p className="field-note">試作なので、本物の課金はありません。あとから「家族と設定」で変えられます。</p>
+            <p className="field-note">{PLAN_NOTE[pwa ? 'pwa' : 'web']}</p>
             <PlanPicker name="ob-plan" value={plan} onChange={setPlan} />
           </section>
         ) : null}
@@ -337,14 +360,17 @@ export function Onboarding({
                 <dd>{PLAN_INFO.find((p) => p.id === plan)?.title}</dd>
               </div>
             </dl>
-            {/* 行のどこを押しても切り替わるように、行全体を label にする（家族と設定の「要確認の料理も出す」と同じ）。 */}
-            <label className="toggle-row trial-clock" htmlFor="ob-calendar">
-              <input id="ob-calendar" type="checkbox" checked={calendar} onChange={(e) => setCalendar(e.target.checked)} />
-              <span>
-                <span className="setting-name">本物の日付で進める（1週間の試用）</span>
-                <span className="field-note">印を外すと、画面の［翌日へ進む］で日付を進めるデモになります。</span>
-              </span>
-            </label>
+            {/* 行のどこを押しても切り替わるように、行全体を label にする（家族と設定の「要確認の料理も出す」と同じ）。
+                ホーム画面に置く版（本番）は、いつも本物の日付で進めるので、選ばせない。 */}
+            {pwa ? null : (
+              <label className="toggle-row trial-clock" htmlFor="ob-calendar">
+                <input id="ob-calendar" type="checkbox" checked={calendar} onChange={(e) => setCalendar(e.target.checked)} />
+                <span>
+                  <span className="setting-name">本物の日付で進める（1週間の試用）</span>
+                  <span className="field-note">印を外すと、画面の［翌日へ進む］で日付を進めるデモになります。</span>
+                </span>
+              </label>
+            )}
             <div className="ob-notices" role="note" aria-label="始める前の注意">
               <p className="warn-label">
                 <Icon name="alert" size={16} />

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // ホーム画面に置く版（target が 'pwa'）だけの画面：はじめの画面とホーム画面への追加の案内、初回設定のあとの「データを残す」
 // の依頼、新しい版の知らせ、AI なし（ルールだけ）の説明、ブラウザ・ページの言い方の置き換え、試用の記録の［LINE などで送る］。
+// ホーム画面に置く版は本番：デモ（デモの家族・［翌日へ進む］・上の帯のプランの切り替え・「ためしに」の例）はなく、いつも本物の日付。
 // 'web'（claude.ai の Artifact・開発用）は今までどおり（デモの家族で始まり、知らせも［LINE などで送る］も出さない）。
 // src/pwa は vi.mock で差し替える（サービスワーカーやブラウザの判定は、ここでは偽物）。
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -11,10 +12,12 @@ import * as pwaModule from '../pwa';
 import { App, SAVE_FAILED_TOAST, SAVE_FAILED_TOAST_PWA } from './App';
 import { RULES_ONLY_TEXT } from './ai';
 import { STORAGE_KEY, UI_STORAGE_KEY } from './storage';
-import { ABOUT_TEXT } from './components/AboutPanel';
+import { ABOUT_TEXT, USE_THESE } from './components/AboutPanel';
 import { DATA_TEXT, SHARE_FAILED_TOAST, SHARE_TITLE, TRIAL_NOTE } from './components/HouseholdSheet';
+import { PLAN_NOTE, SEVERE_TEXT_PWA } from './components/Onboarding';
 import { UPDATE_TEXT, UPDATING_RESET_MS, UPDATING_TEXT } from './components/UpdateBanner';
 import { WELCOME_TEXT, installGuide } from './components/Welcome';
+import { importAheadText } from './lib';
 
 const hoisted = vi.hoisted(() => ({
   /** listenInstallPrompt に渡された onAvailable（ブラウザが「アプリとして入れる」を出せるようになったら呼ぶ）。 */
@@ -100,12 +103,16 @@ function updateRegion(): HTMLElement | null {
 }
 
 /** 初回設定を確認（⑤）まで進める。 */
-function fillOnboarding(): HTMLInputElement {
+function fillOnboarding(): void {
   fireEvent.change(screen.getByLabelText('ニックネーム'), { target: { value: 'あきこ' } });
   fireEvent.click(screen.getByRole('button', { name: 'できた' }));
   for (let i = 0; i < 4; i++) fireEvent.click(screen.getByRole('button', { name: '次へ' }));
   expect(screen.getByRole('heading', { name: 'この内容で始めます' })).toBeTruthy();
-  return screen.getByLabelText(/本物の日付で進める（1週間の試用）/) as HTMLInputElement;
+}
+
+/** 上の帯（ホーム画面に置く版は、今日の日付と「?」だけ）。 */
+function topBar(): HTMLElement {
+  return screen.getByRole('region', { name: '今日の日付' });
 }
 
 function send(text: string): void {
@@ -159,19 +166,22 @@ afterEach(() => {
 });
 
 describe('はじめの画面（ホーム画面に置く版で、まだ何も保存していないとき）', () => {
-  it('デモの家族の代わりに、名前・できること・［自分の家族で始める］［デモを見てみる］を出す。選ぶまでは保存しない', () => {
+  it('名前・できること・［自分の家族で始める］だけを出す（本番なのでデモはない）。選ぶまでは保存しない', () => {
     renderPwa();
     expect(welcomeTitle()).toBeTruthy();
     expect(screen.getByText(WELCOME_TEXT.lead)).toBeTruthy();
+    expect(within(document.querySelector('.welcome') as HTMLElement).getByText(WELCOME_TEXT.kicker)).toBeTruthy();
     expect(screen.getByRole('button', { name: '自分の家族で始める' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'デモを見てみる' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'デモを見てみる' })).toBeNull();
+    expect(document.querySelector('.welcome')?.textContent).not.toMatch(/デモ|試作/);
     // デモの家族のトークも、［翌日へ進む］も出さない
     expect(screen.queryByRole('log', { name: 'トーク' })).toBeNull();
     expect(screen.queryByRole('button', { name: '翌日へ進む' })).toBeNull();
     // 見出しにフォーカス（読み上げがここから始まる）
     expect(document.activeElement).toBe(welcomeTitle());
-    // 裏のデモの家族は保存しない（何も選ばずに閉じたら、次もはじめの画面）
+    // 裏のデモの家族は保存しない（何も選ばずに閉じたら、次もはじめの画面）。画面の覚え書きも書かない
     expect(saved()).toBeNull();
+    expect(window.localStorage.getItem(UI_STORAGE_KEY)).toBeNull();
   });
 
   it('何も選ばずに閉じたら、次に開いたときも、はじめの画面', () => {
@@ -182,15 +192,17 @@ describe('はじめの画面（ホーム画面に置く版で、まだ何も保�
     expect(saved()).toBeNull();
   });
 
-  it('保存した家族があれば、はじめの画面を出さず、ふだんどおりトークから開く', () => {
+  it('保存した家族があれば、はじめの画面を出さず、ふだんどおりトークから開く（本物の日付で、今日まで進める）', () => {
     store(family(MON), 'calendar');
+    now = TUE;
     renderPwa();
     expect(welcomeTitle()).toBeNull();
     expect(talkLog()).toBeTruthy();
-    expect(screen.getByTestId('clock-note')).toBeTruthy();
+    expect(within(topBar()).getByTestId('demo-today').textContent).toBe('11/17(火)');
+    expect(saved()?.today).toBe(TUE);
   });
 
-  it('［自分の家族で始める］→ 初回設定（本物の日付に印）→ 始めると保存し、データを残すよう1回だけ頼む。次に開くとトークから', async () => {
+  it('［自分の家族で始める］→ 初回設定（日付の進め方は選ばせない。いつも本物の日付）→ 始めると保存し、データを残すよう1回だけ頼む。次に開くとトークから', async () => {
     now = TUE;
     const first = renderPwa();
     fireEvent.click(screen.getByRole('button', { name: '自分の家族で始める' }));
@@ -198,9 +210,9 @@ describe('はじめの画面（ホーム画面に置く版で、まだ何も保�
     const title = screen.getByRole('heading', { name: 'はじめの設定' });
     // 押したボタンは消えるので、見出しへフォーカスを移す
     expect(document.activeElement).toBe(title);
-    // はじめの画面から開いたときは、置き換える家族がない：置き換えの注意も、デモの確かめもない
-    const box = fillOnboarding();
-    expect(box.checked).toBe(true);
+    // はじめの画面から開いたときは、置き換える家族がない：置き換えの注意も、デモの確かめもない。日付の進め方も選ばせない
+    fillOnboarding();
+    expect(screen.queryByLabelText(/本物の日付で進める/)).toBeNull();
     const notes = screen.getByRole('note', { name: '始める前の注意' });
     expect(within(notes).queryByText('今の家族と記録は、この内容で置き換わります。元には戻せません。')).toBeNull();
     expect(pwa.requestPersistentStorage).not.toHaveBeenCalled();
@@ -282,31 +294,58 @@ describe('はじめの画面（ホーム画面に置く版で、まだ何も保�
     expect(saved()).toBeNull();
   });
 
-  it('初回設定の中の［デモの家族で始める］は、確かめずにデモで始める（置き換える家族がない）', () => {
+  it('初回設定には、デモの家族で始めるボタンも、日付の進め方の選択もない。プランの添え書きも「試作」と言わない', () => {
     renderPwa();
     fireEvent.click(screen.getByRole('button', { name: '自分の家族で始める' }));
-    fireEvent.click(screen.getByRole('button', { name: 'デモの家族で始める' }));
-    expect(screen.queryByRole('button', { name: 'デモで始め直す' })).toBeNull();
-    expect(saved()?.household.members.map((m) => m.nickname)).toEqual(NAMES);
-    expect(pwa.requestPersistentStorage).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'デモの家族で始める' })).toBeNull();
+    expect(document.querySelector('.onboarding')?.textContent).not.toContain('デモ');
+    fireEvent.change(screen.getByLabelText('ニックネーム'), { target: { value: 'あきこ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'できた' }));
+    for (let i = 0; i < 3; i++) fireEvent.click(screen.getByRole('button', { name: '次へ' }));
+    expect(screen.getByRole('heading', { name: '④ 無料と有料、どちらで試しますか？' })).toBeTruthy();
+    expect(screen.getByText(PLAN_NOTE.pwa)).toBeTruthy();
+    expect(screen.queryByText(PLAN_NOTE.web)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '次へ' }));
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    // 重い食物アレルギーの注意も、「この試用の対象外」と言う（「プロトタイプ」と言わない）
+    expect(within(screen.getByRole('note', { name: '始める前の注意' })).getByText(SEVERE_TEXT_PWA)).toBeTruthy();
+    expect(document.querySelector('.onboarding')?.textContent).not.toMatch(/デモ|翌日へ進む|プロトタイプ|試作/);
   });
 
-  it('［デモを見てみる］→ デモの家族（［翌日へ進む］で進める）。保存して、次に開くとデモのトークから', () => {
-    now = '2026-11-18';
+  it('前の版で［翌日へ進む］のデモとして保存した記録（デモの家族）は開かず、はじめの画面から。消さずに残し、自分の家族を設定すると置き換わる', () => {
+    const leftover = family(MON, 3);
+    store(leftover, 'demo');
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    now = TUE;
     const first = renderPwa();
-    fireEvent.click(screen.getByRole('button', { name: 'デモを見てみる' }));
-    expect(welcomeTitle()).toBeNull();
-    expect(screen.getByTestId('demo-today').textContent).toBe('11/16(月)');
-    expect(screen.getByRole('button', { name: '翌日へ進む' })).toBeTruthy();
-    expect(toastText()).toBe('デモの家族で始めました。');
-    expect(saved()?.household.members.map((m) => m.nickname)).toEqual(NAMES);
-    expect(uiPrefs().clock).toBe('demo');
-    expect(pwa.requestPersistentStorage).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '翌日へ進む' }));
+    expect(welcomeTitle()).toBeTruthy();
+    expect(screen.queryByRole('log', { name: 'トーク' })).toBeNull();
+    // 記録も覚え書きも、そのまま（はじめの画面のあいだは書かない）
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(raw);
+    expect(uiPrefs()).toEqual({ clock: 'demo' });
     first.unmount();
+    // 何も選ばずに閉じたら、次もはじめの画面（デモの家族が本物の日付で開くことはない）
     renderPwa();
-    expect(welcomeTitle()).toBeNull();
-    expect(screen.getByTestId('demo-today').textContent).toBe('11/17(火)');
+    expect(welcomeTitle()).toBeTruthy();
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(raw);
+    fireEvent.click(screen.getByRole('button', { name: '自分の家族で始める' }));
+    fillOnboarding();
+    fireEvent.click(screen.getByRole('button', { name: 'この内容で始める' }));
+    expect(saved()?.household.members.map((m) => m.nickname)).toEqual(['あきこ']);
+    expect(saved()?.today).toBe(TUE);
+    expect(uiPrefs().clock).toBe('calendar');
+    expect(talkLog()).toBeTruthy();
+  });
+
+  it('はじめの画面のあいだに、ほかの窓（前の版のまま開いていた窓）が［翌日へ進む］のデモを保存しても、読み直さない', () => {
+    renderPwa();
+    window.localStorage.setItem(UI_STORAGE_KEY, JSON.stringify({ clock: 'demo' }));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(family(MON)));
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', { key: STORAGE_KEY }));
+    });
+    expect(welcomeTitle()).toBeTruthy();
+    expect(screen.queryByRole('log', { name: 'トーク' })).toBeNull();
   });
 
   it('はじめの画面のあいだに、ほかのタブ（同じ端末のブラウザ）で家族を設定したら、その家族で開く', () => {
@@ -326,8 +365,7 @@ describe('はじめの画面（ホーム画面に置く版で、まだ何も保�
     // 試用が、次に開いたときに［翌日へ進む］のデモになってしまう。
     renderPwa();
     fireEvent.click(screen.getByRole('button', { name: '自分の家族で始める' }));
-    const calendar = fillOnboarding();
-    expect(calendar.checked).toBe(true);
+    fillOnboarding();
     const clockWhenSaved: unknown[] = [];
     const original = Storage.prototype.setItem;
     const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
@@ -353,7 +391,8 @@ describe('はじめの画面（ホーム画面に置く版で、まだ何も保�
       window.dispatchEvent(new StorageEvent('storage', { key: STORAGE_KEY }));
     });
     expect(welcomeTitle()).toBeNull();
-    expect(screen.getByTestId('clock-note').textContent).toBe('本物の日付で進めています（試用）');
+    expect(within(topBar()).getByTestId('demo-today').textContent).toBe('11/16(月)');
+    expect(screen.queryByRole('button', { name: '翌日へ進む' })).toBeNull();
     expect(uiPrefs().clock).toBe('calendar');
   });
 });
@@ -373,7 +412,7 @@ describe('ホーム画面への追加の案内（はじめの画面）', () => {
     expect(installGuide(base)).toBe('hint');
   });
 
-  it('LINE の中：ホーム画面に追加できないので、Safari か Chrome で開き直すよう案内する。自分の家族では始めず、デモは見られる', () => {
+  it('LINE の中：ホーム画面に追加できないので、Safari か Chrome で開き直すよう案内する。ここでは始めない（ボタンを出さない）', () => {
     pwa.isLineInAppBrowser.mockReturnValue(true);
     pwa.isIos.mockReturnValue(true);
     renderPwa();
@@ -383,8 +422,9 @@ describe('ホーム画面への追加の案内（はじめの画面）', () => {
     // iPhone の LINE でも、LINE の案内だけ
     expect(guideText()).not.toContain(WELCOME_TEXT.iosTitle);
     expect(screen.queryByRole('button', { name: '自分の家族で始める' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'デモを見てみる' }));
-    expect(saved()?.household.members.map((m) => m.nickname)).toEqual(NAMES);
+    expect(screen.queryByRole('button', { name: 'デモを見てみる' })).toBeNull();
+    expect(document.querySelector('.welcome-actions')).toBeNull();
+    expect(saved()).toBeNull();
   });
 
   it('iPhone・iPad（Safari・Chrome など）：先にホーム画面に追加して、そのアイコンから始めるよう案内する（記録が別になる）。このまま始めることもできる', () => {
@@ -467,7 +507,7 @@ describe('ホーム画面への追加の案内（はじめの画面）', () => {
     expect(screen.queryByTestId('install-hint')).toBeNull();
     expect(guideText()).not.toContain('ホーム画面に追加');
     expect(screen.getByRole('button', { name: '自分の家族で始める' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'デモを見てみる' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'デモを見てみる' })).toBeNull();
   });
 
   it('判定が投げても、はじめの画面は壊れない（案内はメニューの1行）', () => {
@@ -606,8 +646,7 @@ describe('新しい版の知らせ', () => {
     act(() => hoisted.onUpdateReady?.());
     pressLater();
     expect(document.activeElement).not.toBe(document.body);
-    const bar = screen.getByRole('region', { name: '日付とプラン' });
-    expect(document.activeElement).toBe(within(bar).getAllByRole('button')[0]);
+    expect(document.activeElement).toBe(within(topBar()).getByRole('button', { name: 'きめとくについて' }));
   });
 
   it('［あとで］：はじめの画面では見出しへ、シートを開いているときはシートの見出しへ移す', () => {
@@ -640,7 +679,9 @@ describe('新しい版の知らせ', () => {
     });
     renderPwa();
     expect(welcomeTitle()).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'デモを見てみる' }));
+    fireEvent.click(screen.getByRole('button', { name: '自分の家族で始める' }));
+    fillOnboarding();
+    fireEvent.click(screen.getByRole('button', { name: 'この内容で始める' }));
     expect(talkLog()).toBeTruthy();
   });
 });
@@ -659,7 +700,7 @@ describe('AI の読み取り（ホーム画面に置く版は AI を使わない
     expect(sheet.textContent).not.toContain('確かめています');
   });
 
-  it('案内（このプロトタイプについて）も、ルールだけで読むと書く（使えるかの様子・Claude の話は出さない）', () => {
+  it('案内（きめとくについて）も、ルールだけで読むと書く（使えるかの様子・Claude の話は出さない）', () => {
     store(family(MON), 'calendar');
     renderPwa();
     const about = document.querySelector('.about-col') as HTMLElement;
@@ -698,11 +739,18 @@ describe('ブラウザ・ページの言い方（ホーム画面に置く版は�
     expect(about.textContent).not.toContain('ブラウザ');
   });
 
-  it('案内：［翌日へ進む］で進めるデモでも、この端末・このアプリに保存すると書く', () => {
-    store(family(MON), 'demo');
+  it('案内（きめとくについて）：試作・デモ・［翌日へ進む］の話をせず、自分の家族での使い方の例を出す。ここから「はじめから設定する」を勧めない', () => {
+    store(family(MON), 'calendar');
     renderPwa();
     const about = document.querySelector('.about-col') as HTMLElement;
-    expect(within(about).getByText(ABOUT_TEXT.storageDemo.pwa)).toBeTruthy();
+    expect(within(about).getByRole('heading', { name: 'きめとくについて' })).toBeTruthy();
+    expect(within(about).getByText(ABOUT_TEXT.kicker.pwa)).toBeTruthy();
+    expect(within(about).getByText(ABOUT_TEXT.lead.pwa)).toBeTruthy();
+    expect(within(about).getByRole('heading', { name: '使い方の例' })).toBeTruthy();
+    for (const t of USE_THESE) expect(within(about).getByText(t.action)).toBeTruthy();
+    expect(within(about).getByText(ABOUT_TEXT.estimate.pwa)).toBeTruthy();
+    expect(about.textContent).not.toMatch(/デモ|試作|プロトタイプ|翌日へ進む|夫/);
+    expect(within(about).queryByRole('button', { name: 'はじめから設定する' })).toBeNull();
   });
 
   it('家族と設定のデータの欄：この端末のこのアプリの中だけに保存していると書く', () => {
@@ -765,10 +813,90 @@ describe('ブラウザ・ページの言い方（ホーム画面に置く版は�
     fireEvent.click(screen.getByRole('button', { name: '本当にリセットする' }));
     expect(welcomeTitle()).toBeTruthy();
     expect(saved()).toBeNull();
-    expect(uiPrefs()).toMatchObject({ aiMode: 'auto', menuOpen: true, clock: 'demo', aboutSeen: false });
-    fireEvent.click(screen.getByRole('button', { name: 'デモを見てみる' }));
+    // 画面の覚え書きも消したまま（はじめの画面のあいだは書かない。次に開いたときは既定から）
+    expect(window.localStorage.getItem(UI_STORAGE_KEY)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'デモを見てみる' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '自分の家族で始める' }));
+    fillOnboarding();
+    fireEvent.click(screen.getByRole('button', { name: 'この内容で始める' }));
     expect(saved()?.today).toBe(MON);
-    expect(screen.getByRole('button', { name: '翌日へ進む' })).toBeTruthy();
+    expect(uiPrefs()).toMatchObject({ aiMode: 'auto', menuOpen: true, clock: 'calendar', aboutSeen: false });
+    expect(screen.queryByRole('button', { name: '翌日へ進む' })).toBeNull();
+  });
+});
+
+describe('本番（ホーム画面に置く版にはデモがない）', () => {
+  it('上の帯は、今日の日付と「?」だけ（［翌日へ進む］・本物の日付の添え書き・「試し方を見る」・プランの切り替えはない）', () => {
+    store(family(MON), 'calendar');
+    renderPwa();
+    const bar = topBar();
+    expect(within(bar).getByText('今日')).toBeTruthy();
+    expect(within(bar).getByTestId('demo-today').textContent).toBe('11/16(月)');
+    expect(within(bar).getAllByRole('button').map((b) => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['きめとくについて']);
+    expect(screen.queryByRole('region', { name: 'デモの操作' })).toBeNull();
+    expect(screen.queryByRole('region', { name: '日付とプラン' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'プラン（デモ）' })).toBeNull();
+    expect(screen.queryByTestId('clock-note')).toBeNull();
+    expect(screen.queryByRole('button', { name: /試し方を見る/ })).toBeNull();
+    expect(bar.textContent).not.toMatch(/デモ|試用|翌日へ進む/);
+    // 画面全体の名前（読み上げ）も「試作」と言わない
+    expect(screen.getByRole('main', { name: 'きめとく' })).toBeTruthy();
+  });
+
+  it('トークに「ためしに」の書き込みの例を出さない（押すと、本物の家族の予定として記録されてしまう）。送る人は選べる', () => {
+    store(family(MON), 'calendar');
+    renderPwa();
+    expect(screen.queryByRole('group', { name: 'ためしに送る書き込み' })).toBeNull();
+    expect(screen.queryByText('ためしに')).toBeNull();
+    expect(screen.getByLabelText('送る人')).toBeTruthy();
+  });
+
+  it('家族と設定：日付の進め方は選ばせない。プランは変えられ、添え書きは「試作」と言わない', () => {
+    store(family(MON), 'calendar');
+    renderPwa();
+    const sheet = openSettings();
+    expect(within(sheet).queryByRole('heading', { name: '日付の進め方' })).toBeNull();
+    expect(within(sheet).queryByRole('radio', { name: /翌日へ進む/ })).toBeNull();
+    const plan = document.getElementById('plan-title')?.closest('section') as HTMLElement;
+    expect(within(plan).getByText(DATA_TEXT.plan.pwa)).toBeTruthy();
+    expect(sheet.textContent).not.toMatch(/試作|プロトタイプ|デモ|翌日へ進む/);
+    fireEvent.click(within(plan).getByRole('radio', { name: /有料/ }));
+    expect(saved()?.household.settings.plan).toBe('paid');
+    expect(toastText()).toBe('有料版にしました。次の日から、配信が届きます。');
+  });
+
+  it('読み込み：今日より先の日付の記録は読み込まず、わけをその場で出す（貼り付けた文は残す）', () => {
+    store(family(MON), 'calendar');
+    renderPwa();
+    openSettings();
+    const text = JSON.stringify(family(MON, 4));
+    fireEvent.change(screen.getByLabelText('読み込み'), { target: { value: text } });
+    fireEvent.click(screen.getByRole('button', { name: '読み込む' }));
+    expect(screen.getByRole('alert').textContent).toBe(importAheadText('2026-11-20'));
+    expect((screen.getByLabelText('読み込み') as HTMLTextAreaElement).value).toBe(text);
+    expect(saved()?.today).toBe(MON);
+    expect(uiPrefs().clock).toBe('calendar');
+    expect(screen.queryByRole('button', { name: '翌日へ進む' })).toBeNull();
+  });
+
+  it('読み込み：今日より前の記録なら読み込み、本物の日付で今日まで追いつく', () => {
+    store(family(MON), 'calendar');
+    now = TUE;
+    renderPwa();
+    openSettings();
+    fireEvent.change(screen.getByLabelText('読み込み'), { target: { value: JSON.stringify(family(MON)) } });
+    fireEvent.click(screen.getByRole('button', { name: '読み込む' }));
+    expect(saved()?.today).toBe(TUE);
+    expect(toastText()).toBe('読み込みました。11/17(火)になりました。');
+    expect(talkLog()).toBeTruthy();
+  });
+
+  it('使い方の例の「明日飲み会」は、送った人の分を減らす（案内の言い方がエンジンの返事と合う）', () => {
+    store(family(MON), 'calendar');
+    renderPwa();
+    send('明日飲み会');
+    const tue = saved()?.meals.find((m) => m.date === TUE);
+    expect(tue?.absentMemberIds.length).toBe(1);
   });
 });
 
@@ -853,6 +981,18 @@ describe('試用の記録の［LINE などで送る］', () => {
 });
 
 describe("'web'（claude.ai の Artifact・開発用）は今までどおり", () => {
+  it('デモの操作（［翌日へ進む］・プランの切り替え・「ためしに」の例）と、初回設定のデモのボタンは残す', () => {
+    render(<App target="web" todayFn={todayFn} />);
+    const bar = screen.getByRole('region', { name: 'デモの操作' });
+    expect(within(bar).getByRole('button', { name: '翌日へ進む' })).toBeTruthy();
+    expect(within(bar).getByRole('group', { name: 'プラン（デモ）' })).toBeTruthy();
+    expect(screen.getByRole('group', { name: 'ためしに送る書き込み' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'このプロトタイプについて' })).toBeTruthy();
+    window.location.hash = '#start';
+    fireEvent(window, new HashChangeEvent('hashchange'));
+    expect(screen.getByRole('button', { name: 'デモの家族で始める' })).toBeTruthy();
+  });
+
   it('既定（APP_TARGET）：保存がなければデモの家族で始まり、はじめの画面・新しい版の知らせ・PWA の呼び出しはない', () => {
     render(<App todayFn={todayFn} />);
     expect(welcomeTitle()).toBeNull();

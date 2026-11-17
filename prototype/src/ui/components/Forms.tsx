@@ -228,16 +228,25 @@ function searchIngredients(catalog: Catalog, query: string, exclude: Set<string>
     .map((x) => x.ing);
 }
 
+/** 重い食物アレルギーに印を付けたときの注意。ホーム画面に置く版（本番の試用）は「プロトタイプ」と言わない。 */
+export const SEVERE_NOTE = {
+  web: '重い食物アレルギーは、このプロトタイプの対象外です。医師の指示を優先してください。',
+  pwa: '重い食物アレルギーは、この試用の対象外です。医師の指示を優先してください。',
+} as const;
+
 export function MemberEditor({
   idPrefix,
   value,
   onChange,
   catalog,
+  pwa = false,
 }: {
   idPrefix: string;
   value: MemberDraft;
   onChange: (next: MemberDraft) => void;
   catalog: Catalog;
+  /** ホーム画面に置く版（本番の試用）の言い方にする。 */
+  pwa?: boolean;
 }) {
   const mandatory = catalog.allergens.filter((a) => a.mandatory);
   const recommended = catalog.allergens.filter((a) => !a.mandatory);
@@ -380,7 +389,7 @@ export function MemberEditor({
         {selectedAllergens.some((e) => e.severe) ? (
           <p className="warn-inline">
             <Icon name="alert" size={15} />
-            重い食物アレルギーは、このプロトタイプの対象外です。医師の指示を優先してください。
+            {SEVERE_NOTE[pwa ? 'pwa' : 'web']}
           </p>
         ) : null}
 
