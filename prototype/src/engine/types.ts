@@ -455,9 +455,8 @@ export interface OnboardingInput {
   customFavoriteNames: string[]; // マスタにない料理名
   plan: 'free' | 'paid';
   /** 初回設定で選んだ、あとから足した設定（国の料理・辛さ・食事・予算など）。ないものは既定。 */
-  extras?: Pick<
-    HouseholdSettings,
-    'cuisines' | 'spice' | 'meals' | 'breakfastStyle' | 'lunchStyle' | 'lunchCount' | 'weeklyBudget' | 'maxMinutes'
+  extras?: Partial<
+    Pick<HouseholdSettings, 'cuisines' | 'spice' | 'meals' | 'breakfastStyle' | 'lunchStyle' | 'lunchCount' | 'weeklyBudget' | 'maxMinutes'>
   >;
 }
 

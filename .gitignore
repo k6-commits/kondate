@@ -1,2 +1,5 @@
 # Netlify の CLI を手元で使ったときに作られるフォルダ（netlify build などの設定の写し。リポジトリには入れない）。
 .netlify/
+
+# エージェントが作業に使う一時の作業コピー（リポジトリには入れない）。
+.claude/worktrees/

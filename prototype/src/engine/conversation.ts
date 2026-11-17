@@ -52,7 +52,7 @@ import { addBotMessage, addUserMessage, chatIds, clone, newBotMessages, normaliz
 import { answerCheckin, checkinFor, checkinQuestionWeek, checkinTotal, isCheckinReply, parseDayCount } from './checkin';
 
 const PROTEINS = ['chicken', 'pork', 'beef', 'ground', 'fish', 'seafood', 'egg', 'tofu', 'none'];
-const GENRES = ['wa', 'yo', 'chu', 'other'];
+const GENRES = ['wa', 'yo', 'chu', 'kr', 'it', 'eth', 'mx', 'other'];
 
 /** LLM に見せた member の id（member_2）。LLM が書き方を変えたもの（member-2・member 2・メンバー2）も同じ id とみなす（NFKC のあと）。 */
 const MEMBER_ID = /(?:member|メンバー)[\s_\-‐－ー・]*(\d+)/giu;

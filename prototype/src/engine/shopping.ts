@@ -4,6 +4,7 @@ import { AISLE_ORDER, UNIT_LABEL } from './types';
 import { diffDays, formatJa, weekdayOf } from './dates';
 import { everyoneOut, findDishIn, hasAllergenExclusion, ingredientsOf, shoppingDateFor } from './context';
 import { compareJa } from './util';
+import { extrasOn } from './extras';
 
 export const FREEZE_NOTE = '買ったら冷凍';
 
@@ -152,6 +153,26 @@ export function buildShoppingLists(state: AppState, catalog: Catalog): ShoppingL
       shopDates.add(shopDate);
     }
   }
+
+  // 夕食のほかの食事（朝ごはん・お弁当・家で食べるお昼）の分。献立のある日の、明日からの分だけ（今日の朝とお弁当は、
+  // もう済んでいる）。常備品は夕食の分で確かめるので、ここでは載せない。食事が「夕食だけ」なら何も足さない。
+  const extraDates = [...new Set(state.meals.filter((m) => m.date > today).map((m) => m.date))].sort();
+  for (const date of extraDates) {
+    for (const x of extrasOn(household, catalog, date)) {
+      const shopDate = shoppingDateFor(settings, today, date);
+      for (const di of ingredientsOf(household, x.dish)) {
+        const ing = catalog.ingredientById.get(di.ingredientId);
+        if (!ing || ing.pantry || di.amount <= 0) continue;
+        if (covered.has(`${ing.id}|${date}`)) continue;
+        const buyOn = ing.aisle === 'deli' ? date : shopDate;
+        const list = uses.get(ing.id) ?? [];
+        list.push({ date, shopDate: buyOn, amount: di.amount * x.servings });
+        uses.set(ing.id, list);
+      }
+    }
+  }
+  // 日付の順にそろえる（ほかの食事の分を、あとから足したため。夕食だけなら、もともと日付の順）。
+  for (const list of uses.values()) list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
   const itemsByDate = new Map<ISODate, ShoppingItem[]>();
   for (const [ingId, list] of uses) {

@@ -37,6 +37,8 @@ import {
 } from './context';
 import { NOTICE_FOOD_SAFETY, checkDishSafetyFor, isAllowed, uncertainWarning, usesHoney } from './safety';
 import { normalizeJa, uniq } from './util';
+import { cuisineLevel, prefersCuisine, spiceOf } from './settings';
+import { dinnerBudgetPerServing, dishCost } from './cost';
 
 export interface Factor {
   text: string;
@@ -72,6 +74,8 @@ export interface PlanEnv {
   mains: Dish[];
   sides: Dish[];
   rakus: Dish[];
+  /** 予算に合わせた献立のための、夕食1回・大人1人分の目安（円）。予算がなければ null。 */
+  budgetPerServing: number | null;
 }
 
 export interface Constraints {
@@ -92,6 +96,8 @@ export function genreCapFor(household: Household, catalog: Catalog, normalDays: 
     .filter((d): d is Dish => !!d && d.role === 'main');
   for (const d of household.customDishes) if (d.role === 'main' && !favs.includes(d)) favs.push(d);
   return (g) => {
+    // 「ときどき」にした国・ジャンルは、週に1回まで。
+    if (cuisineLevel(household.settings, g) === 'sometimes') return 1;
     const share = favs.length > 0 ? favs.filter((d) => d.genre === g).length / favs.length : 0;
     return Math.max(2, Math.ceil(normalDays * Math.max(0.6, share)));
   };
@@ -138,6 +144,7 @@ export function makeEnv(state: AppState, catalog: Catalog, exclude: Set<ISODate>
     mains: all.filter((d) => d.role === 'main'),
     sides: all.filter((d) => d.role === 'side' || d.role === 'soup'),
     rakus: all.filter((d) => d.role === 'raku'),
+    budgetPerServing: dinnerBudgetPerServing(household, catalog),
   };
   for (const r of state.history) {
     if (r.status !== 'cooked' || exclude.has(r.date)) continue;
@@ -173,9 +180,20 @@ export function inSeason(dish: Dish, date: ISODate): boolean {
   return !dish.seasonMonths || dish.seasonMonths.length === 0 || dish.seasonMonths.includes(monthOf(date));
 }
 
-/** 安全と旬（ゆるめない条件）。 */
+/** 安全と旬と家族の好み（ゆるめない条件）。 */
 export function allowedOn(env: PlanEnv, dish: Dish, slot: Slot): boolean {
-  return inSeason(dish, slot.date) && isAllowed(safetyFor(env, dish, slot.eaters), env.household);
+  return inSeason(dish, slot.date) && fitsTaste(env, dish) && isAllowed(safetyFor(env, dish, slot.eaters), env.household);
+}
+
+/**
+ * 家族の好み：「出さない」にした国・ジャンルの料理と、「辛くないものだけ」のときの辛い料理は出さない。
+ * 家族が定番に選んだ料理は、好みより優先する（自分で選んだので）。
+ */
+export function fitsTaste(env: Pick<PlanEnv, 'household' | 'settings'>, dish: Dish): boolean {
+  if (isFavorite(env.household, dish.id)) return true;
+  if (cuisineLevel(env.settings, dish.genre) === 'never') return false;
+  if (dish.spicy && spiceOf(env.settings) === 'mild') return false;
+  return true;
 }
 
 /** 同じ料理を食べた（食べる予定の）日との最短の間隔。その日自身は数えない。 */
@@ -355,12 +373,26 @@ export function scoreMain(env: PlanEnv, slot: Slot, dish: Dish): Scored {
     if (dish.minutes > max) score -= 5;
     else factors.push({ text: `${dish.minutes}分でできる`, priority: 3 });
   }
+  const hot = spiceOf(env.settings) === 'hot';
   if (slot.kids) {
     if (dish.kidFriendly) {
       score += 0.5;
       factors.push({ text: '子どもも食べやすい', priority: 0 });
     }
-    if (dish.spicy) score -= 2;
+    // 「辛いのも好き」の家族は、子どもがいても辛い料理を下げない。
+    if (dish.spicy && !hot) score -= 2;
+  }
+  if (dish.spicy && hot) score += 0.5;
+  // 家族が「よく出す」を選んだ国・ジャンル。
+  if (prefersCuisine(env.settings, dish.genre)) score += 1.5;
+  // 予算：主菜の材料費が、夕食1回の目安の主菜の分（7割5分）を超えるほど下げ、安ければ少し上げる。
+  if (env.budgetPerServing !== null) {
+    const cost = dishCost(dish, env.household, env.catalog);
+    const target = env.budgetPerServing * 0.75;
+    if (cost !== null && target > 0) {
+      if (cost > target) score -= Math.min(4, 3 * (cost / target - 1));
+      else if (cost < target * 0.6) score += 0.5;
+    }
   }
   score += freshnessRisk(env, dish, date).penalty;
   const skippedOn = skippedRecently(env, dish.id, date);
@@ -404,7 +436,7 @@ export function scoreRaku(env: PlanEnv, slot: Slot, dish: Dish): Scored {
   }
   if (slot.kids) {
     if (dish.kidFriendly) score += 0.5;
-    if (dish.spicy) score -= 2;
+    if (dish.spicy && spiceOf(env.settings) !== 'hot') score -= 2;
   }
   score -= dish.minutes / 10;
   score += env.rng() * 0.5;
@@ -450,7 +482,7 @@ function scoreSide(env: PlanEnv, slot: Slot, side: Dish, main: Dish, mainIngIds:
   if (gap !== null) score -= gap <= 2 ? 3 : gap <= 6 ? 1.5 : 0;
   if (isFavorite(env.household, side.id)) score += 1.5;
   if (slot.kids) {
-    if (side.spicy) score -= 2;
+    if (side.spicy && spiceOf(env.settings) !== 'hot') score -= 2;
     if (side.kidFriendly) score += 0.3;
   }
   const max = env.settings.maxMinutes[weekdayOf(slot.date)];

@@ -52,6 +52,36 @@ export function findDish(state: AppState, catalog: Catalog, dishId: string): Dis
 
 /** buildShoppingLists(state, catalog): ShoppingList[] — 献立と在庫から買い物リストを作り直す。既存リストのチェック状態は引き継ぐ。 */
 export { buildShoppingLists } from './shopping';
+/** あとから足した設定（国の料理・辛さ・食事・お昼の人数・予算・買い物のしかた）を読む関数。 */
+export {
+  BREAKFAST_LABEL,
+  BUDGET_STEPS,
+  CUISINE_LEVEL_LABEL,
+  DEFAULT_CUISINES,
+  LUNCH_COUNT_MAX,
+  LUNCH_LABEL,
+  MEALS_LABEL,
+  SHOPPING_PACES,
+  SPICE_LABEL,
+  breakfastStyleOf,
+  budgetOf,
+  cuisineLevel,
+  cuisinesOf,
+  daysPerTrip,
+  lunchCountOf,
+  lunchStyleOf,
+  mealsOf,
+  paceOf,
+  paceWeekdays,
+  spiceOf,
+} from './settings';
+export type { ShoppingPace } from './settings';
+/** 夕食のほかの食事（朝ごはん・お弁当・お昼）。 */
+export { EXTRA_SLOT_LABEL, extraSlotsOf, extrasOn } from './extras';
+export type { ExtraMeal, ExtraSlot } from './extras';
+/** 金額の目安。 */
+export { dishCost, listCost, mealCost, weekCost, yenText, roundYen, dinnerBudgetPerServing } from './cost';
+export type { WeekCost } from './cost';
 
 // ----- 会話 -----
 
