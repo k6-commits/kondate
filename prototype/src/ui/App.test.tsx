@@ -573,15 +573,18 @@ describe('家族と設定', () => {
     fireEvent.click(within(menu()).getByRole('button', { name: '家族と設定' }));
     fireEvent.click(screen.getAllByRole('button', { name: '直す' })[0]);
     const search = screen.getByLabelText('食材で除外する');
+    fireEvent.change(search, { target: { value: 'セロリ' } });
+    expect(screen.getByText('「セロリ」：当たる食材はありません。')).toBeTruthy();
+    // 世界の料理の食材（パクチー）は、マスタにあるので「当たる食材はありません」にならない
     fireEvent.change(search, { target: { value: 'パクチー' } });
-    expect(screen.getByText('「パクチー」：当たる食材はありません。')).toBeTruthy();
+    expect(screen.queryByText(/「パクチー」：当たる食材はありません/)).toBeNull();
     fireEvent.change(search, { target: { value: 'きのこ' } });
     expect(screen.getByText(/「きのこ」：当たる食材：.*しいたけ/)).toBeTruthy();
     // 1語につないで書くと当たらないので、区切り方を添える
-    fireEvent.change(search, { target: { value: 'ほうれん草とパクチー' } });
-    expect(screen.getByText(/「ほうれん草とパクチー」：当たる食材はありません（いくつか書くときは「、」で区切ってください）。/)).toBeTruthy();
-    fireEvent.change(search, { target: { value: 'ほうれん草、パクチー' } });
-    expect(screen.getByText(/当たる食材：ほうれん草。名前で当たる料理：ほうれん草のおひたし。「パクチー」に当たる食材はありません。/)).toBeTruthy();
+    fireEvent.change(search, { target: { value: 'ほうれん草とセロリ' } });
+    expect(screen.getByText(/「ほうれん草とセロリ」：当たる食材はありません（いくつか書くときは「、」で区切ってください）。/)).toBeTruthy();
+    fireEvent.change(search, { target: { value: 'ほうれん草、セロリ' } });
+    expect(screen.getByText(/当たる食材：ほうれん草。名前で当たる料理：ほうれん草のおひたし[^。]*。「セロリ」に当たる食材はありません。/)).toBeTruthy();
   });
 
   it('読み込みは、だめならその場でエラーを出し、リセットは2段階で確かめる', () => {

@@ -187,10 +187,12 @@ export function allowedOn(env: PlanEnv, dish: Dish, slot: Slot): boolean {
 
 /**
  * 家族の好み：「出さない」にした国・ジャンルの料理と、「辛くないものだけ」のときの辛い料理は出さない。
+ * 国の料理をまだ選んでいない世帯（前からの記録・LINE）には、あとから足した世界の料理（Dish.world）も出さない。
  * 家族が定番に選んだ料理は、好みより優先する（自分で選んだので）。
  */
 export function fitsTaste(env: Pick<PlanEnv, 'household' | 'settings'>, dish: Dish): boolean {
   if (isFavorite(env.household, dish.id)) return true;
+  if (dish.world && env.settings.cuisines === undefined) return false;
   if (cuisineLevel(env.settings, dish.genre) === 'never') return false;
   if (dish.spicy && spiceOf(env.settings) === 'mild') return false;
   return true;

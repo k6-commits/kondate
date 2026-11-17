@@ -151,6 +151,11 @@ export interface Dish {
   tags: string[];
   sourceUrl?: string; // 作り方の出典（任意）
   custom?: boolean; // 家庭が自由入力した定番（材料がわからないことがある）
+  /**
+   * あとから足した世界の料理（data/world.ts）。国の料理をまだ選んでいない世帯（前からの記録・LINE の世帯）の献立には
+   * 出さない（前から使っている家族の献立を変えないため）。家族が名前を挙げて頼んだときと、定番に選んだときは出す。
+   */
+  world?: boolean;
 }
 
 export interface Catalog {

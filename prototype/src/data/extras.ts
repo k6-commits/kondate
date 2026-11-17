@@ -25,11 +25,7 @@ const { make } = ingredientMakers;
 // ---------------------------------------------------------------------------
 
 export const EXTRA_INGREDIENTS: Ingredient[] = [
-  // 卵・乳製品
-  make('plain_yogurt', 'プレーンヨーグルト', 'dairy', 'dairy_egg', 'g', {
-    aliases: ['ヨーグルト', '無糖ヨーグルト'],
-    pack: [400, '1パック（400g）'], shelf: 7, allergens: ['milk'], price: [198, 400],
-  }),
+  // プレーンヨーグルト（plain_yogurt）は、世界の料理の食材（world.ts）にあるものを使う。
   // 豆腐・大豆製品（牛乳の代わりにも使う）。
   make('soy_milk', '豆乳', 'tofu', 'tofu', 'ml', {
     aliases: ['とうにゅう', '調製豆乳', '無調整豆乳'],

@@ -119,9 +119,10 @@ describe('WORLD_INGREDIENTS', () => {
   });
 
   it('marks brand-dependent processed foods as uncertain and keeps plain foods certain', () => {
-    for (const id of ['gochujang', 'sweet_chili_sauce', 'green_curry_paste', 'tom_yum_paste', 'tortilla']) expect(ing(id).uncertain, id).toBe(true);
+    // シーフードミックスは、銘柄で中身（たこ・かにかまなど）が違うので要確認。
+    for (const id of ['gochujang', 'sweet_chili_sauce', 'green_curry_paste', 'tom_yum_paste', 'tortilla', 'seafood_mix']) expect(ing(id).uncertain, id).toBe(true);
     const plain = [
-      'fresh_cream', 'mozzarella', 'plain_yogurt', 'basil', 'cilantro', 'seafood_mix', 'coconut_milk', 'mixed_beans', 'peanuts',
+      'fresh_cream', 'mozzarella', 'plain_yogurt', 'basil', 'cilantro', 'coconut_milk', 'mixed_beans', 'peanuts',
       'rice_noodle', 'rice_paper', 'red_chili', 'chili_powder',
     ];
     for (const id of plain) expect(ing(id).uncertain, id).toBe(false);

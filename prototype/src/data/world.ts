@@ -47,10 +47,12 @@ export const WORLD_INGREDIENTS: Ingredient[] = [
     pack: [20, '1袋（約20g）'], shelf: 3, price: [158, 20],
   }),
 
-  // 魚介（冷凍）。えび・いかに、あさり・ほたてなどが混ざる。冷凍したまま加熱する。
+  // 魚介（冷凍）。えび・いかに、あさり・ほたてなどが混ざる。冷凍したまま加熱する。中身は銘柄で違う（たこ・かにかまなどを
+  // 入れた商品もある）ので要確認にする。別名の「えび・いか・貝のミックス」は、自由入力の除外「貝」を当てるため。
   make('seafood_mix', 'シーフードミックス（冷凍）', 'seafood', 'frozen', 'g', {
-    aliases: ['シーフードミックス', '冷凍シーフードミックス', '冷凍シーフード', '海鮮ミックス'],
-    pack: [200, '1袋（約200g）'], shelf: 60, freeze: true, thaw: 'from_frozen', allergens: ['shrimp', 'squid'], price: [398, 200],
+    aliases: ['シーフードミックス', '冷凍シーフードミックス', '冷凍シーフード', '海鮮ミックス', 'えび・いか・貝のミックス'],
+    pack: [200, '1袋（約200g）'], shelf: 60, freeze: true, thaw: 'from_frozen', allergens: ['shrimp', 'squid'], uncertain: true,
+    price: [398, 200],
   }),
 
   // 乾物・缶詰
@@ -249,5 +251,8 @@ const MEXICAN: Dish[] = [
     ['具だくさん', '豆']),
 ];
 
-/** 世界の料理（韓国 → イタリアン → エスニック → メキシカン。それぞれ主菜 → 副菜 → 汁物）。 */
-export const WORLD_DISHES: Dish[] = [...KOREAN, ...ITALIAN, ...ETHNIC, ...MEXICAN];
+/**
+ * 世界の料理（韓国 → イタリアン → エスニック → メキシカン。それぞれ主菜 → 副菜 → 汁物）。world の印を付ける
+ * （国の料理をまだ選んでいない世帯には出さない。types.ts の Dish.world）。
+ */
+export const WORLD_DISHES: Dish[] = [...KOREAN, ...ITALIAN, ...ETHNIC, ...MEXICAN].map((d) => ({ ...d, world: true }));
