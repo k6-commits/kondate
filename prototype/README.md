@@ -209,6 +209,8 @@ PWA を Netlify で公開する設定は、リポジトリの直下の [netlify.
 ### AI の読み取り
 
 - **Artifact の中**（`npm run build:artifact` のページを claude.ai で公開したとき）：見ている人の Claude を使う（`window.claude.use('sample')`）。公開するときに、ページの機能（capabilities）として `sample` を宣言する（`{ "sample": {} }`）。宣言がないと AI は使えず、ルールベースだけで読み取る。初回に許可を求められる。使えないとき・許可しないときも、ルールベースで動く。
+- **ホーム画面の版**（Netlify）：同じサイトの `/api/parse`（Netlify の関数。[netlify/functions/parse.ts](netlify/functions/parse.ts)。中身は開発用のサーバーと同じ [server/parse-api.ts](server/parse-api.ts)）を使う。アプリを開いたときに1回だけ GET で「AI で読めるか」を聞き（関数に鍵があれば `{"ok": true, "llm": true}`）、読めるなら書き込みを POST で読ませる。鍵がない・電波がない・15秒で返事がない・混み合い（429）・失敗のときは、その書き込みはルールで読む（家族の操作は止まらない）。主催者の手順は、下の「ホーム画面の版で AI を使うには（主催者）」。
+  - 送るもの：書き込みの本文（家族の名前は、端末の中で `member_1` などに置き換えてから送る。サーバーと同じ決まり）・今日の日付・メンバーの id・年齢帯・続柄だけ。名前・除外（アレルギーなど）・献立・在庫・トークの記録は送らない。関数は本文を保存せず、ログにも出さない（ログに出すのは失敗の種類だけ）。Anthropic には、名前を除いた本文と、日付の表、料理と食材の名前と id の一覧が届く。
 - **画面の設定**：「家族と設定」の「AI の読み取り」で、おまかせ（ルールで読めないときだけ AI。既定。前日の確認への答え「作った」「昨日は無理だった」と、短いあいさつ・お礼もルールで読むので、AI には送らない）・いつも AI・使わない を選ぶ。Claude のログインが切れていたら（session_expired）、その書き込みはルールで読み、「ログインし直すと、また AI で読み取れます」と1回知らせる（AI は止めず、次の書き込みでまた頼む。自分では再試行しない）。読み取り中は［翌日へ進む］を押せない。読み取りの間にリセット・読み込み・はじめから設定などで家族やデータが入れ替わったら、その結果は使わない（そう知らせる）。
 - **開発時**：サーバーの `.env` に `PARSE_API_ENABLED=1` を書いて `npm run server` で起動し、画面の `.env.local` などで `VITE_PARSE_API=http://127.0.0.1:8787/api/parse` を設定すると、画面がサーバーの `/api/parse` を使う。
 - **サーバー**：`ANTHROPIC_API_KEY` があるときだけ LLM を使う。モデルは `KIMETOKU_MODEL`（既定 `claude-opus-5-5`）。1回の読み取りは12秒まで（再試行を含む）。キーがない、間に合わない、断られた、失敗したときはルールベースで読む（理由はログに出す。本文は出さない）。
@@ -224,12 +226,33 @@ PWA を Netlify で公開する設定は、リポジトリの直下の [netlify.
 
 ```jsonc
 // リクエスト
-{ "text": "@きめとく 水曜は夫が飲み会", "today": "2026-11-09", "members": [/* Member[] */] }
+{ "text": "@きめとく 水曜は夫が飲み会", "today": "2026-11-09", "members": [{ "id": "member_2", "nickname": "member_2", "ageBand": "adult", "role": "partner" }] }
 // レスポンス（commands は validateCommands 済み）
 { "commands": [{ "type": "absence", "date": "2026-11-11", "memberRef": "member_2" }], "source": "llm" }
 ```
 
-`members` は、画面の `state.household.members` そのもの（`id`・`nickname`・`ageBand` が要る）。`ANTHROPIC_API_KEY` がないときや LLM が使えなかったときは `"source": "rules"` で、`memberRef` は書いたままの言い方（「夫」など）のこともある（エンジンが読むときに人に当てる）。
+`members` は、メンバーの `id`・`nickname`・`ageBand`（と `role`）。画面は名前を送らないので、`nickname` にも `id` を入れ、本文の名前も `id` に置き換えて送る（`serverParseBody`。除外などの、ほかの項目は送らない。届いてもサーバーは読み捨てる）。`ANTHROPIC_API_KEY` がないときや LLM が使えなかったときは `"source": "rules"` で、`memberRef` は書いたままの言い方（「夫」など）のこともある（エンジンが読むときに人に当てる）。
+
+#### ホーム画面の版で AI を使うには（主催者）
+
+鍵を入れなければ、ホーム画面の版はルールだけで読む（今までどおり。費用はかからない）。AI で読ませるときは、主催者の Anthropic のアカウントの API キーを、Netlify の環境変数に入れる。
+
+1. Claude Console（https://platform.claude.com/ ）の［Workspaces］（platform.claude.com/settings/workspaces）で［Create workspace］を押し、きめとく専用のワークスペース（例：kimetoku）を作る（組織の管理者だけが作れる）。
+2. ［Spend limits］（platform.claude.com/settings/spend-limits）の「Workspace limits」で 1 のワークスペースを選び、「Monthly spend limit」の［Set limit］で月の上限を決める（例：10ドル。上限に届くと、その月は AI を使えず、ルールで読む）。「Email notifications」で、使った額の知らせも決めておく。
+3. ［API keys］（platform.claude.com/settings/keys）で［Create key］を押す。名前（例：kimetoku-netlify）を付け、1 のワークスペースに限る。有効期限は試用の期間より長くする（切れると AI は止まり、ルールで読む。新しいキーを作って 4・5 をやり直す）。キーは、この画面でしか見られないので、すぐに 4 で使う（チャット・メール・リポジトリには書かない）。
+4. Netlify のプロジェクトの「Project configuration」→「Environment variables」で［Add a variable］→［Add a single variable］を押し、Key に `KIMETOKU_ANTHROPIC_API_KEY`、Value に 3 のキーを入れて保存する（「Contains secret values」に印を付けられるときは付ける）。netlify.toml には書かない（関数から読めないうえ、リポジトリに残る）。
+   - `ANTHROPIC_API_KEY` という名前では入れない。Netlify は、AI Gateway のための `ANTHROPIC_API_KEY`・`ANTHROPIC_BASE_URL` を自分で入れることがあり、その鍵で呼ぶと Netlify のクレジットを使う（使い切るとサイトが止まる）。きめとくの関数は `KIMETOKU_ANTHROPIC_API_KEY` だけを読み、いつも api.anthropic.com に送る。
+   - （しなくてもよい）モデルを変えるときは `KIMETOKU_MODEL` も入れる（例：`claude-haiku-5-5`。入れなければ `claude-opus-5-5`）。
+5. 環境変数は、次の公開から使われる。「Deploys」で［Trigger deploy］→［Deploy project］を押して公開し直す（本番の公開なので15クレジット使う。次の push にまとめてもよい）。
+6. 確かめる：https://（プロジェクト名）.netlify.app/api/parse を開くと `{"ok":true,"llm":true}` と出る（`"llm":false` なら、鍵が入っていない・公開し直していない）。スマホのアプリを開き直し、トークに「水曜は夫が飲み会」などと書いて、返事の下に「AIで読み取り」の印が出ることを見る。
+
+- **費用**（2026年11月の値段。変わることがある）：Anthropic の料金は、主催者の Anthropic のアカウントに請求される。1回の読み取りで、料理と食材の一覧（1万トークンほど）を送る。
+  - 既定のモデル（Opus 5.5）：1回およそ0.05〜0.07ドル（数分のうちに続けて読むと、一覧はキャッシュから読むので0.01〜0.03ドルほど）。
+  - Haiku 5.5（`KIMETOKU_MODEL=claude-haiku-5-5`）：1回およそ0.002ドル。読み取りの正しさは、家族の書き込みで確かめてから選ぶ。
+  - 「おまかせ」（既定）では、ルールで読めない書き込みだけを AI に送るので、回数は書き込みより少ない。
+  - Netlify では、関数の実行時間（1GB の関数で1時間＝10クレジット。1回数秒なので、1,000回でおよそ10クレジット）とリクエストの数（1万回で2クレジット）を、月300クレジットから使う。
+- **守り**：関数には認証がない（アドレスを知っていれば、だれでも呼べる）。そのため、ほかのサイトのページからの呼び出し（Origin が違う）は 403、JSON でなければ 415、64KB を超えれば 413、本文は500字まで。同じ人（IP）からは1分に20回まで（Netlify のレート制限。超えると 429）。1回の読み取りは12秒まで（再試行を含む）。それでも費用の上限は、2 の月の上限で決める。
+- **止める**：Netlify の環境変数 `KIMETOKU_ANTHROPIC_API_KEY` を消して公開し直す（すぐ止めたいときは、Claude Console の［API keys］で、そのキーを［Disable］）。どちらでも、アプリはルールで読み続ける。
 
 ## LINE で動かすには
 
