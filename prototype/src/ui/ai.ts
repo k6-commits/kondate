@@ -78,8 +78,24 @@ export const PWA_PARSE_API = './api/parse';
 /** 起動時にサーバーへ聞くときの上限（届かなければ、ルールだけで読む）。 */
 export const PROBE_TIMEOUT_MS = 5_000;
 
-/** AI を使わない版（ホーム画面に置く版）で、AI の読み取りの説明に出す文。家族と設定と案内で同じ文にする。 */
-export const RULES_ONLY_TEXT = 'この版では AI を使いません。書き込みは、ルールだけで読み取ります。';
+/**
+ * ホーム画面に置く版で、AI を使えないとき（主催者が鍵を入れていない・電波がない・確かめている途中）の、AI の読み取りの
+ * 説明に出す文。家族と設定と案内で同じ文にする。
+ */
+export const RULES_ONLY_TEXT = 'いまは AI を使わず、書き込みはルールだけで読み取ります。';
+
+/** ホーム画面に置く版で、AI（Netlify の関数）が使えるときの様子の文。 */
+export const PWA_AI_SERVER_TEXT = 'AI（Claude）に読み取りを頼めます。電波がないときや、AI が使えないときは、ルールで読み取ります。';
+
+/** ホーム画面に置く版で、AI に送るものの説明（ai.ts の serverParseBody と同じ決まり）。 */
+export const PWA_AI_PRIVACY_TEXT =
+  'AI には家族の名前を送らず、「member_1」のような番号に置き換えます。アレルギーなどの除外・献立・在庫は送りません。';
+
+/** 読み取りの設定の選び方。ホーム画面に置く版では、利用枠（claude.ai の Claude）の話をしない。 */
+export function aiModesFor(pwa: boolean): { id: AiMode; label: string; note: string }[] {
+  if (!pwa) return AI_MODES;
+  return AI_MODES.map((m) => (m.id === 'auto' ? { ...m, note: 'ルールで読めた書き込みは AI に送りません（AI に頼む回数を抑えます）。' } : m));
+}
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);

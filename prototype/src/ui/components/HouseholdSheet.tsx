@@ -4,7 +4,7 @@ import type { AppState, Catalog, Exclusion, Household, HouseholdSettings, Member
 import { checkDishSafety, findDish, formatTrialReport, householdNotices, trialReport } from '../../engine';
 import type { AppTarget } from '../../pwa';
 import type { AiMode, AiStatus } from '../ai';
-import { AI_MODES, RULES_ONLY_TEXT } from '../ai';
+import { PWA_AI_PRIVACY_TEXT, PWA_AI_SERVER_TEXT, RULES_ONLY_TEXT, aiModesFor } from '../ai';
 import { SERVINGS_NOTE, SIDE_POLICY, cls, hasPartialServings, nextMemberId, normalizeForSearch, planToast } from '../lib';
 import { parseImportedState } from '../storage';
 import type { ClockMode } from '../storage';
@@ -492,18 +492,19 @@ export function HouseholdSheet({
         <h3 className="block-title" id="ai-title">
           AIの読み取り
         </h3>
-        {pwa ? (
-          // ホーム画面に置く版は AI を使わない（ルールだけ）。選べない設定（おまかせ・いつも AI・使わない）は出さない。
+        {pwa && aiStatus !== 'server' ? (
+          // ホーム画面に置く版で AI を使えないとき（鍵がない・電波がない・確かめている途中）は、ルールだけで読むと書く。
+          // 選べない設定（おまかせ・いつも AI・使わない）は出さない。
           <p className="ai-status is-off" data-testid="ai-status">
             {RULES_ONLY_TEXT}
           </p>
         ) : (
           <>
             <p className={cls('ai-status', (aiStatus === 'blocked' || aiStatus === 'none') && 'is-off')} data-testid="ai-status">
-              {aiStatusText(aiStatus)}
+              {pwa ? PWA_AI_SERVER_TEXT : aiStatusText(aiStatus)}
             </p>
             <div className="radio-list">
-              {AI_MODES.map((m) => (
+              {aiModesFor(pwa).map((m) => (
                 <label key={m.id} className={cls('radio-card', aiMode === m.id && 'is-on')}>
                   <input type="radio" name="ai-mode" checked={aiMode === m.id} onChange={() => onAiModeChange(m.id)} />
                   <span>
@@ -513,7 +514,7 @@ export function HouseholdSheet({
                 </label>
               ))}
             </div>
-            <p className="field-note">AI には家族の名前を送らず、「member_1」のような番号に置き換えます。</p>
+            <p className="field-note">{pwa ? PWA_AI_PRIVACY_TEXT : 'AI には家族の名前を送らず、「member_1」のような番号に置き換えます。'}</p>
           </>
         )}
       </section>

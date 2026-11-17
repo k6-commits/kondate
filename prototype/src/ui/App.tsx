@@ -31,7 +31,7 @@ import {
   registerServiceWorker,
   requestPersistentStorage,
 } from '../pwa';
-import { AiReader, prepareAiCommands, readableByRules } from './ai';
+import { AiReader, PWA_PARSE_API, prepareAiCommands, readableByRules } from './ai';
 import type { AiMode, AiReading } from './ai';
 import {
   CATCH_UP_INTERVAL_MS,
@@ -303,7 +303,11 @@ function KimetokuApp({ catalog = defaultCatalog, todayFn = japanToday, ai: aiPro
   const pwa = target === 'pwa';
   const aiRef = useRef<AiReader | null>(null);
   // ホーム画面に置く版は claude.ai の外で動くので、AI を使わない（ルールだけで読む。「確かめています」も出さない）。
-  if (!aiRef.current) aiRef.current = aiProp ?? new AiReader(pwa ? { rulesOnly: true } : {});
+  // ホーム画面に置く版は、同じサイトの Netlify の関数（/api/parse）に、AI で読めるかを起動時に1回聞く（主催者が鍵を
+  // 入れていなければ、ルールだけで読む）。claude.ai の Claude（window.claude）は使わない。
+  if (!aiRef.current) {
+    aiRef.current = aiProp ?? new AiReader(pwa ? { parseApi: PWA_PARSE_API, probe: true, host: () => undefined } : {});
+  }
   const ai = aiRef.current;
   const aiStatus = useSyncExternalStore(ai.subscribe, ai.getSnapshot, ai.getSnapshot);
 

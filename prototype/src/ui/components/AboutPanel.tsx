@@ -2,7 +2,7 @@
 import { useEffect, useRef } from 'react';
 import type { AppTarget } from '../../pwa';
 import type { AiMode, AiStatus } from '../ai';
-import { RULES_ONLY_TEXT } from '../ai';
+import { PWA_AI_PRIVACY_TEXT, RULES_ONLY_TEXT } from '../ai';
 import type { ClockMode } from '../storage';
 import { aiStatusText } from './HouseholdSheet';
 import { Icon } from './Icon';
@@ -46,6 +46,18 @@ function aiModeText(mode: AiMode): string {
       return '書き込みは、AI を使わずにルールだけで読み取ります（「家族と設定」で変えられます）。';
     default:
       return `書き込みは、ふだんはルールで読み取ります。claude.ai で開いているときは、ルールで読めない書き込みだけ Claude に読み取りを頼みます（見ている人の Claude の利用枠を使います）。${privacy}`;
+  }
+}
+
+/** ホーム画面に置く版で、AI（Netlify の関数）が使えるときの、AI の読み取りの説明。claude.ai の話はしない。 */
+function pwaAiModeText(mode: AiMode): string {
+  switch (mode) {
+    case 'always':
+      return `書き込みは、毎回 AI（Claude）に読み取りを頼みます。${PWA_AI_PRIVACY_TEXT}`;
+    case 'off':
+      return '書き込みは、AI を使わずにルールだけで読み取ります（「家族と設定」で変えられます）。';
+    default:
+      return `書き込みは、ふだんはルールで読み取り、ルールで読めない書き込みだけ AI（Claude）に読み取りを頼みます。${PWA_AI_PRIVACY_TEXT}`;
   }
 }
 
@@ -150,8 +162,8 @@ export function AboutPanel({
       )}
 
       <h3 className="about-sub">AI の読み取り</h3>
-      {/* ホーム画面に置く版は AI を使わない（ルールだけ）。設定の説明や、使えるかの様子は出さない。 */}
-      <p data-testid="about-ai-mode">{pwa ? RULES_ONLY_TEXT : aiModeText(aiMode)}</p>
+      {/* ホーム画面に置く版は、AI（Netlify の関数）が使えるときだけ設定の説明を出す。使えるかの様子の行は出さない。 */}
+      <p data-testid="about-ai-mode">{pwa ? (aiStatus === 'server' ? pwaAiModeText(aiMode) : RULES_ONLY_TEXT) : aiModeText(aiMode)}</p>
       {pwa ? null : <p className="about-status">{aiStatusText(aiStatus)}</p>}
 
       <h3 className="about-sub">注意</h3>

@@ -10,7 +10,7 @@ import { advanceDay, createInitialState, formatTrialReport, trialReport } from '
 import { DEMO_ONBOARDING, defaultCatalog } from '../data';
 import * as pwaModule from '../pwa';
 import { App, SAVE_FAILED_TOAST, SAVE_FAILED_TOAST_PWA } from './App';
-import { RULES_ONLY_TEXT } from './ai';
+import { PWA_AI_PRIVACY_TEXT, PWA_AI_SERVER_TEXT, RULES_ONLY_TEXT } from './ai';
 import { STORAGE_KEY, UI_STORAGE_KEY } from './storage';
 import { ABOUT_TEXT, USE_THESE } from './components/AboutPanel';
 import { DATA_TEXT, SHARE_FAILED_TOAST, SHARE_TITLE, TRIAL_NOTE } from './components/HouseholdSheet';
@@ -686,7 +686,7 @@ describe('新しい版の知らせ', () => {
   });
 });
 
-describe('AI の読み取り（ホーム画面に置く版は AI を使わない）', () => {
+describe('AI の読み取り（ホーム画面に置く版で、AI を使えないとき：主催者が鍵を入れていない・電波がない）', () => {
   it('家族と設定：ルールだけで読むと書き、選べない設定（おまかせ・いつも AI・使わない）と名前の置き換えの説明は出さない', () => {
     store(family(MON), 'calendar');
     renderPwa();
@@ -1084,5 +1084,101 @@ describe("'web'（claude.ai の Artifact・開発用）は今までどおり", (
     expect(welcomeTitle()).toBeNull();
     expect(saved()?.today).toBe(MON);
     expect(toastText()).toBe('リセットしました。デモの家族で始めています。');
+  });
+});
+
+describe('AI の読み取り（ホーム画面に置く版で、主催者が鍵を入れたとき：/api/parse の関数）', () => {
+  /** GET（使えるか）には llm: true、POST（読み取り）には commands を返す、同じサイトの関数の代わり。 */
+  function serverFetch(commands: unknown[] = [{ type: 'show_week' }]) {
+    return vi.fn(async (_url: string, init?: RequestInit) =>
+      new Response(JSON.stringify(init?.method === 'POST' ? { commands, source: 'llm' } : { ok: true, llm: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+  }
+
+  /** 起動時の問い合わせ（GET）が済み、AI を使えるようになるまで待つ。 */
+  async function serverReady(): Promise<void> {
+    await waitFor(() => expect(document.querySelector('[data-testid="about-ai-mode"]')?.textContent).toContain('AI（Claude）'));
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('起動時に同じサイトの ./api/parse へ1回だけ GET で聞く（claude.ai の Claude は使わない）', async () => {
+    const fetchMock = serverFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    const use = vi.fn(async () => null);
+    (window as unknown as { claude?: unknown }).claude = { use };
+    store(family(MON), 'calendar');
+    renderPwa();
+    await serverReady();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('./api/parse');
+    expect(init.method).toBe('GET');
+    expect(use).not.toHaveBeenCalled();
+  });
+
+  it('家族と設定：AI で読めると書き、おまかせ・いつも AI・使わない と、送らないものの説明を出す（利用枠の話はしない）', async () => {
+    vi.stubGlobal('fetch', serverFetch());
+    store(family(MON), 'calendar');
+    renderPwa();
+    await serverReady();
+    openSettings();
+    const block = document.getElementById('ai-title')?.closest('section') as HTMLElement;
+    expect(within(block).getByTestId('ai-status').textContent).toBe(PWA_AI_SERVER_TEXT);
+    expect(within(block).getAllByRole('radio')).toHaveLength(3);
+    expect(block.textContent).toContain(PWA_AI_PRIVACY_TEXT);
+    expect(block.textContent).not.toContain('利用枠');
+    expect(block.textContent).not.toContain('claude.ai');
+  });
+
+  it('案内（きめとくについて）は、AI に頼む決まりと送らないものを書く（claude.ai の話はしない）', async () => {
+    vi.stubGlobal('fetch', serverFetch());
+    store(family(MON), 'calendar');
+    renderPwa();
+    await serverReady();
+    const about = document.querySelector('.about-col') as HTMLElement;
+    const text = within(about).getByTestId('about-ai-mode').textContent ?? '';
+    expect(text).toContain('ルールで読めない書き込みだけ AI（Claude）');
+    expect(text).toContain(PWA_AI_PRIVACY_TEXT);
+    expect(about.textContent).not.toContain('claude.ai');
+    expect(about.querySelector('.about-status')).toBeNull();
+  });
+
+  it('ルールで読めない書き込みは、名前を番号に置き換えて POST し、AI の読み取りとして答える（除外は送らない）', async () => {
+    const fetchMock = serverFetch([{ type: 'show_week' }]);
+    vi.stubGlobal('fetch', fetchMock);
+    const s = family(MON);
+    store(s, 'calendar');
+    renderPwa();
+    await serverReady();
+    const [mama] = s.household.members;
+    send(`${mama.nickname}がほげほげ`);
+    await waitFor(() => expect(within(talkLog()).getByText('AIで読み取り')).toBeTruthy());
+    const post = fetchMock.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === 'POST') as unknown as [string, RequestInit];
+    expect(post[0]).toBe('./api/parse');
+    const raw = post[1].body as string;
+    for (const name of NAMES) expect(raw).not.toContain(name);
+    expect(raw).not.toContain('exclusions');
+    expect(JSON.parse(raw).text).toBe(`${mama.id}がほげほげ`);
+  });
+
+  it('関数が使えなくなっても（503）、その書き込みはルールで読む', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
+      init?.method === 'POST'
+        ? new Response(JSON.stringify({ error: 'llm_unavailable' }), { status: 503, headers: { 'content-type': 'application/json' } })
+        : new Response(JSON.stringify({ ok: true, llm: true }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    store(family(MON), 'calendar');
+    renderPwa();
+    await serverReady();
+    send('ほげほげ');
+    await waitFor(() => expect(within(talkLog()).getAllByText('ルールで読み取り').length).toBeGreaterThan(0));
+    expect(within(talkLog()).queryByText('AIで読み取り')).toBeNull();
   });
 });
