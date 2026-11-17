@@ -18,7 +18,7 @@ import {
 import { REACTIONS, SERVINGS_NOTE, cls, hasPartialServings, nobodyEats } from '../lib';
 import { SummaryBody } from './ChatCard';
 import { MealDetails, RakuBadge, StatusBadge, statusBadgeShown } from './MealDetails';
-import { CostMeter, PRICE_SHORT_NOTE, extrasLabelOf } from './SettingsFields';
+import { CostMeter, PRICE_SHORT_NOTE, USE_COST_NOTE, extrasLabelOf } from './SettingsFields';
 import { Sheet } from './Sheet';
 
 /** 夕食のほかの食事の1行の中身（「鶏の照り焼き弁当（2人分）」）。朝ごはんは家族みんなの分なので、人数は書かない。 */
@@ -140,6 +140,7 @@ function WeekCostPanel({ state, catalog, weekStart, label }: { state: AppState; 
   return (
     <section className="panel week-cost" aria-label={label}>
       <CostMeter label={label} cost={cost} budget={budget} extrasLabel={extrasLabelOf(state.household.settings)} />
+      <p className="hint">{USE_COST_NOTE}</p>
       <p className="hint">{PRICE_SHORT_NOTE}</p>
     </section>
   );

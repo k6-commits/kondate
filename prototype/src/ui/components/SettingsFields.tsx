@@ -337,6 +337,9 @@ export const SPICE_NOTE = 'ふつう＝子どもがいる日は、辛い料理�
 export const PRICE_NOTE = '値段は全国の平均くらいの目安です（地域・季節・お店で変わります）。調味料などの常備品は数えません。';
 /** 同じ説明の短い言い方（今週の献立・買い物リストの金額に添える）。 */
 export const PRICE_SHORT_NOTE = '値段は全国の平均くらいの目安です。';
+/** 週の食費の目安は「使う分」、買い物リストの合計は「パック単位で買う分」。2つの金額の違いを、それぞれに添える。 */
+export const USE_COST_NOTE = '献立で使う分の材料費です（買い物では、パック単位で買うので多くなります）。';
+export const PACK_COST_NOTE = 'パック単位で買う分の値段です（献立で使う分の目安より多くなります）。';
 
 const BUDGET_MIN = 1000;
 const BUDGET_MAX = 100000;

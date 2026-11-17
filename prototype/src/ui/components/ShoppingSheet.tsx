@@ -4,7 +4,7 @@ import type { Action, AppState, Catalog, ISODate, ShoppingList } from '../../eng
 import { AISLE_LABEL, AISLE_ORDER, formatJa, listCost, renderCardText, yenText } from '../../engine';
 import { cls, leftCount, quantityOf } from '../lib';
 import { Icon } from './Icon';
-import { PRICE_SHORT_NOTE } from './SettingsFields';
+import { PACK_COST_NOTE, PRICE_SHORT_NOTE } from './SettingsFields';
 import { Sheet } from './Sheet';
 
 const FREEZE = '買ったら冷凍';
@@ -211,6 +211,7 @@ function ListCost({ list, catalog }: { list: ShoppingList; catalog: Catalog }) {
     <p className="list-cost num">
       <span className="list-cost-total">{total}</span>
       {note ? <span className="list-cost-note">（{note}）</span> : null}
+      <span className="list-cost-note">{PACK_COST_NOTE}</span>
       <span className="list-cost-note">{PRICE_SHORT_NOTE}</span>
     </p>
   );

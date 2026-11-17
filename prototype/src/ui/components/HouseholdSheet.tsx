@@ -42,6 +42,7 @@ import {
   CuisineRows,
   MealsFields,
   PRICE_NOTE,
+  USE_COST_NOTE,
   SPICE_NOTE,
   SPICE_OPTIONS,
   ShoppingPaceFields,
@@ -547,7 +548,10 @@ export function HouseholdSheet({
         ) : (
           <p className="hint">献立ができたら、ここに今週の食費の目安を出します。</p>
         )}
-        <p className="field-note">{PRICE_NOTE}</p>
+        <p className="field-note">
+          {USE_COST_NOTE}
+          {PRICE_NOTE}
+        </p>
       </section>
 
       <section className="block" aria-labelledby="time-title">
