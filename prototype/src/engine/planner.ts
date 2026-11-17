@@ -388,11 +388,13 @@ export function scoreMain(env: PlanEnv, slot: Slot, dish: Dish): Scored {
   // 家族が「よく出す」を選んだ国・ジャンル。
   if (prefersCuisine(env.settings, dish.genre)) score += 1.5;
   // 予算：主菜の材料費が、夕食1回の目安の主菜の分（7割5分）を超えるほど下げ、安ければ少し上げる。
+  // 下げ方は、目安の何倍かの対数（2倍で −4、3倍で約 −6.3。−8 まで）。きつい予算でどの主菜も目安を超えるときも、
+  // 高い主菜ほど下がる（上限で頭打ちにして、差がつかなくならないように）。
   if (env.budgetPerServing !== null) {
     const cost = dishCost(dish, env.household, env.catalog);
     const target = env.budgetPerServing * 0.75;
     if (cost !== null && target > 0) {
-      if (cost > target) score -= Math.min(4, 3 * (cost / target - 1));
+      if (cost > target) score -= Math.min(8, 4 * Math.log2(cost / target));
       else if (cost < target * 0.6) score += 0.5;
     }
   }
