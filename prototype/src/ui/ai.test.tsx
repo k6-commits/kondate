@@ -16,6 +16,7 @@ import {
   maskNames,
   prepareAiCommands,
   readableByRules,
+  serverParseBody,
   toParsedCommands,
   withRuleDates,
   withSender,
@@ -501,7 +502,36 @@ describe('AiReader', () => {
       expect(r).toEqual({ commands: [{ type: 'show_shopping' }], source: 'ai' });
       const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
       expect(url).toBe('http://localhost:8787/api/parse');
-      expect(JSON.parse(init.body as string)).toEqual({ text: '買うものは？', today: MONDAY, members: s.household.members });
+      expect(JSON.parse(init.body as string)).toEqual(serverParseBody('買うものは？', s));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('サーバーには名前・除外（アレルギーなど）を送らない（本文の名前は id に置き換え、メンバーは id・年齢帯・続柄だけ）', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ commands: [], source: 'rules' }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const reader = new AiReader({ parseApi: 'http://localhost:8787/api/parse' });
+      reader.start();
+      const s = demo();
+      const [first, second] = s.household.members;
+      expect(first.nickname.length).toBeGreaterThan(1);
+      const text = `${first.nickname}は水曜飲み会、${second.nickname}は木曜いらない`;
+      expect(await reader.read(text, s, defaultCatalog)).toEqual({ commands: null, source: 'rules' });
+      const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      const raw = init.body as string;
+      for (const m of s.household.members) {
+        if (m.nickname.length > 1) expect(raw).not.toContain(m.nickname);
+      }
+      expect(raw).not.toContain('exclusions');
+      const body = JSON.parse(raw) as { text: string; members: Record<string, unknown>[] };
+      expect(body.text).toBe(`${first.id}は水曜飲み会、${second.id}は木曜いらない`);
+      expect(body.members).toEqual(
+        s.household.members.map((m) => ({ id: m.id, nickname: m.id, ageBand: m.ageBand, ...(m.role ? { role: m.role } : {}) })),
+      );
     } finally {
       vi.unstubAllGlobals();
     }

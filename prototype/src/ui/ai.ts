@@ -258,7 +258,7 @@ export class AiReader {
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text, today: state.today, members: state.household.members }),
+        body: JSON.stringify(serverParseBody(text, state)),
         signal: ctl?.signal,
       });
       if (!res.ok) return { commands: null, source: 'rules' };
@@ -272,6 +272,23 @@ export class AiReader {
       if (timer) clearTimeout(timer);
     }
   }
+}
+
+/**
+ * サーバー（/api/parse）に送る本文。家族の名前は端末の外に出さない：本文の名前は、ここで member の id に置き換え
+ * （maskNames。サーバーの maskNicknames と同じ決まり）、メンバーは id・年齢帯・続柄だけを送る（名前の欄にも id を入れる）。
+ * 除外（アレルギーなど）・献立・在庫は送らない（サーバーは読み取りに使わない）。
+ */
+export function serverParseBody(
+  text: string,
+  state: AppState,
+): { text: string; today: ISODate; members: { id: string; nickname: string; ageBand: Member['ageBand']; role?: Member['role'] }[] } {
+  const members = state.household.members;
+  return {
+    text: maskNames(text, members),
+    today: state.today,
+    members: members.map((m) => ({ id: m.id, nickname: m.id, ageBand: m.ageBand, ...(m.role ? { role: m.role } : {}) })),
+  };
 }
 
 // ---------------------------------------------------------------------------
