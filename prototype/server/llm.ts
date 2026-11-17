@@ -1,5 +1,6 @@
 // 書き込みの解釈に LLM を使う（ANTHROPIC_API_KEY があるときだけ。DESIGN.md 5章）。
-// - 公式SDK の messages.parse と zod のスキーマで、取り決めの平らな形の commands を受け取る。
+// - 公式SDK の beta.messages.parse と zod のスキーマで、取り決めの平らな形の commands を受け取る。
+//   モデルが断ったときは、API の中で既定の別のモデルが続ける（server-side fallback。fallbacks: 'default'）。
 // - 名前は送らない：本文のニックネームを長い順に member の id（member_1 など）に置き換え、
 //   メンバーは { id, ageBand, role } だけを渡す。
 // - 相対的な日付はモデルに計算させない：今日から14日分の日付と曜日の表から選ばせる。
@@ -32,6 +33,8 @@ import { errorKind, silentLogger, type Logger } from './log';
 import { maskableNickname, toHiragana, toKatakana } from './names';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
+/** 断られたときに、API の中で別のモデルが続ける（server-side fallback）ためのベータ。 */
+export const FALLBACK_BETA = 'server-side-fallback-2026-07-01' as const;
 /**
  * 出力の上限。既定のモデルは思考を止められず、思考のトークンも max_tokens に数えるので、
  * 出力の JSON（最大5件）だけを見た大きさより余裕をとる（課金は使った分だけ）。
@@ -297,7 +300,7 @@ export function buildUserContent(input: InterpretInput): string {
   ].join('\n');
 }
 
-/** messages.parse に渡すパラメータ。 */
+/** beta.messages.parse に渡すパラメータ。断られたら、既定の別のモデルが同じ呼び出しの中で続ける（fallbacks: 'default'）。 */
 export function buildRequest(input: InterpretInput, catalog: Catalog, model: string) {
   return {
     model,
@@ -305,6 +308,8 @@ export function buildRequest(input: InterpretInput, catalog: Catalog, model: str
     system: [{ type: 'text' as const, text: buildSystemPrompt(catalog), cache_control: { type: 'ephemeral' as const } }],
     messages: [{ role: 'user' as const, content: buildUserContent(input) }],
     output_config: { format: OUTPUT_FORMAT, effort: 'low' as const },
+    betas: [FALLBACK_BETA],
+    fallbacks: 'default' as const,
   };
 }
 
@@ -403,10 +408,12 @@ export interface LlmResponse {
   parsed_output: OutputReading | null;
 }
 
-/** messages.parse を持つもの（Anthropic のクライアント。テストではモック）。 */
+/** beta.messages.parse を持つもの（Anthropic のクライアント。テストではモック）。 */
 export interface LlmClient {
-  messages: {
-    parse(params: LlmRequest, options: { timeout: number; maxRetries: number; signal?: AbortSignal }): PromiseLike<LlmResponse>;
+  beta: {
+    messages: {
+      parse(params: LlmRequest, options: { timeout: number; maxRetries: number; signal?: AbortSignal }): PromiseLike<LlmResponse>;
+    };
   };
 }
 
@@ -456,7 +463,7 @@ export function createLlmInterpreter(opts: LlmInterpreterOptions): LlmInterprete
       const onStop = () => controller.abort();
       stop?.addEventListener('abort', onStop, { once: true });
       try {
-        const res = await opts.client.messages.parse(buildRequest(input, opts.catalog, model), {
+        const res = await opts.client.beta.messages.parse(buildRequest(input, opts.catalog, model), {
           timeout: LLM_TIMEOUT_MS,
           maxRetries: LLM_MAX_RETRIES,
           signal: controller.signal,

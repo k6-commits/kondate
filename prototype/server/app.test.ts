@@ -502,12 +502,14 @@ describe('LLM での解釈（webhook）', () => {
   it('LLM が返ってこなくても全体の上限でルールに戻り、同じ世帯のボタンも上限＋少しで返る', async () => {
     const llmLogger = memoryLogger();
     const client: LlmClient = {
-      messages: {
-        // 返事をせず、signal が来たら中断する
-        parse: (_params, options) =>
-          new Promise((_resolve, reject) => {
-            options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
-          }),
+      beta: {
+        messages: {
+          // 返事をせず、signal が来たら中断する
+          parse: (_params, options) =>
+            new Promise((_resolve, reject) => {
+              options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+            }),
+        },
       },
     };
     const llm = createLlmInterpreter({ client, catalog: defaultCatalog, logger: llmLogger, totalTimeoutMs: 300 });

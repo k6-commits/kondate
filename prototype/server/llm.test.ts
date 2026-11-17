@@ -6,6 +6,7 @@ import { interpretWithLlm, minimalState } from './interpret';
 import {
   COMMAND_TYPES,
   DEFAULT_MODEL,
+  FALLBACK_BETA,
   LLM_MAX_RETRIES,
   LLM_MAX_TOKENS,
   LLM_TIMEOUT_MS,
@@ -48,14 +49,16 @@ function cmd(partial: Partial<LlmCommand> & { type: string }): LlmCommand {
 
 type ParseOptions = { timeout: number; maxRetries: number; signal?: AbortSignal };
 
-/** messages.parse のモック。渡されたパラメータを記録する。 */
+/** beta.messages.parse のモック。渡されたパラメータを記録する。 */
 function mockClient(reply: (options: ParseOptions) => Promise<LlmResponse>) {
   const calls: { params: LlmRequest; options: ParseOptions }[] = [];
   const client: LlmClient = {
-    messages: {
-      parse: (params, options) => {
-        calls.push({ params, options });
-        return reply(options);
+    beta: {
+      messages: {
+        parse: (params, options) => {
+          calls.push({ params, options });
+          return reply(options);
+        },
       },
     },
   };
@@ -349,7 +352,7 @@ describe('公式SDK のクライアントで（fetch をモックして、ネッ
     usage: { input_tokens: 10, output_tokens: 10 },
   });
 
-  it('messages.parse の本文（system のキャッシュ・effort・JSON Schema）を送り、parsed_output を読む', async () => {
+  it('beta.messages.parse の本文（system のキャッシュ・effort・JSON Schema・断られたときの別のモデル）を送り、parsed_output を読む', async () => {
     const out = { commands: [cmd({ type: 'sale', ingredientId: 'chicken_breast' })] };
     const { client, requests } = sdkWith(() => ({ status: 200, json: message('end_turn', JSON.stringify(out)) }));
     const llm = createLlmInterpreter({ client, catalog });
@@ -360,6 +363,9 @@ describe('公式SDK のクライアントで（fetch をモックして、ネッ
     const { url, headers, body } = requests[0];
     expect(url).toBe('https://api.anthropic.com/v1/messages');
     expect(headers.get('x-api-key') ?? headers.get('authorization')).toContain('sk-ant-test-key');
+    expect(headers.get('anthropic-beta')).toContain(FALLBACK_BETA);
+    expect(body.fallbacks).toBe('default');
+    expect(body).not.toHaveProperty('betas');
     expect(body.model).toBe('claude-opus-5-5');
     expect(body.max_tokens).toBe(LLM_MAX_TOKENS);
     expect(body.system).toEqual([{ type: 'text', text: buildSystemPrompt(catalog), cache_control: { type: 'ephemeral' } }]);

@@ -6,6 +6,7 @@ import type { AppState } from '../engine';
 import type { ParsedCommand } from '../engine';
 import {
   AiReader,
+  PWA_PARSE_API,
   RULES_UNREAD_REPLY,
   SESSION_EXPIRED_NOTICE,
   SMALL_TALK_REPLIES,
@@ -503,6 +504,56 @@ describe('AiReader', () => {
       expect(JSON.parse(init.body as string)).toEqual({ text: '買うものは？', today: MONDAY, members: s.household.members });
     } finally {
       vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('AiReader：サーバーに使えるかを聞く（ホーム画面に置く版）', () => {
+  function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  }
+
+  it('GET で llm: true なら server（そのあと POST で読む）。聞いているあいだは checking', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
+      init?.method === 'GET' ? jsonResponse({ ok: true, llm: true }) : jsonResponse({ commands: [{ type: 'show_week' }], source: 'llm' }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const reader = new AiReader({ parseApi: PWA_PARSE_API, probe: true, host: () => undefined });
+      reader.start();
+      expect(reader.status).toBe('checking');
+      await vi.waitFor(() => expect(reader.status).toBe('server'));
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe('./api/parse');
+      expect(init).toMatchObject({ method: 'GET', cache: 'no-store' });
+      const r = await reader.read('今週の献立', demo(), defaultCatalog);
+      expect(r).toEqual({ commands: [{ type: 'show_week' }], source: 'ai' });
+      expect((fetchMock.mock.calls[1] as unknown as [string, RequestInit])[1].method).toBe('POST');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('鍵がない（llm: false）・届かない・形が違うときは none（ルールだけで読み、POST もしない）', async () => {
+    for (const reply of [
+      async () => jsonResponse({ ok: true, llm: false }),
+      async () => {
+        throw new TypeError('Failed to fetch');
+      },
+      async () => jsonResponse({ hello: 1 }),
+      async () => jsonResponse({ error: 'x' }, 500),
+    ]) {
+      const fetchMock = vi.fn(reply);
+      vi.stubGlobal('fetch', fetchMock);
+      try {
+        const reader = new AiReader({ parseApi: PWA_PARSE_API, probe: true, host: () => undefined });
+        reader.start();
+        await vi.waitFor(() => expect(reader.status).toBe('none'));
+        expect(await reader.read('今週の献立', demo(), defaultCatalog)).toEqual({ commands: null, source: 'rules' });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.unstubAllGlobals();
+      }
     }
   });
 });

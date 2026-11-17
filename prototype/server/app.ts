@@ -6,11 +6,10 @@
 import { Hono, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
-import { z } from 'zod';
-import { isISODate, parseMessage, validateCommands, type Catalog, type Member } from '../src/engine/index';
+import type { Catalog } from '../src/engine/index';
 import type { Defer } from './defer';
 import { runEvening } from './evening';
-import { interpretWithLlm, minimalState } from './interpret';
+import { MAX_PARSE_BYTES, answerParse, isJsonContentType } from './parse-api';
 import { verifySignature, type LineClient } from './line';
 import type { LlmInterpreter } from './llm';
 import { errorKind, silentLogger, type Logger } from './log';
@@ -48,27 +47,8 @@ export interface AppDeps {
 }
 
 export const MAX_WEBHOOK_BYTES = 1024 * 1024;
-export const MAX_PARSE_BYTES = 64 * 1024;
-export const MAX_PARSE_TEXT = 500;
-
-// 画面は state.household.members をそのまま送る（exclusions などの使わない項目は読み捨てる）。
-const MemberSchema = z.object({
-  id: z.string().min(1).max(100),
-  nickname: z.string().max(100),
-  ageBand: z.enum(['adult', 'teen', 'child', 'preschool', 'infant']),
-  role: z.enum(['parent', 'partner', 'child', 'other']).nullish(),
-});
-
-export const ParseRequestSchema = z.object({
-  text: z.string().max(MAX_PARSE_TEXT),
-  today: z.string().refine(isISODate),
-  members: z.array(MemberSchema).max(20),
-});
-
-/** Content-Type が application/json か（charset などの付いたものも可）。 */
-function isJsonContentType(header: string | undefined): boolean {
-  return (header ?? '').split(';')[0].trim().toLowerCase() === 'application/json';
-}
+// /api/parse の中身は parse-api.ts（Netlify の関数と同じもの）。
+export { MAX_PARSE_BYTES, MAX_PARSE_TEXT, ParseRequestSchema } from './parse-api';
 
 /**
  * /api/parse の前の確認（LLM を呼ぶ前に断る）。
@@ -134,21 +114,8 @@ export function createApp(deps: AppDeps): Hono {
         } catch {
           return c.json({ error: 'invalid_json' }, 400);
         }
-        const parsed = ParseRequestSchema.safeParse(body);
-        if (!parsed.success) return c.json({ error: 'invalid_request' }, 400);
-        const { text, today } = parsed.data;
-        const members: Member[] = parsed.data.members.map((m) => ({
-          id: m.id,
-          nickname: m.nickname,
-          ageBand: m.ageBand,
-          ...(m.role ? { role: m.role } : {}),
-          exclusions: [],
-        }));
-        const state = minimalState(today, members);
-        const fromLlm = await interpretWithLlm(llm, catalog, state, text);
-        if (fromLlm) return c.json({ commands: fromLlm, source: 'llm' as const });
-        const rules = validateCommands(state, catalog, parseMessage(text, { today, members, catalog }));
-        return c.json({ commands: rules, source: 'rules' as const });
+        const answer = await answerParse(body, llm, catalog);
+        return c.json(answer.body, answer.status);
       },
     );
   }

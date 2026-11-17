@@ -16,5 +16,5 @@
     "types": ["node", "vitest/globals"],
     "noEmit": true
   },
-  "include": ["src", "server", "vite.config.ts", "vite.pwa.ts"]
+  "include": ["src", "server", "netlify", "vite.config.ts", "vite.pwa.ts"]
 }

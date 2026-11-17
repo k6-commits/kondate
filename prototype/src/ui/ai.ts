@@ -65,7 +65,18 @@ export interface AiReaderOptions {
    * はじめから 'none' にして、確かめもしない（「確かめています」を一度も出さない）。
    */
   rulesOnly?: boolean;
+  /**
+   * サーバー（parseApi）に、AI で読めるか（鍵があるか）を起動時に1回聞く（ホーム画面に置く版。GET で llm: true なら
+   * 'server'、それ以外・届かないときは 'none'）。聞かないときは、サーバーがあれば使えるものとして扱う（開発用）。
+   */
+  probe?: boolean;
 }
+
+/** ホーム画面に置く版の、書き込みの読み取りの口（Netlify の関数。netlify/functions/parse.ts）。ページと同じオリジン。 */
+export const PWA_PARSE_API = './api/parse';
+
+/** 起動時にサーバーへ聞くときの上限（届かなければ、ルールだけで読む）。 */
+export const PROBE_TIMEOUT_MS = 5_000;
 
 /** AI を使わない版（ホーム画面に置く版）で、AI の読み取りの説明に出す文。家族と設定と案内で同じ文にする。 */
 export const RULES_ONLY_TEXT = 'この版では AI を使いません。書き込みは、ルールだけで読み取ります。';
@@ -104,9 +115,11 @@ export class AiReader {
   private readonly parseApi: string | undefined;
   private readonly host: () => ClaudeHost | undefined;
   private readonly rulesOnly: boolean;
+  private readonly probe: boolean;
 
   constructor(options: AiReaderOptions = {}) {
     this.rulesOnly = options.rulesOnly === true;
+    this.probe = options.probe === true;
     this.parseApi = this.rulesOnly ? undefined : (options.parseApi ?? devParseApi());
     this.host = options.host ?? defaultHost;
     this.statusValue = this.rulesOnly ? 'none' : 'checking';
@@ -147,6 +160,10 @@ export class AiReader {
     if (this.rulesOnly) return;
     const host = this.host();
     if (!host || typeof host.use !== 'function') {
+      if (this.probe && this.parseApi) {
+        void this.probeServer(this.parseApi);
+        return;
+      }
       this.setStatus(this.fallbackStatus());
       return;
     }
@@ -171,6 +188,26 @@ export class AiReader {
         if (this.statusValue !== 'blocked') this.setStatus(this.fallbackStatus());
       },
     );
+  }
+
+  /** サーバーに、AI で読めるか（鍵があるか）を聞く。届かない・形が違う・時間切れは 'none'（ルールだけで読む）。 */
+  private async probeServer(url: string): Promise<void> {
+    if (typeof fetch !== 'function') {
+      this.setStatus('none');
+      return;
+    }
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), PROBE_TIMEOUT_MS) : null;
+    try {
+      const res = await fetch(url, { method: 'GET', cache: 'no-store', signal: ctl?.signal });
+      const data: unknown = res.ok ? await res.json() : null;
+      if (this.statusValue === 'blocked') return;
+      this.setStatus(isRecord(data) && data.llm === true ? 'server' : 'none');
+    } catch {
+      if (this.statusValue !== 'blocked') this.setStatus('none');
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** 書き込み（「@きめとく」を除いた本文）を AI で読み取る。失敗してもルールに戻れるように、例外は投げない。 */

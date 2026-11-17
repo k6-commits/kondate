@@ -36,6 +36,15 @@
 [context.branch-deploy]
   ignore = "exit 0"
 
+# ---- 関数（書き込みの AI 読み取り：GET・POST /api/parse。中身は prototype/netlify/functions/parse.ts） ----
+# 鍵は Netlify の画面の環境変数 KIMETOKU_ANTHROPIC_API_KEY（主催者の Anthropic の API キー。このファイルには書かない）。
+# ないときは AI を使わない（画面はルールだけで読む）。Netlify の AI Gateway の鍵（ANTHROPIC_API_KEY）は使わない
+# （Netlify のクレジットを使うため）。モデルを変えるときは KIMETOKU_MODEL。
+[functions]
+  # base（prototype）から見た場所。
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
 # ---- 返すときに付ける HTTP ヘッダー ----
 # 重なる2つの決まりで、同じ名前のヘッダーを付けないこと（片方の値しか残らない）。
 
