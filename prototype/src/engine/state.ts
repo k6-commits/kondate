@@ -24,8 +24,8 @@ import { addMealMessage, addWeekMessage, BTN_SHOPPING, BTN_TODAY, lastWeekSummar
 import { mealTitle } from './text';
 import { askCheckinIfDue } from './checkin';
 
-export function defaultSettings(input: Pick<OnboardingInput, 'plan' | 'shoppingWeekdays'>): HouseholdSettings {
-  return {
+export function defaultSettings(input: Pick<OnboardingInput, 'plan' | 'shoppingWeekdays' | 'extras'>): HouseholdSettings {
+  const settings: HouseholdSettings = {
     plan: input.plan,
     dinnerWeekdays: [1, 2, 3, 4, 5],
     shoppingWeekdays: uniq(input.shoppingWeekdays).sort(),
@@ -35,6 +35,19 @@ export function defaultSettings(input: Pick<OnboardingInput, 'plan' | 'shoppingW
     maxMinutes: {},
     allowUncertainWithExclusions: false,
   };
+  // 初回設定で選んだ、あとから足した設定（選んだものだけを書く。ないものは読むときに既定）。
+  const x = input.extras;
+  if (x) {
+    if (x.cuisines) settings.cuisines = { ...x.cuisines };
+    if (x.spice) settings.spice = x.spice;
+    if (x.meals) settings.meals = x.meals;
+    if (x.breakfastStyle) settings.breakfastStyle = x.breakfastStyle;
+    if (x.lunchStyle) settings.lunchStyle = x.lunchStyle;
+    if (x.lunchCount !== undefined) settings.lunchCount = x.lunchCount;
+    if (x.weeklyBudget !== undefined) settings.weeklyBudget = x.weeklyBudget;
+    if (x.maxMinutes) settings.maxMinutes = { ...x.maxMinutes };
+  }
+  return settings;
 }
 
 /** 自由入力の定番（材料がわからない主菜）。 */

@@ -1,6 +1,6 @@
 import type { AllergenId, Dish, Protein } from '../engine/types';
 import { AISLE_ORDER, UNIT_LABEL } from '../engine/types';
-import { ALLERGENS, DISHES, INGREDIENTS, defaultCatalog } from './index';
+import { ALLERGENS, ALL_DISHES, ALL_INGREDIENTS, DISHES, EXTRA_DISHES, EXTRA_INGREDIENTS, INGREDIENTS, WORLD_DISHES, WORLD_INGREDIENTS, defaultCatalog } from './index';
 
 // AllergenId の全件（satisfies で、型との食い違いをコンパイル時に見つける）。
 const ALL_ALLERGEN_IDS = Object.keys({
@@ -322,11 +322,17 @@ describe('DISHES', () => {
 });
 
 describe('defaultCatalog', () => {
-  it('indexes every dish and ingredient', () => {
-    expect(defaultCatalog.dishes).toBe(DISHES);
-    expect(defaultCatalog.ingredients).toBe(INGREDIENTS);
+  it('indexes every dish and ingredient (standard, world and extras), each id once', () => {
+    expect(defaultCatalog.dishes).toBe(ALL_DISHES);
+    expect(defaultCatalog.dishes.length).toBe(DISHES.length + WORLD_DISHES.length);
+    expect(defaultCatalog.ingredients).toBe(ALL_INGREDIENTS);
+    expect(defaultCatalog.ingredients.length).toBe(INGREDIENTS.length + WORLD_INGREDIENTS.length + EXTRA_INGREDIENTS.length);
     expect(defaultCatalog.allergens).toBe(ALLERGENS);
-    expect(defaultCatalog.dishById.size).toBe(DISHES.length);
-    expect(defaultCatalog.ingredientById.size).toBe(INGREDIENTS.length);
+    expect(defaultCatalog.dishById.size).toBe(defaultCatalog.dishes.length);
+    expect(defaultCatalog.ingredientById.size).toBe(defaultCatalog.ingredients.length);
+    expect(defaultCatalog.extras).toBe(EXTRA_DISHES);
+    expect(defaultCatalog.extraById.size).toBe(EXTRA_DISHES.length);
+    // 夕食の料理と、ほかの食事の id は重ならない
+    for (const d of EXTRA_DISHES) expect(defaultCatalog.dishById.has(d.id)).toBe(false);
   });
 });

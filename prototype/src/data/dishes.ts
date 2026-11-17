@@ -65,6 +65,10 @@ function months(from: number, to: number): number[] {
   }
 }
 
+/** 世界の料理（world.ts）・朝ごはんとお弁当（extras.ts）を、同じ決まりで書くための関数。 */
+export const dishMakers = { dish, main, side, soup, raku, months };
+export type { Amounts as DishAmounts, Extra as DishExtra };
+
 // ---------------------------------------------------------------------------
 // 主菜：鶏肉
 // ---------------------------------------------------------------------------

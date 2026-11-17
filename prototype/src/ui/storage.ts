@@ -3,6 +3,7 @@
 import type { AppState, TrialClock } from '../engine';
 import { AGE_BAND_LABEL, isISODate } from '../engine';
 import type { AiMode } from './ai';
+import { checkSettingsExtras } from '../engine/settings';
 
 /**
  * 日付の進め方（画面だけの設定）。calendar：本物の日付（日本時間）に合わせて進める（1週間の試用）。
@@ -153,6 +154,8 @@ export function checkAppState(d: unknown): string | null {
     return '副菜の方針が正しくありません';
   }
   if (!isRecord(st.maxMinutes) || typeof st.allowUncertainWithExclusions !== 'boolean') return '設定の項目が足りません';
+  const extraProblem = checkSettingsExtras(st);
+  if (extraProblem) return extraProblem;
   for (const key of ['meals', 'history', 'inventory', 'shopping', 'chat', 'proposals']) {
     if (!Array.isArray(d[key])) return `${key} が配列ではありません`;
   }

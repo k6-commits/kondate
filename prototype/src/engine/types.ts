@@ -75,6 +75,8 @@ export interface Ingredient {
   pantry: boolean;
   /** 含まれるアレルゲン。派生原材料も含める（例：醤油 → wheat, soy）。 */
   allergens: AllergenId[];
+  /** 値段の目安（買い物リストの合計と、予算に合わせた献立に使う）。ない食材は数えない。 */
+  price?: Price;
   /** 銘柄で原材料が変わる加工品（ルウ、ドレッシング、冷凍食品など）。除外の判定は「要確認」になる。 */
   uncertain: boolean;
   seasonMonths?: number[]; // 旬（1〜12）
@@ -91,14 +93,44 @@ export interface Ingredient {
   thaw?: 'fridge' | 'from_frozen';
 }
 
-export type DishRole = 'main' | 'side' | 'soup' | 'raku'; // raku = ラク日用（冷凍食品・惣菜・5分メニュー）
+/**
+ * raku = ラク日用（冷凍食品・惣菜・5分メニュー）。
+ * breakfast・bento・lunch は夕食の献立には使わない「ほかの食事」（朝ごはん・お弁当・家で食べるお昼）。料理マスタとは別の
+ * Catalog.extras に置き、夕食の献立・トークの読み取りには出さない。
+ */
+export type DishRole = 'main' | 'side' | 'soup' | 'raku' | 'breakfast' | 'bento' | 'lunch';
 export type Protein = 'chicken' | 'pork' | 'beef' | 'ground' | 'fish' | 'seafood' | 'egg' | 'tofu' | 'none';
-export type Genre = 'wa' | 'yo' | 'chu' | 'other'; // 和・洋・中・その他
+/** 和・洋・中・韓国・イタリアン・エスニック（タイ・ベトナム・インドなど）・メキシカン・その他。 */
+export type Genre = 'wa' | 'yo' | 'chu' | 'kr' | 'it' | 'eth' | 'mx' | 'other';
+/** 家族が好みを選べる国・ジャンル（その他は選ばない。いつも出してよい）。 */
+export type CuisineGenre = Exclude<Genre, 'other'>;
+export const CUISINE_GENRES: readonly CuisineGenre[] = ['wa', 'yo', 'chu', 'kr', 'it', 'eth', 'mx'];
+/** 画面に出すジャンルの名前。 */
+export const CUISINE_LABEL: Record<CuisineGenre, string> = {
+  wa: '和食', yo: '洋食', chu: '中華', kr: '韓国', it: 'イタリアン', eth: 'エスニック', mx: 'メキシカン',
+};
+/** よく出す（週に何回も）・ときどき（週に1回まで）・出さない。 */
+export type CuisineLevel = 'often' | 'sometimes' | 'never';
+/** 辛さ：mild＝辛い料理は出さない／normal＝子どもがいれば控えめ（既定）／hot＝辛いのも好き。 */
+export type SpiceLevel = 'mild' | 'normal' | 'hot';
+/** 献立を作る食事：夕食だけ／夕食とお弁当（昼）／朝・昼・夕。 */
+export type MealsScope = 'dinner' | 'dinner_bento' | 'three';
+/** 朝ごはんの主食：ごはん／パン／日替わり。 */
+export type BreakfastStyle = 'rice' | 'bread' | 'mix';
+/** 朝・昼・夕のときの昼：お弁当／家で食べる。 */
+export type LunchStyle = 'bento' | 'home';
+/** 値段の目安：per（食材の unit での量）あたり yen 円（税込み・全国の平均くらい）。 */
+export interface Price {
+  yen: number;
+  per: number;
+}
 
 export const PROTEIN_LABEL: Record<Protein, string> = {
   chicken: '鶏肉', pork: '豚肉', beef: '牛肉', ground: 'ひき肉', fish: '魚', seafood: '魚介', egg: '卵', tofu: '豆腐・大豆', none: 'なし',
 };
-export const GENRE_LABEL: Record<Genre, string> = { wa: '和', yo: '洋', chu: '中', other: 'その他' };
+export const GENRE_LABEL: Record<Genre, string> = {
+  wa: '和', yo: '洋', chu: '中', kr: '韓国', it: 'イタリアン', eth: 'エスニック', mx: 'メキシカン', other: 'その他',
+};
 
 export interface DishIngredient {
   ingredientId: string;
@@ -127,6 +159,9 @@ export interface Catalog {
   allergens: AllergenInfo[];
   dishById: Map<string, Dish>;
   ingredientById: Map<string, Ingredient>;
+  /** 夕食のほかの食事（role が breakfast・bento・lunch）。夕食の献立・読み取りには使わない。 */
+  extras: Dish[];
+  extraById: Map<string, Dish>;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +207,21 @@ export interface HouseholdSettings {
   sidePolicy: 'side_or_soup' | 'side_and_soup' | 'main_only';
   maxMinutes: Partial<Record<Weekday, number>>; // 曜日ごとの調理時間の上限（任意）
   allowUncertainWithExclusions: boolean; // 除外食材のある世帯で「要確認」の料理を出すか（既定 false）
+  // ---- ここから下は、あとから足した設定（ない記録もあるので、読むときは engine/settings.ts の関数を使う） ----
+  /** 国・ジャンルごとの好み。ないジャンルは既定（DEFAULT_CUISINES）。 */
+  cuisines?: Partial<Record<CuisineGenre, CuisineLevel>>;
+  /** 辛さ（既定 normal）。 */
+  spice?: SpiceLevel;
+  /** 献立を作る食事（既定 dinner）。 */
+  meals?: MealsScope;
+  /** 朝ごはんの主食（meals が three のとき。既定 mix）。 */
+  breakfastStyle?: BreakfastStyle;
+  /** 昼の食べ方（meals が three のとき。既定 bento）。dinner_bento は、いつもお弁当。 */
+  lunchStyle?: LunchStyle;
+  /** お昼（お弁当・家の昼）を食べる人数（既定1。1〜6）。 */
+  lunchCount?: number;
+  /** 1週間の食費の目安（円）。ない・null は目安なし。 */
+  weeklyBudget?: number | null;
 }
 
 export interface Household {
@@ -404,6 +454,11 @@ export interface OnboardingInput {
   favoriteDishIds: string[];
   customFavoriteNames: string[]; // マスタにない料理名
   plan: 'free' | 'paid';
+  /** 初回設定で選んだ、あとから足した設定（国の料理・辛さ・食事・予算など）。ないものは既定。 */
+  extras?: Pick<
+    HouseholdSettings,
+    'cuisines' | 'spice' | 'meals' | 'breakfastStyle' | 'lunchStyle' | 'lunchCount' | 'weeklyBudget' | 'maxMinutes'
+  >;
 }
 
 export interface SafetyResult {

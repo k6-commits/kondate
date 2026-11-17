@@ -153,13 +153,15 @@ export const ALLERGENS: AllergenInfo[] = [
   { id: 'apple', name: 'りんご', mandatory: false },
 ];
 
-export function makeCatalog(dishes: Dish[] = DISHES, ingredients: Ingredient[] = INGREDIENTS): Catalog {
+export function makeCatalog(dishes: Dish[] = DISHES, ingredients: Ingredient[] = INGREDIENTS, extras: Dish[] = []): Catalog {
   return {
     dishes,
     ingredients,
     allergens: ALLERGENS,
     dishById: new Map(dishes.map((d) => [d.id, d])),
     ingredientById: new Map(ingredients.map((i) => [i.id, i])),
+    extras,
+    extraById: new Map(extras.map((d) => [d.id, d])),
   };
 }
 

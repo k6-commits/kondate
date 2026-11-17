@@ -22,6 +22,8 @@ interface Spec {
   pantry?: boolean;
   season?: number[];
   subs?: string[];
+  /** 値段の目安 [円, unit での量]（例：[198, 100] は 100g あたり198円）。標準の食材は prices.ts の表に書く。 */
+  price?: [number, number];
 }
 
 function make(id: string, name: string, kind: IngredientKind, aisle: Aisle, unit: Unit, s: Spec): Ingredient {
@@ -43,8 +45,13 @@ function make(id: string, name: string, kind: IngredientKind, aisle: Aisle, unit
   if (s.subs) item.substitutes = s.subs;
   if (s.generic) item.genericAliases = s.generic;
   if (s.thaw) item.thaw = s.thaw;
+  if (s.price) item.price = { yen: s.price[0], per: s.price[1] };
   return item;
 }
+
+/** 世界の料理（world.ts）・朝ごはんとお弁当（extras.ts）の食材を、同じ決まりで書くための関数。 */
+export const ingredientMakers = { make, months: (from: number, to: number) => months(from, to) };
+export type { Spec as IngredientSpec };
 
 /** from 月から to 月まで（年をまたいでよい）。例：months(12, 2) → [12, 1, 2] */
 function months(from: number, to: number): number[] {
