@@ -279,7 +279,7 @@ describe('createLlmInterpreter', () => {
       },
     }));
     const llm = createLlmInterpreter({ client, catalog });
-    expect(llm.model).toBe('claude-opus-5-5');
+    expect(llm.model).toBe('claude-haiku-5-5');
     const out = await llm.interpret({ text: '水曜はパパが飲み会', today: TODAY, members });
     expect(out).toEqual([{ type: 'absence', date: '2026-11-11', memberRef: 'member_2' }]);
     expect(calls).toHaveLength(1);
@@ -289,7 +289,10 @@ describe('createLlmInterpreter', () => {
     // 全体の上限で止めるための signal も渡す（終わったら abort しない）
     expect(calls[0].options.signal).toBeInstanceOf(AbortSignal);
     expect(calls[0].options.signal?.aborted).toBe(false);
-    expect(calls[0].params.model).toBe('claude-opus-5-5');
+    expect(calls[0].params.model).toBe('claude-haiku-5-5');
+    // 既定の Haiku には、断られたときの別のモデル（fallbacks）を送らない
+    expect(calls[0].params).not.toHaveProperty('fallbacks');
+    expect(calls[0].params).not.toHaveProperty('betas');
     expect(JSON.stringify(calls[0].params.messages)).not.toContain('パパ');
   });
 
@@ -356,7 +359,8 @@ describe('公式SDK のクライアントで（fetch をモックして、ネッ
   it('beta.messages.parse の本文（system のキャッシュ・effort・JSON Schema・断られたときの別のモデル）を送り、parsed_output を読む', async () => {
     const out = { commands: [cmd({ type: 'sale', ingredientId: 'chicken_breast' })] };
     const { client, requests } = sdkWith(() => ({ status: 200, json: message('end_turn', JSON.stringify(out)) }));
-    const llm = createLlmInterpreter({ client, catalog });
+    // 断られたときの別のモデルを送るのは Opus など（KIMETOKU_MODEL で選んだとき）
+    const llm = createLlmInterpreter({ client, catalog, model: 'claude-opus-5-5' });
     expect(await llm.interpret({ text: 'パパが鶏むねが安いって', today: TODAY, members })).toEqual([
       { type: 'sale', ingredientId: 'chicken_breast' },
     ]);

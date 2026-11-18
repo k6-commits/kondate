@@ -336,8 +336,8 @@ netlify.toml                     PWA を Netlify で公開する設定（リポ�
   - `POST /cron/evening`（共有シークレット必須。毎日、土日も呼ぶ）：有料の世帯に「今日はこれ」を push する。文面は送る直前の献立で作り直す。届けそびれた週の献立は、その週が終わるまで残し、今日の言い方で送る（試作版の LINE の世帯はデモの家族＝無料版で作り、切り替える方法がないので、いまは対象がない）。
 - **LLM**（server/llm.ts）
   - 公式SDK（@anthropic-ai/sdk）の `messages.parse` と zod のスキーマで、ParsedCommand[] を受け取る。スキーマは平らな形（type・date・memberRef・ingredientId・dishId・protein・genre・cancel・question・frozen。使わない項目は null）。
-  - モデルは環境変数 `KIMETOKU_MODEL`（既定 `claude-opus-5-5`）。
-  - 1回の解釈は、全体で12秒まで（再試行を含む。サーバーを止めるときは途中でやめる）。max_tokens は 4096（既定のモデルは思考を止められず、思考のトークンも max_tokens に数えるため、出力の JSON より余裕をとる）。断られた・上限で切れた・JSON でない・形が違う、をログで見分ける（本文は出さない）。
+  - モデルは環境変数 `KIMETOKU_MODEL`（既定 `claude-haiku-5-5`。家族の短い書き込みを決まった形に分けるだけなので、安くて速い Haiku にした。トークンあたりの値段が Opus 5.5 の約40分の1。断られたときの別のモデル（server-side fallback）は Haiku にはないので送らない。Opus などを選んだときだけ `fallbacks: 'default'` を送る）。
+  - 1回の解釈は、全体で12秒まで（再試行を含む。サーバーを止めるときは途中でやめる）。max_tokens は 4096（いまのモデルは既定で考えてから答え（effort は low）、思考のトークンも max_tokens に数えるため、出力の JSON より余裕をとる）。断られた・上限で切れた・JSON でない・形が違う、をログで見分ける（本文は出さない）。
   - 出力は必ず検証する（食材 id がマスタにあるか、日付が正しいか）。だめならルールベースに戻る。
   - 名前は送らない。本文の名前は「member_1」などの id に置き換え（ひらがな・カタカナ・全角半角・大文字小文字の書き分けも。1文字の名前は、かなでないときだけ。名前のかなを含むよくある言葉（そのまま・わがまま・〜したまま・ぱぱっと など）は置き換えない。画面と同じ）、メンバーは id・年齢帯・続柄で渡す。
 - **環境変数**：`LINE_CHANNEL_SECRET`、`LINE_CHANNEL_ACCESS_TOKEN`、`ANTHROPIC_API_KEY`（任意）、`KIMETOKU_MODEL`（任意）、`CRON_SECRET`、`DATA_DIR`（既定 .data）、`PORT`（既定 8787）、`HOST`（未設定なら、すべてのアドレス。`PARSE_API_ENABLED` のときは 127.0.0.1）、`PARSE_API_ENABLED`（`/api/parse` を使う。既定は無効）、`CORS_ORIGIN`（`/api/parse` を許すオリジン。既定 http://localhost:5173）。

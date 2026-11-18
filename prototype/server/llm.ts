@@ -32,12 +32,16 @@ import {
 import { errorKind, silentLogger, type Logger } from './log';
 import { maskableNickname, toHiragana, toKatakana } from './names';
 
-export const DEFAULT_MODEL = 'claude-opus-5-5';
+/**
+ * 既定のモデル。家族の短い書き込みを決まった形の命令に分けるだけなので、安くて速い Haiku を使う
+ * （トークンあたりの値段が Opus 5.5 の約40分の1。正しさを上げたいときは KIMETOKU_MODEL で claude-opus-5-5 などに替える）。
+ */
+export const DEFAULT_MODEL = 'claude-haiku-5-5';
 /** 断られたときに、API の中で別のモデルが続ける（server-side fallback）ためのベータ。 */
 export const FALLBACK_BETA = 'server-side-fallback-2026-07-01' as const;
 /**
- * 出力の上限。既定のモデルは思考を止められず、思考のトークンも max_tokens に数えるので、
- * 出力の JSON（最大5件）だけを見た大きさより余裕をとる（課金は使った分だけ）。
+ * 出力の上限。いまのモデルは既定で考えてから答え（思考は止めず、effort を low にしている）、思考のトークンも
+ * max_tokens に数えるので、出力の JSON（最大5件）だけを見た大きさより余裕をとる（課金は使った分だけ）。
  */
 export const LLM_MAX_TOKENS = 4096;
 /** 1回の呼び出しの上限（SDK の timeout）。 */
